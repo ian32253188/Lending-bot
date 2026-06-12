@@ -26,11 +26,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 將 Repository 名稱轉為小寫
-      - name: Downcase repo name
-        run: |
-          echo "IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/lending-bot:latest" | tr '[:upper:]' '[:lower:]' >> $GITHUB_ENV
-
       # 建置並推送 Docker 映像檔到 GHCR
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -38,7 +33,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ env.IMAGE_NAME }}
+          tags: ghcr.io/ian32253188/lending-bot:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -46,10 +41,6 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
-      - name: Downcase repo name for deploy
-        run: |
-          echo "IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/lending-bot:latest" | tr '[:upper:]' '[:lower:]' >> $GITHUB_ENV
-
       # 透過 SSH 連線至 OCI VM 執行部署指令
       - name: SSH into OCI VM and Deploy
         uses: appleboy/ssh-action@v1.0.3
