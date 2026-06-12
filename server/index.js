@@ -7,7 +7,7 @@ const http = require('http');
 const config = require('./config');
 const logger = require('./utils/logger');
 const authMiddleware = require('./middleware/auth');
-const { getLendingEngine } = require('./services/engine/lending');
+const { getBitfinexPublicWS } = require('./services/bitfinex/ws');
 const { initTelegram } = require('./services/telegram');
 const metrics = require('./services/metrics');
 
@@ -42,13 +42,12 @@ app.get('/metrics', async (req, res) => {
 
 // 健康檢查（不需認證）
 app.get('/api/health', (req, res) => {
-    const engine = getLendingEngine();
-    const status = engine.getStatus();
+    const { getBot } = require('./services/engine/manager');
+    const publicWs = getBitfinexPublicWS();
     res.json({
         status: 'ok',
         uptime: process.uptime(),
-        running: status.running,
-        connected: status.connected,
+        publicWsConnected: publicWs.isConnected(),
         timestamp: new Date().toISOString(),
     });
 });
@@ -172,7 +171,7 @@ wss.on('connection', (ws, req) => {
 async function startup() {
     logger.info('server', '🚀 Bitfinex 多用戶 SaaS 放貸平台啟動中...');
 
-    // 初始化 Telegram
+    // 初始化管理員全域 Telegram Bot (SaaS 模式下為選配，用戶各自的 Bot 在 manager.startBot 中初始化)
     initTelegram();
 
     // 啟動自動恢復程序

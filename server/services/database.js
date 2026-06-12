@@ -14,9 +14,21 @@ function getSupabase() {
     return supabase;
 }
 
+// ============== userId 防護 ==============
+
+function requireUserId(funcName, userId) {
+    if (!userId) {
+        console.warn(`⚠️ [${funcName}] 呼叫時未傳入 userId — 租戶隔離可能失效！`);
+        return false;
+    }
+    return true;
+}
+
 // ============== 放貸掛單 ==============
 
+
 async function saveOffer(offer, userId = null) {
+    requireUserId('saveOffer', userId);
     const db = getSupabase();
     if (!db) return null;
     const { data, error } = await db
@@ -37,6 +49,7 @@ async function saveOffer(offer, userId = null) {
 }
 
 async function closeOffer(offerId, userId = null) {
+    requireUserId('closeOffer', userId);
     const db = getSupabase();
     if (!db) return null;
     let query = db.from('funding_offers').update({ 
@@ -66,6 +79,7 @@ async function getActiveOffers(currency, userId = null) {
 // ============== 放貸貸款 ==============
 
 async function saveLoan(loan, userId = null) {
+    requireUserId('saveLoan', userId);
     const db = getSupabase();
     if (!db) return null;
     const { data, error } = await db
@@ -86,6 +100,7 @@ async function saveLoan(loan, userId = null) {
 }
 
 async function closeLoan(loanId, interestEarned, userId = null) {
+    requireUserId('closeLoan', userId);
     const db = getSupabase();
     if (!db) return null;
     let query = db.from('funding_loans').update({
@@ -115,6 +130,7 @@ async function getActiveLoans(currency, userId = null) {
 // ============== 收益紀錄 ==============
 
 async function saveEarning(earning, userId = null) {
+    requireUserId('saveEarning', userId);
     const db = getSupabase();
     if (!db) return null;
     const { data, error } = await db
@@ -146,6 +162,7 @@ async function getEarnings(currency, fromDate, toDate, userId = null) {
 }
 
 async function deleteEarnings(currency, userId = null) {
+    requireUserId('deleteEarnings', userId);
     const db = getSupabase();
     if (!db) return false;
     let query = db.from('earnings').delete();
@@ -273,6 +290,7 @@ async function getRateHistory(currency, hours = 24) {
 // ============== 操作日誌 ==============
 
 async function saveLog(level, category, message, metadata = null, userId = null) {
+    requireUserId('saveLog', userId);
     const db = getSupabase();
     if (!db) return null;
     const { error } = await db

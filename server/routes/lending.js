@@ -22,6 +22,9 @@ router.get('/settings', async (req, res) => {
         if (settings.bitfinex_api_secret) {
             settings.bitfinex_api_secret = '******';
         }
+        if (settings.telegram_bot_token) {
+            settings.telegram_bot_token = settings.telegram_bot_token.substring(0, 10) + '...';
+        }
         res.json(settings);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -41,6 +44,9 @@ router.post('/settings', async (req, res) => {
             }
             if (newSettings.bitfinex_api_secret === '******') {
                 newSettings.bitfinex_api_secret = existingSettings.bitfinex_api_secret;
+            }
+            if (newSettings.telegram_bot_token && newSettings.telegram_bot_token.includes('...')) {
+                newSettings.telegram_bot_token = existingSettings.telegram_bot_token;
             }
         }
 

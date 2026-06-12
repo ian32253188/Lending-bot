@@ -81,8 +81,8 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
       .expect(200);
 
     expect(res.body.status).toBe('ok');
-    expect(res.body.running).toBe(false);
-    expect(res.body.connected).toBe(false);
+    expect(res.body.publicWsConnected).toBeDefined();
+    expect(res.body.uptime).toBeDefined();
   });
 
   it('GET /metrics 應能輸出符合 Prometheus Exposition 格式之指標', async () => {

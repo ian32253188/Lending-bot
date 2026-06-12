@@ -17,12 +17,8 @@ const config = {
         anonKey: process.env.SUPABASE_ANON_KEY,
     },
 
-    admin: {
-        password: process.env.ADMIN_PASSWORD || 'changeme',
-    },
-
     jwt: {
-        secret: process.env.JWT_SECRET || 'lending-bot-secret-change-me',
+        secret: process.env.JWT_SECRET,
         expiresIn: '24h',
     },
 
@@ -68,12 +64,20 @@ const config = {
 
 // 驗證必要設定
 function validateConfig() {
+    // SaaS 模式：Bitfinex API 金鑰已改為 per-user (存於 DB)，不再從 .env 必要載入
     const required = [
-        'bitfinex.apiKey',
-        'bitfinex.apiSecret',
         'supabase.url',
         'supabase.key',
+        'supabase.anonKey',
     ];
+
+    // JWT Secret 缺失是安全漏洞，必須強制停止
+    if (!config.jwt.secret) {
+        console.error('❌ 致命錯誤：JWT_SECRET 環境變數未設定！請在 .env 中設定一個強隨機字串。');
+        if (config.nodeEnv === 'production') {
+            process.exit(1);
+        }
+    }
 
     const missing = required.filter((key) => {
         const keys = key.split('.');
