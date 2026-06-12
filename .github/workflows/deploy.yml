@@ -51,24 +51,29 @@ jobs:
           script: |
             # 1. 尋找並進入 VM 上的專案部署目錄（支援多種常見目錄名）
             if [ -d "$HOME/Lending-bot/deploy" ]; then
-              cd "$HOME/Lending-bot/deploy"
+              cd "$HOME/Lending-bot"
             elif [ -d "$HOME/Lending-bot-master/deploy" ]; then
-              cd "$HOME/Lending-bot-master/deploy"
+              cd "$HOME/Lending-bot-master"
             elif [ -d "$HOME/lending-bot/deploy" ]; then
-              cd "$HOME/lending-bot/deploy"
+              cd "$HOME/lending-bot"
             else
               echo "找不到專案 deploy 目錄！請確認專案已被複製到 VM 的 $HOME 下"
               exit 1
             fi
             
-            # 2. 登入 GHCR 以便拉取映像檔
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            # 2. 拉取 GitHub 上的最新程式碼（取得新的 docker-compose.prod.yml）
+            git pull || sudo git pull || true
             
-            # 3. 拉取最新的 Docker Image
-            docker compose -f docker-compose.prod.yml pull
+            cd deploy
             
-            # 4. 重啟容器以套用更新
-            docker compose -f docker-compose.prod.yml up -d
+            # 3. 登入 GHCR 以便拉取映像檔
+            echo "${{ secrets.GITHUB_TOKEN }}" | sudo docker login ghcr.io -u ${{ github.actor }} --password-stdin
             
-            # 5. 清理舊的不需要的 Docker 映像檔以釋放虛擬機空間
-            docker image prune -f
+            # 4. 拉取最新的 Docker Image
+            sudo docker compose -f docker-compose.prod.yml pull
+            
+            # 5. 重啟容器以套用更新
+            sudo docker compose -f docker-compose.prod.yml up -d
+            
+            # 6. 清理舊的不需要的 Docker 映像檔以釋放虛擬機空間
+            sudo docker image prune -f
