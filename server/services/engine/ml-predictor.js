@@ -35,11 +35,17 @@ class MLPredictor {
             frrDeviation: 0.10,    // FRR 偏離度
         };
 
-        // 外部 ML 模型（Phase 2）
-        this.externalModel = null;
+        // 外部 ML 模型權重（Phase 2）
+        this.modelWeights = null;
         this.modelLoaded = false;
 
-        logger.info('ml-predictor', '📊 ML 預測器已初始化（Phase 1: 統計模型）');
+        // 自動嘗試載入預設的權重檔案
+        const defaultWeightsPath = path.join(__dirname, 'model_weights.json');
+        this.loadModel(defaultWeightsPath);
+
+        if (!this.modelLoaded) {
+            logger.info('ml-predictor', '📊 ML 預測器已初始化（Phase 1: 統計模型）');
+        }
     }
 
     /**
@@ -83,7 +89,7 @@ class MLPredictor {
         }
 
         // 如果有外部 ML 模型，優先使用
-        if (this.externalModel && this.modelLoaded) {
+        if (this.modelWeights && this.modelLoaded) {
             return this._predictWithExternalModel(currency, currentMarketData, history);
         }
 
@@ -169,47 +175,114 @@ class MLPredictor {
     }
 
     /**
-     * Phase 2: 使用外部 ML 模型預測（預留介面）
+     * Phase 2: 使用純 JS 矩陣推論進行外部 ML 模型預測
      */
     _predictWithExternalModel(currency, currentMarketData, history) {
-        // 將歷史特徵轉換為模型輸入張量
-        const inputFeatures = history.slice(-this.windowSize).map(s => [
-            s.frr, s.bestBid, s.bestAsk, s.spread,
-            s.totalBidVolume, s.totalAskVolume,
-            s.volume, s.demandSupplyRatio,
-        ]);
-
         try {
-            // TODO: Phase 2 接入 TensorFlow.js 或 ONNX Runtime
-            // const tensor = tf.tensor3d([inputFeatures]);
-            // const output = this.externalModel.predict(tensor);
-            // const prediction = output.dataSync();
+            const current = this._extractFeatures(currentMarketData);
+            if (!current) {
+                return this._predictWithStatModel(currency, currentMarketData, history);
+            }
 
-            logger.debug('ml-predictor', `${currency} 使用外部 ML 模型預測`);
+            // 特徵工程與特徵標準化
+            const frrSlope = this._calcLinearSlope(history.slice(-5).map(s => s.frr));
+            const volumeSlope = this._calcLinearSlope(history.slice(-5).map(s => s.volume));
+            const spreadSlope = this._calcLinearSlope(history.slice(-5).map(s => s.spread));
+            const obi = (current.totalBidVolume - current.totalAskVolume) / (current.totalBidVolume + current.totalAskVolume || 1);
 
-            // 暫時回退到統計模型
-            return this._predictWithStatModel(currency, currentMarketData, history);
+            const X = [
+                current.frr,
+                current.spread,
+                obi,
+                frrSlope,
+                volumeSlope,
+                spreadSlope,
+                current.demandSupplyRatio,
+                current.lastPrice
+            ];
+
+            // 標準化 X
+            const means = this.modelWeights.means || [0, 0, 0, 0, 0, 0, 0, 0];
+            const stds = this.modelWeights.stds || [1, 1, 1, 1, 1, 1, 1, 1];
+            const X_scaled = X.map((x, i) => (x - means[i]) / (stds[i] || 1));
+
+            // 輔助矩陣函數
+            const matMul = (w, x) => {
+                const out = [];
+                for (let r = 0; r < w.length; r++) {
+                    let sum = 0;
+                    for (let c = 0; c < w[r].length; c++) {
+                        sum += w[r][c] * x[c];
+                    }
+                    out.push(sum);
+                }
+                return out;
+            };
+            const add = (a, b) => a.map((val, i) => val + b[i]);
+            const relu = (arr) => arr.map(val => Math.max(0, val));
+            const sigmoid = (val) => 1 / (1 + Math.exp(-val));
+
+            // Hidden Layer: h = relu(add(matMul(W1, X_scaled), b1))
+            const h = relu(add(matMul(this.modelWeights.W1, X_scaled), this.modelWeights.b1));
+            // Output Layer: out = add(matMul(W2, h), b2)
+            const out = add(matMul(this.modelWeights.W2, h), this.modelWeights.b2);
+
+            // out[0] -> predictedDelta, out[1] -> confidence_score (logit)
+            const predictedDelta = out[0];
+            const confidence = sigmoid(out[1]);
+
+            let direction = 'stable';
+            if (predictedDelta > 0.000005) {
+                direction = 'rising';
+            } else if (predictedDelta < -0.000005) {
+                direction = 'falling';
+            }
+
+            const features = {
+                frr: current.frr,
+                spread: current.spread,
+                obi,
+                frrSlope,
+                volumeSlope,
+                spreadSlope,
+                predictedDelta,
+                confidence,
+                historyLength: history.length
+            };
+
+            logger.debug('ml-predictor', `🧠 [Phase 2 AI] ${currency} 預測: ${direction} (信心=${(confidence * 100).toFixed(1)}%, delta=${(predictedDelta * 100).toFixed(6)}%)`);
+
+            return {
+                direction,
+                confidence,
+                predictedDelta,
+                features,
+                reason: `Phase 2 AI 模型預測 (delta=${(predictedDelta * 100).toFixed(6)}%)`,
+            };
         } catch (err) {
-            logger.error('ml-predictor', `外部模型預測失敗: ${err.message}`);
+            logger.error('ml-predictor', `外部模型預測失敗: ${err.message}，回退至 Phase 1`);
             return this._predictWithStatModel(currency, currentMarketData, history);
         }
     }
 
     /**
-     * 載入外部 ML 模型（Phase 2）
+     * 載入外部 ML 模型權重 JSON（Phase 2）
      * @param {string} modelPath - 模型檔案路徑
      */
-    async loadModel(modelPath) {
+    loadModel(modelPath) {
         try {
-            // Phase 2: 支援載入 TensorFlow.js SavedModel 或 ONNX 模型
-            // const tf = require('@tensorflow/tfjs-node');
-            // this.externalModel = await tf.loadLayersModel(`file://${modelPath}`);
-
             if (fs.existsSync(modelPath)) {
-                logger.info('ml-predictor', `載入 ML 模型: ${modelPath}`);
-                this.modelLoaded = true;
+                const data = fs.readFileSync(modelPath, 'utf8');
+                const weights = JSON.parse(data);
+                if (weights.W1 && weights.b1 && weights.W2 && weights.b2) {
+                    this.modelWeights = weights;
+                    this.modelLoaded = true;
+                    logger.info('ml-predictor', `🧠 [Phase 2 AI] 成功載入 ML 權重模型: ${modelPath}`);
+                } else {
+                    logger.warn('ml-predictor', '⚠️ 載入的權重 JSON 格式不合，使用統計模型');
+                }
             } else {
-                logger.warn('ml-predictor', `ML 模型檔案不存在: ${modelPath}，使用統計模型`);
+                logger.warn('ml-predictor', `⚠️ ML 模型檔案不存在: ${modelPath}，將使用 Phase 1 統計模型`);
             }
         } catch (err) {
             logger.error('ml-predictor', `載入 ML 模型失敗: ${err.message}`);

@@ -30,6 +30,7 @@
     "jsonwebtoken": "^9.0.3",
     "node-cron": "^4.2.1",
     "node-telegram-bot-api": "^0.67.0",
+    "prom-client": "^15.1.2",
     "ws": "^8.19.0"
   },
   "devDependencies": {
@@ -37,7 +38,9 @@
     "@types/node": "^20.12.12",
     "@types/node-cron": "^3.0.11",
     "@types/node-telegram-bot-api": "^0.61.10",
+    "@types/supertest": "^6.0.2",
     "@types/ws": "^8.5.10",
+    "supertest": "^7.0.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5",
     "vitest": "^1.6.0"

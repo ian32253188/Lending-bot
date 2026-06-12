@@ -1,17 +1,37 @@
 const express = require('express');
-const { getLendingEngine } = require('../services/engine/lending');
-const { getBitfinexWS } = require('../services/bitfinex/ws');
+const { getBot } = require('../services/engine/manager');
 const db = require('../services/database');
-const config = require('../config');
 
 const router = express.Router();
+
+const defaultStatus = {
+    running: false,
+    paused: false,
+    pauseReason: '',
+    monitorOnly: false,
+    compounding: false,
+    autoTransfer: false,
+    autoTransferThreshold: 500,
+    strategyMode: 'balanced',
+    connected: false,
+    authenticated: false,
+    stats: { offersPlaced: 0, offersCancelled: 0, totalEarned: { USD: 0, USDT: 0 }, lastUpdate: null },
+    wallets: { USD: { balance: 0, available: 0 }, USDT: { balance: 0, available: 0 } },
+    activeOffers: { USD: 0, USDT: 0 },
+    activeCredits: { USD: 0, USDT: 0 },
+    marketData: {},
+    strategy: { mode: 'balanced', config: {} }
+};
 
 // 取得儀表板總覽
 router.get('/overview', async (req, res) => {
     try {
-        const engine = getLendingEngine();
-        const status = engine.getStatus();
-        res.json(status);
+        const userId = req.user.id;
+        const engine = getBot(userId);
+        if (!engine) {
+            return res.json(defaultStatus);
+        }
+        res.json(engine.getStatus());
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -20,15 +40,18 @@ router.get('/overview', async (req, res) => {
 // 取得詳細狀態（含掛單和貸款明細）
 router.get('/detailed', async (req, res) => {
     try {
-        const engine = getLendingEngine();
-        const detailed = engine.getDetailedStatus();
-        res.json(detailed);
+        const userId = req.user.id;
+        const engine = getBot(userId);
+        if (!engine) {
+            return res.json(defaultStatus);
+        }
+        res.json(engine.getDetailedStatus());
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// 取得利率歷史（FRR 走勢圖資料）
+// 取得利率歷史（FRR 走勢圖資料 - 全域共享）
 router.get('/rate-history/:currency', async (req, res) => {
     try {
         const { currency } = req.params;
@@ -40,9 +63,10 @@ router.get('/rate-history/:currency', async (req, res) => {
     }
 });
 
-// Phase 3: 收益統計（日/週/月/年化）
+// 收益統計（日/週/月/年化）
 router.get('/earnings/stats', async (req, res) => {
     try {
+        const userId = req.user.id;
         const now = new Date();
 
         // 今日起始
@@ -61,11 +85,11 @@ router.get('/earnings/stats', async (req, res) => {
         const yearStart = new Date(now.getFullYear(), 0, 1);
 
         const [today, week, month, year, all] = await Promise.all([
-            db.getEarnings(null, todayStart.toISOString(), null),
-            db.getEarnings(null, weekStart.toISOString(), null),
-            db.getEarnings(null, monthStart.toISOString(), null),
-            db.getEarnings(null, yearStart.toISOString(), null),
-            db.getEarnings(null, null, null),
+            db.getEarnings(null, todayStart.toISOString(), null, userId),
+            db.getEarnings(null, weekStart.toISOString(), null, userId),
+            db.getEarnings(null, monthStart.toISOString(), null, userId),
+            db.getEarnings(null, yearStart.toISOString(), null, userId),
+            db.getEarnings(null, null, null, userId),
         ]);
 
         function sumByCurrency(rows) {
@@ -86,10 +110,11 @@ router.get('/earnings/stats', async (req, res) => {
             month: { byCurrency: sumByCurrency(month), total: totalSum(month) },
             year: { byCurrency: sumByCurrency(year), total: totalSum(year) },
             allTime: { byCurrency: sumByCurrency(all), total: totalSum(all) },
-            // 資金利用率（from engine）
+            // 資金利用率
             utilization: (() => {
                 try {
-                    const engine = getLendingEngine();
+                    const engine = getBot(userId);
+                    if (!engine) return {};
                     const status = engine.getStatus();
                     const util = {};
                     for (const [cur, wallet] of Object.entries(status.wallets)) {
@@ -106,26 +131,26 @@ router.get('/earnings/stats', async (req, res) => {
     }
 });
 
-// Phase 3: 收益原始紀錄（含分頁）
+// 收益原始紀錄
 router.get('/earnings', async (req, res) => {
     try {
+        const userId = req.user.id;
         const { currency, from, to } = req.query;
-        const data = await db.getEarnings(currency || null, from || null, to || null);
+        const data = await db.getEarnings(currency || null, from || null, to || null, userId);
         res.json(data);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// 新增：清除所有收益紀錄
+// 清除收益紀錄
 router.post('/earnings/reset', async (req, res) => {
     try {
+        const userId = req.user.id;
         const { currency } = req.body;
-        const success = await db.deleteEarnings(currency || null);
+        const success = await db.deleteEarnings(currency || null, userId);
         if (success) {
-
-            // 重置暫存的 totalEarned
-            const engine = getLendingEngine();
+            const engine = getBot(userId);
             if (engine && engine.state && engine.state.stats && engine.state.stats.totalEarned) {
                 if (currency) {
                     engine.state.stats.totalEarned[currency] = 0;
@@ -135,7 +160,6 @@ router.post('/earnings/reset', async (req, res) => {
                     }
                 }
             }
-
             res.json({ message: '收益紀錄已清除' });
         } else {
             res.status(500).json({ error: '清除失敗' });
@@ -145,14 +169,14 @@ router.post('/earnings/reset', async (req, res) => {
     }
 });
 
-// Phase 3: 熱力圖數據（每日收益彙總）
+// 熱力圖數據
 router.get('/earnings/heatmap', async (req, res) => {
     try {
+        const userId = req.user.id;
         const days = parseInt(req.query.days) || 365;
         const fromDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-        const rows = await db.getEarnings(null, fromDate, null);
+        const rows = await db.getEarnings(null, fromDate, null, userId);
 
-        // 按日期彙總
         const byDate = {};
         for (const row of rows) {
             const date = row.earned_at?.slice(0, 10) || new Date().toISOString().slice(0, 10);
@@ -169,44 +193,45 @@ router.get('/earnings/heatmap', async (req, res) => {
     }
 });
 
-// Phase 3: 歷史掛單紀錄
+// 歷史掛單紀錄
 router.get('/history/offers', async (req, res) => {
     try {
+        const userId = req.user.id;
         const { currency } = req.query;
-        const data = await db.getActiveOffers(currency || null);
+        const data = await db.getActiveOffers(currency || null, userId);
         res.json(data);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Phase 3: 歷史貸款紀錄
+// 歷史貸款紀錄
 router.get('/history/loans', async (req, res) => {
     try {
+        const userId = req.user.id;
         const { currency } = req.query;
-        const data = await db.getActiveLoans(currency || null);
+        const data = await db.getActiveLoans(currency || null, userId);
         res.json(data);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Phase 4: 操作日誌（加強版：支援 level 篩選、關鍵字搜尋）
+// 操作日誌
 router.get('/logs', async (req, res) => {
     try {
+        const userId = req.user.id;
         const limit = parseInt(req.query.limit) || 100;
         const category = req.query.category || null;
         const level = req.query.level || null;
         const keyword = req.query.keyword || null;
 
-        let logs = await db.getLogs(limit * 3, category); // 多取以便篩選
+        let logs = await db.getLogs(limit * 3, category, userId);
 
-        // 等級篩選
         if (level) {
             logs = logs.filter(l => l.level === level);
         }
 
-        // 關鍵字篩選
         if (keyword) {
             const kw = keyword.toLowerCase();
             logs = logs.filter(l =>
@@ -216,16 +241,6 @@ router.get('/logs', async (req, res) => {
         }
 
         res.json(logs.slice(0, limit));
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Phase 2: 幣種輪動建議（也放在 dashboard 方便前端統一呼叫）
-router.get('/suggestions', (req, res) => {
-    try {
-        const engine = getLendingEngine();
-        res.json(engine.getCurrencySuggestion());
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

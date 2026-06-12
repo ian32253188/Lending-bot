@@ -9,20 +9,43 @@ function formatTime() {
 function log(level, category, message, metadata = null) {
     if (LOG_LEVELS[level] < LOG_LEVELS[currentLevel]) return;
 
-    const prefix = {
-        debug: '🔍',
-        info: '✅',
-        warn: '⚠️',
-        error: '❌',
-    }[level] || 'ℹ️';
-
-    const logLine = `[${formatTime()}] ${prefix} [${category}] ${message}`;
-    if (level === 'error') {
-        console.error(logLine, metadata || '');
-    } else if (level === 'warn') {
-        console.warn(logLine, metadata || '');
+    // 12-Factor App: 判斷是否為生產環境，若是則輸出結構化 JSON
+    if (process.env.NODE_ENV === 'production') {
+        const jsonLog = {
+            timestamp: new Date().toISOString(),
+            level: level.toUpperCase(),
+            category,
+            message,
+        };
+        if (metadata) {
+            jsonLog.metadata = metadata;
+        }
+        
+        const logStr = JSON.stringify(jsonLog);
+        if (level === 'error') {
+            console.error(logStr);
+        } else if (level === 'warn') {
+            console.warn(logStr);
+        } else {
+            console.log(logStr);
+        }
     } else {
-        console.log(logLine, metadata || '');
+        // 開發環境：友善視覺化輸出
+        const prefix = {
+            debug: '🔍',
+            info: '✅',
+            warn: '⚠️',
+            error: '❌',
+        }[level] || 'ℹ️';
+
+        const logLine = `[${formatTime()}] ${prefix} [${category}] ${message}`;
+        if (level === 'error') {
+            console.error(logLine, metadata || '');
+        } else if (level === 'warn') {
+            console.warn(logLine, metadata || '');
+        } else {
+            console.log(logLine, metadata || '');
+        }
     }
 
     // 非同步寫入資料庫（不阻塞）
