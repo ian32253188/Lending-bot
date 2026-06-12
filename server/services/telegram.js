@@ -364,6 +364,13 @@ async function buildGlobalSummaryMessage(strategy, publicWs, db) {
 function setupAdminBotHandlers(bot, authorizedChatId) {
     if (!bot) return;
 
+    // 自動註冊指令選單到 Telegram
+    bot.setMyCommands([
+        { command: 'control', description: '喚出互動控制面板' },
+        { command: 'status', description: '查詢放貸核心與收益狀態' },
+        { command: 'help', description: '顯示操作說明與指令清單' }
+    ]).catch(err => logger.error('telegram', '設定 Bot 指令選單失敗', { error: err.message }));
+
     function isAuthorized(msg) {
         const chatId = msg.chat.id.toString();
         if (chatId !== authorizedChatId?.toString()) {
