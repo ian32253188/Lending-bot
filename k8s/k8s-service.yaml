@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: lending-bot-service
+  namespace: default
+  labels:
+    app: lending-bot
+spec:
+  type: ClusterIP
+  selector:
+    app: lending-bot
+  ports:
+    - port: 80
+      targetPort: 3000
+      protocol: TCP
+      name: http

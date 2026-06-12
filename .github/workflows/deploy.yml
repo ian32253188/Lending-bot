@@ -1,0 +1,83 @@
+name: CI/CD Build and Deploy to OCI
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 登入 GitHub Packages (GHCR) 以儲存 Docker 映像檔
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 將 Repository 名稱轉為小寫
+      - name: Downcase repo name
+        run: |
+          echo "IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/lending-bot:latest" | tr '[:upper:]' '[:lower:]' >> $GITHUB_ENV
+
+      # 建置並推送 Docker 映像檔到 GHCR
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_NAME }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Downcase repo name for deploy
+        run: |
+          echo "IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/lending-bot:latest" | tr '[:upper:]' '[:lower:]' >> $GITHUB_ENV
+
+      # 透過 SSH 連線至 OCI VM 執行部署指令
+      - name: SSH into OCI VM and Deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.OCI_VM_IP }}
+          username: ${{ secrets.OCI_VM_USER }}
+          key: ${{ secrets.OCI_SSH_PRIVATE_KEY }}
+          script: |
+            # 1. 尋找並進入 VM 上的專案部署目錄（支援多種常見目錄名）
+            if [ -d "$HOME/Lending-bot/deploy" ]; then
+              cd "$HOME/Lending-bot/deploy"
+            elif [ -d "$HOME/Lending-bot-master/deploy" ]; then
+              cd "$HOME/Lending-bot-master/deploy"
+            elif [ -d "$HOME/lending-bot/deploy" ]; then
+              cd "$HOME/lending-bot/deploy"
+            else
+              echo "找不到專案 deploy 目錄！請確認專案已被複製到 VM 的 $HOME 下"
+              exit 1
+            fi
+            
+            # 2. 登入 GHCR 以便拉取映像檔
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            
+            # 3. 拉取最新的 Docker Image
+            docker compose -f docker-compose.prod.yml pull
+            
+            # 4. 重啟容器以套用更新
+            docker compose -f docker-compose.prod.yml up -d
+            
+            # 5. 清理舊的不需要的 Docker 映像檔以釋放虛擬機空間
+            docker image prune -f

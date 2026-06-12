@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lending-bot-deployment
+  namespace: default
+  labels:
+    app: lending-bot
+spec:
+  # 注意：放貸機器人與交易所保持持久連線且涉及交易排程，為避免多個實例同時運行
+  # 導致重複下單或資金調度衝突，強烈建議維持單一副本 (replicas: 1)。
+  replicas: 1
+  
+  # 部署更新策略選用 Recreate，確保舊 Pod 關閉釋放 API 連線後，新 Pod 才啟動
+  strategy:
+    type: Recreate
+    
+  selector:
+    matchLabels:
+      app: lending-bot
+  template:
+    metadata:
+      labels:
+        app: lending-bot
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+        
+      containers:
+        - name: lending-bot
+          image: ian32253188/lending-bot:latest
+          imagePullPolicy: IfNotPresent
+          
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+                
+          ports:
+            - containerPort: 3000
+              name: http
+              
+          # 資源請求與上限限制，提供高水準服務可靠度，防止記憶體洩漏影響節點
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+              
+          # 自我修復 (Self-healing) 與健康檢查探針
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+            
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 2
+            
+          # 匯入環境變數設定
+          envFrom:
+            - configMapRef:
+                name: lending-bot-config
+            - secretRef:
+                name: lending-bot-secret
