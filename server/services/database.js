@@ -16,7 +16,7 @@ function getSupabase() {
 
 // ============== 放貸掛單 ==============
 
-async function saveOffer(offer) {
+async function saveOffer(offer, userId = null) {
     const db = getSupabase();
     if (!db) return null;
     const { data, error } = await db
@@ -29,29 +29,35 @@ async function saveOffer(offer) {
             period: offer.period,
             status: offer.status || 'active',
             created_at: offer.createdAt || new Date().toISOString(),
+            user_id: userId,
         }, { onConflict: 'offer_id' })
         .select();
     if (error) console.error('saveOffer error:', error);
     return data;
 }
 
-async function closeOffer(offerId) {
+async function closeOffer(offerId, userId = null) {
     const db = getSupabase();
     if (!db) return null;
-    const { data, error } = await db
-        .from('funding_offers')
-        .update({ status: 'closed', closed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-        .eq('offer_id', offerId)
-        .select();
+    let query = db.from('funding_offers').update({ 
+        status: 'closed', 
+        closed_at: new Date().toISOString(), 
+        updated_at: new Date().toISOString() 
+    }).eq('offer_id', offerId);
+    
+    if (userId) query = query.eq('user_id', userId);
+    
+    const { data, error } = await query.select();
     if (error) console.error('closeOffer error:', error);
     return data;
 }
 
-async function getActiveOffers(currency) {
+async function getActiveOffers(currency, userId = null) {
     const db = getSupabase();
     if (!db) return [];
-    const query = db.from('funding_offers').select('*').eq('status', 'active');
-    if (currency) query.eq('currency', currency);
+    let query = db.from('funding_offers').select('*').eq('status', 'active');
+    if (currency) query = query.eq('currency', currency);
+    if (userId) query = query.eq('user_id', userId);
     const { data, error } = await query.order('created_at', { ascending: false });
     if (error) console.error('getActiveOffers error:', error);
     return data || [];
@@ -59,7 +65,7 @@ async function getActiveOffers(currency) {
 
 // ============== 放貸貸款 ==============
 
-async function saveLoan(loan) {
+async function saveLoan(loan, userId = null) {
     const db = getSupabase();
     if (!db) return null;
     const { data, error } = await db
@@ -72,33 +78,35 @@ async function saveLoan(loan) {
             period: loan.period,
             opened_at: loan.openedAt || new Date().toISOString(),
             status: loan.status || 'active',
+            user_id: userId,
         }, { onConflict: 'loan_id' })
         .select();
     if (error) console.error('saveLoan error:', error);
     return data;
 }
 
-async function closeLoan(loanId, interestEarned) {
+async function closeLoan(loanId, interestEarned, userId = null) {
     const db = getSupabase();
     if (!db) return null;
-    const { data, error } = await db
-        .from('funding_loans')
-        .update({
-            status: 'closed',
-            closed_at: new Date().toISOString(),
-            interest_earned: interestEarned || 0,
-        })
-        .eq('loan_id', loanId)
-        .select();
+    let query = db.from('funding_loans').update({
+        status: 'closed',
+        closed_at: new Date().toISOString(),
+        interest_earned: interestEarned || 0,
+    }).eq('loan_id', loanId);
+    
+    if (userId) query = query.eq('user_id', userId);
+    
+    const { data, error } = await query.select();
     if (error) console.error('closeLoan error:', error);
     return data;
 }
 
-async function getActiveLoans(currency) {
+async function getActiveLoans(currency, userId = null) {
     const db = getSupabase();
     if (!db) return [];
-    const query = db.from('funding_loans').select('*').eq('status', 'active');
-    if (currency) query.eq('currency', currency);
+    let query = db.from('funding_loans').select('*').eq('status', 'active');
+    if (currency) query = query.eq('currency', currency);
+    if (userId) query = query.eq('user_id', userId);
     const { data, error } = await query.order('opened_at', { ascending: false });
     if (error) console.error('getActiveLoans error:', error);
     return data || [];
@@ -106,7 +114,7 @@ async function getActiveLoans(currency) {
 
 // ============== 收益紀錄 ==============
 
-async function saveEarning(earning) {
+async function saveEarning(earning, userId = null) {
     const db = getSupabase();
     if (!db) return null;
     const { data, error } = await db
@@ -117,36 +125,39 @@ async function saveEarning(earning) {
             rate: earning.rate,
             period: earning.period,
             earned_at: earning.earnedAt || new Date().toISOString(),
+            user_id: userId,
         })
         .select();
     if (error) console.error('saveEarning error:', error);
     return data;
 }
 
-async function getEarnings(currency, fromDate, toDate) {
+async function getEarnings(currency, fromDate, toDate, userId = null) {
     const db = getSupabase();
     if (!db) return [];
     let query = db.from('earnings').select('*');
     if (currency) query = query.eq('currency', currency);
     if (fromDate) query = query.gte('earned_at', fromDate);
     if (toDate) query = query.lte('earned_at', toDate);
+    if (userId) query = query.eq('user_id', userId);
     const { data, error } = await query.order('earned_at', { ascending: false });
     if (error) console.error('getEarnings error:', error);
     return data || [];
 }
 
-async function deleteEarnings(currency) {
+async function deleteEarnings(currency, userId = null) {
     const db = getSupabase();
     if (!db) return false;
     let query = db.from('earnings').delete();
     if (currency) query = query.eq('currency', currency);
     else query = query.neq('id', 0); // Hack to delete all if no currency
+    if (userId) query = query.eq('user_id', userId);
     const { error } = await query;
     if (error) console.error('deleteEarnings error:', error);
     return !error;
 }
 
-// ============== 利率歷史 ==============
+// ============== 利率歷史 (全域共享) ==============
 
 async function saveRateSnapshot(snapshot) {
     const db = getSupabase();
@@ -173,7 +184,7 @@ async function saveRateSnapshot(snapshot) {
     return data;
 }
 
-// ============== 訂單簿快照（AI 訓練用） ==============
+// ============== 訂單簿快照 (全域共享，AI 訓練用) ==============
 
 async function saveOrderBookSnapshot(snapshot) {
     const db = getSupabase();
@@ -198,7 +209,7 @@ async function saveOrderBookSnapshot(snapshot) {
     return data;
 }
 
-// ============== IBRR 即時最佳利率快照 ==============
+// ============== IBRR 即時最佳利率快照 (全域共享) ==============
 
 async function saveIBRRSnapshot(snapshot) {
     const db = getSupabase();
@@ -230,7 +241,7 @@ async function saveIBRRSnapshot(snapshot) {
     return data;
 }
 
-// 取得 IBRR 訓練資料（供 ML 模型離線訓練）
+// 取得 IBRR 訓練資料
 async function getIBRRTrainingData(currency, hours = 168) {
     const db = getSupabase();
     if (!db) return [];
@@ -261,20 +272,21 @@ async function getRateHistory(currency, hours = 24) {
 
 // ============== 操作日誌 ==============
 
-async function saveLog(level, category, message, metadata = null) {
+async function saveLog(level, category, message, metadata = null, userId = null) {
     const db = getSupabase();
     if (!db) return null;
     const { error } = await db
         .from('operation_logs')
-        .insert({ level, category, message, metadata });
+        .insert({ level, category, message, metadata, user_id: userId });
     if (error) console.error('saveLog error:', error);
 }
 
-async function getLogs(limit = 100, category = null) {
+async function getLogs(limit = 100, category = null, userId = null) {
     const db = getSupabase();
     if (!db) return [];
     let query = db.from('operation_logs').select('*');
     if (category) query = query.eq('category', category);
+    if (userId) query = query.eq('user_id', userId);
     const { data, error } = await query
         .order('created_at', { ascending: false })
         .limit(limit);
@@ -282,7 +294,7 @@ async function getLogs(limit = 100, category = null) {
     return data || [];
 }
 
-// ============== 設定 ==============
+// ============== 全域系統設定 ==============
 
 async function getSetting(key) {
     const db = getSupabase();
@@ -307,7 +319,50 @@ async function saveSetting(key, value) {
     return data;
 }
 
-// ============== FRR 歷史均值（方案 D：動態遞增天數） ==============
+// ============== 用戶專屬設定 (SaaS 擴充) ==============
+
+async function getUserSettings(userId) {
+    const db = getSupabase();
+    if (!db) return null;
+    const { data, error } = await db
+        .from('user_bot_settings')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+    if (error) return null;
+    return data;
+}
+
+async function saveUserSettings(userId, settings) {
+    const db = getSupabase();
+    if (!db) return null;
+    const { data, error } = await db
+        .from('user_bot_settings')
+        .upsert({
+            user_id: userId,
+            ...settings,
+            updated_at: new Date().toISOString()
+        })
+        .select();
+    if (error) console.error('saveUserSettings error:', error);
+    return data;
+}
+
+async function getActiveUsers() {
+    const db = getSupabase();
+    if (!db) return [];
+    const { data, error } = await db
+        .from('user_bot_settings')
+        .select('user_id')
+        .eq('status', 'running');
+    if (error) {
+        console.error('getActiveUsers error:', error);
+        return [];
+    }
+    return data.map(x => x.user_id);
+}
+
+// ============== FRR 歷史均值 (全域共享) ==============
 
 async function getAverageFRR(currency, hours = 168) {
     const db = getSupabase();
@@ -338,5 +393,6 @@ module.exports = {
     saveIBRRSnapshot, getIBRRTrainingData,
     saveLog, getLogs,
     getSetting, saveSetting,
+    getUserSettings, saveUserSettings, getActiveUsers,
     getAverageFRR,
 };

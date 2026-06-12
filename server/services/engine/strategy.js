@@ -201,8 +201,15 @@ class StrategyEngine {
     /**
      * 計算最佳掛單方案
      */
-    calculateOptimalRate(marketData, currency, availableAmount) {
-        const stratConfig = this.getStrategyConfig();
+    calculateOptimalRate(marketData, currency, availableAmount, userConfig = null) {
+        const default3DConfig = {
+            frrMultiplier: 1.0, // 以 FRR 作為物理保護底線
+            maxRate: 0.008, // 日利率上限 (0.8%)
+            minRate: 0.0002, // 日利率下限 (0.02%)
+            orderUnit: 500, // 拆單底倉基準單位
+            defaultPeriod: 2,
+        };
+        const stratConfig = userConfig ? { ...default3DConfig, ...userConfig } : this.getStrategyConfig();
         const result = {
             orders: [],
             shouldOffer: false,
