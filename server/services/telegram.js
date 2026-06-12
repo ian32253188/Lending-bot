@@ -419,7 +419,29 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
     bot.onText(/\/status/, async (msg) => {
         if (!isAuthorized(msg)) return;
         try {
-            await sendDailySummary();
+            const db = require('./database');
+            const { getBot } = require('./engine/manager');
+            const { getStrategyEngine } = require('./engine/strategy');
+            const { getBitfinexPublicWS } = require('./bitfinex/ws');
+            
+            const strategy = getStrategyEngine();
+            const publicWs = getBitfinexPublicWS();
+            const activeUserIds = await db.getActiveUsers();
+            
+            if (activeUserIds.length > 0) {
+                let report = '';
+                for (const userId of activeUserIds) {
+                    const engine = getBot(userId);
+                    if (engine) {
+                        const userReport = await buildUserSummaryMessage(userId, engine, strategy, publicWs, db);
+                        report += userReport + '\n';
+                    }
+                }
+                bot.sendMessage(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => {});
+            } else {
+                const summaryMsg = await buildGlobalSummaryMessage(strategy, publicWs, db);
+                bot.sendMessage(msg.chat.id, summaryMsg, { parse_mode: 'HTML' }).catch(() => {});
+            }
         } catch (err) {
             bot.sendMessage(msg.chat.id, `❌ 查詢狀態失敗: ${err.message}`).catch(() => {});
         }

@@ -4,7 +4,6 @@ const rest = require('../bitfinex/rest');
 const { getBitfinexPublicWS } = require('../bitfinex/ws');
 const { getStrategyEngine } = require('./strategy');
 const { LendingBot } = require('./lending');
-const { initUserTelegram, destroyUserTelegram } = require('../telegram');
 
 // 在記憶體中維護所有活躍的使用者機器人實例
 const activeRunners = new Map();
@@ -56,6 +55,7 @@ async function startBot(userId) {
 
     // 4. 初始化用戶的 Telegram Bot (若有設定)
     if (settings.telegram_bot_token && settings.telegram_chat_id) {
+        const { initUserTelegram } = require('../telegram');
         initUserTelegram(userId, settings.telegram_bot_token, settings.telegram_chat_id);
     }
 
@@ -83,6 +83,7 @@ async function stopBot(userId) {
     await db.saveUserSettings(userId, { status: 'stopped' });
 
     // 3. 銷毀該用戶的 Telegram Bot 實例
+    const { destroyUserTelegram } = require('../telegram');
     destroyUserTelegram(userId);
 
     logger.info('manager', `⏹️ 已成功關閉使用者 ${userId} 的放貸實例`);
