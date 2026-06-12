@@ -6,11 +6,13 @@ import EarningsPanel from './EarningsPanel';
 import RateChart from './RateChart';
 import HeatmapView from './HeatmapView';
 import HistoryPage from './HistoryPage';
+import SettingsPanel from './SettingsPanel';
 
 const NAV_ITEMS = [
     { key: 'overview', icon: '📊', label: '總覽' },
     { key: 'analytics', icon: '📈', label: '圖表' },
     { key: 'history', icon: '📋', label: '歷史' },
+    { key: 'settings', icon: '⚙️', label: '設定' },
     { key: 'logs', icon: '📝', label: '日誌' },
 ];
 
@@ -114,6 +116,13 @@ export default function Dashboard({ status, connected, token, onLogout, onRefres
                 {activePage === 'history' && (
                     <div className="section">
                         <HistoryPage token={token} />
+                    </div>
+                )}
+
+                {/* 設定頁 */}
+                {activePage === 'settings' && (
+                    <div className="section">
+                        <SettingsPanel token={token} />
                     </div>
                 )}
 

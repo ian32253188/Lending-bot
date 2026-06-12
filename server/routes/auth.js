@@ -3,6 +3,15 @@ const { getSupabase } = require('../services/database');
 
 const router = express.Router();
 
+// 取得 Supabase 設定
+router.get('/config', (req, res) => {
+    const config = require('../config');
+    res.json({
+        supabaseUrl: config.supabase.url,
+        supabaseAnonKey: config.supabase.anonKey,
+    });
+});
+
 // 驗證 Token
 router.get('/verify', async (req, res) => {
     const authHeader = req.headers.authorization;
