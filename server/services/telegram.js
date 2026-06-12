@@ -461,35 +461,72 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
         const chatId = query.message.chat.id;
         const messageId = query.message.message_id;
 
-        // 管理員 Bot 使用 legacy singleton
-        const { getLendingEngine } = require('./engine/lending');
-        const engine = getLendingEngine();
+        const db = require('./database');
+        const { getBot, startBot, stopBot } = require('./engine/manager');
+        
+        const supabase = db.getSupabase();
+        const { data: settings } = await supabase.from('user_bot_settings').select('*').limit(1);
+        const dbSettings = settings?.[0] || null;
+        const userId = dbSettings?.user_id || null;
+        
+        if (!userId) {
+            await bot.answerCallbackQuery(query.id, { text: '❌ 找不到任何使用者帳戶！', show_alert: true });
+            return;
+        }
+
+        const engine = getBot(userId);
 
         try {
             switch (action) {
                 case 'toggle_compounding': {
-                    const nextVal = !engine.compoundingEnabled;
-                    engine.setCompounding(nextVal);
-                    await bot.answerCallbackQuery(query.id, { text: `♻️ 複利滾投已變更為: ${nextVal ? '開啟' : '關閉'}` });
+                    if (engine) {
+                        const nextVal = !engine.compoundingEnabled;
+                        engine.setCompounding(nextVal);
+                        await db.saveUserSettings(userId, { compounding_enabled: nextVal });
+                        await bot.answerCallbackQuery(query.id, { text: `♻️ 複利滾投已變更為: ${nextVal ? '開啟' : '關閉'}` });
+                    } else {
+                        const nextVal = !(dbSettings?.compounding_enabled !== false);
+                        await db.saveUserSettings(userId, { compounding_enabled: nextVal });
+                        await bot.answerCallbackQuery(query.id, { text: `♻️ 複利設定已變更為: ${nextVal ? '開啟' : '關閉'} (將在啟動時套用)` });
+                    }
                     await updateAdminControlPanel(bot, chatId, messageId);
                     break;
                 }
                 case 'toggle_autotransfer': {
-                    const nextVal = !engine.autoTransferEnabled;
-                    engine.setAutoTransfer(nextVal, engine.autoTransferThreshold);
-                    await bot.answerCallbackQuery(query.id, { text: `🔄 自動劃轉已變更為: ${nextVal ? '開啟' : '關閉'}` });
+                    if (engine) {
+                        const nextVal = !engine.autoTransferEnabled;
+                        engine.setAutoTransfer(nextVal, engine.autoTransferThreshold);
+                        await db.saveUserSettings(userId, { auto_transfer_enabled: nextVal });
+                        await bot.answerCallbackQuery(query.id, { text: `🔄 自動劃轉已變更為: ${nextVal ? '開啟' : '關閉'}` });
+                    } else {
+                        const nextVal = !(dbSettings?.auto_transfer_enabled || false);
+                        await db.saveUserSettings(userId, { auto_transfer_enabled: nextVal });
+                        await bot.answerCallbackQuery(query.id, { text: `🔄 劃轉設定已變更為: ${nextVal ? '開啟' : '關閉'} (將在啟動時套用)` });
+                    }
                     await updateAdminControlPanel(bot, chatId, messageId);
                     break;
                 }
                 case 'pause_engine': {
-                    engine.pause('Telegram 手動暫停');
-                    await bot.answerCallbackQuery(query.id, { text: '⏸️ 自動放貸已暫停' });
+                    if (engine) {
+                        engine.pause('Telegram 手動暫停');
+                        await db.saveUserSettings(userId, { paused: true, pause_reason: 'Telegram 手動暫停' });
+                        await bot.answerCallbackQuery(query.id, { text: '⏸️ 自動放貸已暫停' });
+                    } else {
+                        await bot.answerCallbackQuery(query.id, { text: '⚠️ 機器人未在運行中，無法暫停' });
+                    }
                     await updateAdminControlPanel(bot, chatId, messageId);
                     break;
                 }
                 case 'resume_engine': {
-                    engine.resume();
-                    await bot.answerCallbackQuery(query.id, { text: '▶️ 自動放貸已恢復' });
+                    if (engine) {
+                        engine.resume();
+                        await db.saveUserSettings(userId, { paused: false });
+                        await bot.answerCallbackQuery(query.id, { text: '▶️ 自動放貸已恢復' });
+                    } else {
+                        // 如果未啟動，則呼叫 startBot 啟動它！
+                        await bot.answerCallbackQuery(query.id, { text: '🚀 正在啟動放貸機器人...' });
+                        await startBot(userId);
+                    }
                     await updateAdminControlPanel(bot, chatId, messageId);
                     break;
                 }
@@ -518,13 +555,18 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
                     break;
                 }
                 case 'confirm_emergency': {
-                    await bot.answerCallbackQuery(query.id, { text: '🚨 正在執行緊急避險，撤銷掛單中...' });
-                    await engine.emergencyStop();
-                    await bot.editMessageText('🚨 <b>緊急避險已完成</b>\n\n系統已取消所有掛單，且放貸核心引擎已設定為<b>緊急暫停狀態</b>。\n\n如需重新啟動，請再次使用下方控制面板。', {
-                        chat_id: chatId,
-                        message_id: messageId,
-                        parse_mode: 'HTML'
-                    });
+                    if (engine) {
+                        await bot.answerCallbackQuery(query.id, { text: '🚨 正在執行緊急避險，撤銷掛單中...' });
+                        await engine.emergencyStop();
+                        await db.saveUserSettings(userId, { paused: true, pause_reason: '緊急避險暫停' });
+                        await bot.editMessageText('🚨 <b>緊急避險已完成</b>\n\n系統已取消所有掛單，且放貸核心引擎已設定為<b>緊急暫停狀態</b>。\n\n如需重新啟動，請再次使用下方控制面板。', {
+                            chat_id: chatId,
+                            message_id: messageId,
+                            parse_mode: 'HTML'
+                        });
+                    } else {
+                        await bot.answerCallbackQuery(query.id, { text: '⚠️ 機器人未在運行中，無法執行避險' });
+                    }
                     setTimeout(() => {
                         sendAdminControlPanel(bot, chatId);
                     }, 3000);
@@ -558,29 +600,48 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
 
 // ============== 管理員控制面板輔助函數 ==============
 
-function sendAdminControlPanel(bot, chatId) {
+async function sendAdminControlPanel(bot, chatId) {
     if (!bot) return;
-    const { getLendingEngine } = require('./engine/lending');
-    const engine = getLendingEngine();
+    try {
+        const db = require('./database');
+        const { getBot } = require('./engine/manager');
+        
+        const supabase = db.getSupabase();
+        const { data: settings } = await supabase.from('user_bot_settings').select('*').limit(1);
+        const dbSettings = settings?.[0] || null;
+        const userId = dbSettings?.user_id || null;
+        
+        const engine = userId ? getBot(userId) : null;
 
-    const panelText = getControlPanelText(engine);
-    const keyboard = getControlPanelKeyboard(engine);
+        const panelText = getControlPanelText(engine, dbSettings);
+        const keyboard = getControlPanelKeyboard(engine, dbSettings);
 
-    bot.sendMessage(chatId, panelText, {
-        parse_mode: 'HTML',
-        ...keyboard
-    }).catch(() => {});
+        bot.sendMessage(chatId, panelText, {
+            parse_mode: 'HTML',
+            ...keyboard
+        }).catch(() => {});
+    } catch (err) {
+        logger.error('telegram', '發送控制面板失敗', { error: err.message });
+        bot.sendMessage(chatId, `❌ 無法開啟控制面板: ${err.message}`).catch(() => {});
+    }
 }
 
 async function updateAdminControlPanel(bot, chatId, messageId) {
     if (!bot) return;
-    const { getLendingEngine } = require('./engine/lending');
-    const engine = getLendingEngine();
-
-    const panelText = getControlPanelText(engine);
-    const keyboard = getControlPanelKeyboard(engine);
-
     try {
+        const db = require('./database');
+        const { getBot } = require('./engine/manager');
+        
+        const supabase = db.getSupabase();
+        const { data: settings } = await supabase.from('user_bot_settings').select('*').limit(1);
+        const dbSettings = settings?.[0] || null;
+        const userId = dbSettings?.user_id || null;
+        
+        const engine = userId ? getBot(userId) : null;
+
+        const panelText = getControlPanelText(engine, dbSettings);
+        const keyboard = getControlPanelKeyboard(engine, dbSettings);
+
         await bot.editMessageText(panelText, {
             chat_id: chatId,
             message_id: messageId,
@@ -594,13 +655,19 @@ async function updateAdminControlPanel(bot, chatId, messageId) {
     }
 }
 
-function getControlPanelText(engine) {
-    const compounding = engine.compoundingEnabled ? '開啟 ♻️' : '關閉 ⏸️';
-    const autoTransfer = engine.autoTransferEnabled ? `開啟 🔄 ($${engine.autoTransferThreshold})` : '關閉 ⏹️';
+function getControlPanelText(engine, dbSettings = null) {
+    const compoundingEnabled = engine ? engine.compoundingEnabled : dbSettings?.compounding_enabled !== false;
+    const autoTransferEnabled = engine ? engine.autoTransferEnabled : dbSettings?.auto_transfer_enabled || false;
+    const autoTransferThreshold = engine ? engine.autoTransferThreshold : dbSettings?.auto_transfer_threshold || 500;
+    
+    const compounding = compoundingEnabled ? '開啟 ♻️' : '關閉 ⏸️';
+    const autoTransfer = autoTransferEnabled ? `開啟 🔄 ($${autoTransferThreshold})` : '關閉 ⏹️';
 
     let engineStatus = '⏹️ 已停止';
-    if (engine.running) {
+    if (engine && engine.running) {
         engineStatus = engine.paused ? `⏸️ 已暫停 (${engine.pauseReason})` : '✅ 運作中';
+    } else if (dbSettings && dbSettings.status === 'running') {
+        engineStatus = '✅ 運作中 (背景恢復中)';
     }
 
     return `🌌 <b>3D Hybrid 放貸核心控制面板</b>\n\n` +
@@ -614,13 +681,20 @@ function getControlPanelText(engine) {
         `請點擊下方按鈕進行即時變更：`;
 }
 
-function getControlPanelKeyboard(engine) {
-    const compoundingLabel = engine.compoundingEnabled ? '♻️ 關閉複利滾投' : '♻️ 開啟複利滾投';
-    const autoTransferLabel = engine.autoTransferEnabled ? '🔄 關閉自動劃轉' : '🔄 開啟自動劃轉';
+function getControlPanelKeyboard(engine, dbSettings = null) {
+    const compoundingEnabled = engine ? engine.compoundingEnabled : dbSettings?.compounding_enabled !== false;
+    const autoTransferEnabled = engine ? engine.autoTransferEnabled : dbSettings?.auto_transfer_enabled || false;
+    const isPaused = engine ? engine.paused : true;
+    const isRunning = engine ? engine.running : false;
 
-    const pauseOrResumeBtn = engine.paused
-        ? { text: '▶️ 恢復自動放貸', callback_data: 'resume_engine' }
-        : { text: '⏸️ 暫停自動放貸', callback_data: 'pause_engine' };
+    const compoundingLabel = compoundingEnabled ? '♻️ 關閉複利滾投' : '♻️ 開啟複利滾投';
+    const autoTransferLabel = autoTransferEnabled ? '🔄 關閉自動劃轉' : '🔄 開啟自動劃轉';
+
+    const pauseOrResumeBtn = (!isRunning)
+        ? { text: '▶️ 啟動自動放貸', callback_data: 'resume_engine' }
+        : (isPaused
+            ? { text: '▶️ 恢復自動放貸', callback_data: 'resume_engine' }
+            : { text: '⏸️ 暫停自動放貸', callback_data: 'pause_engine' });
 
     return {
         reply_markup: {
@@ -646,50 +720,68 @@ function getControlPanelKeyboard(engine) {
  */
 async function sendAdminDetailedDiagnostics(bot, chatId) {
     if (!bot) return;
-    const { getLendingEngine } = require('./engine/lending');
-    const engine = getLendingEngine();
-    const status = engine.getDetailedStatus();
+    try {
+        const db = require('./database');
+        const { getBot } = require('./engine/manager');
+        const { getBitfinexPublicWS } = require('./bitfinex/ws');
+        
+        const publicWs = getBitfinexPublicWS();
+        const supabase = db.getSupabase();
+        const { data: settings } = await supabase.from('user_bot_settings').select('user_id').limit(1);
+        const userId = settings?.[0]?.user_id || null;
+        
+        const engine = userId ? getBot(userId) : null;
+        if (!engine) {
+            bot.sendMessage(chatId, '⚠️ <b>放貸機器人目前未在運行中，無法獲取決策診斷。</b>', { parse_mode: 'HTML' }).catch(() => {});
+            return;
+        }
+        
+        const status = engine.getDetailedStatus();
 
-    let diagText = `📊 <b>3D Hybrid 決策診斷即時反饋</b>\n`;
-    diagText += `⏰ 查詢時間: <code>${new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</code>\n\n`;
+        let diagText = `📊 <b>3D Hybrid 決策診斷即時反饋</b>\n`;
+        diagText += `⏰ 查詢時間: <code>${new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</code>\n\n`;
 
-    for (const cur of ['USD', 'USDT']) {
-        const lastDec = status.lastDecision?.[cur];
-        if (!lastDec) {
-            diagText += `🪙 <b>${cur}</b>: 目前無決策記錄（等待下個週期）\n\n`;
-            continue;
+        for (const cur of ['USD', 'USDT']) {
+            const lastDec = status.lastDecision?.[cur];
+            if (!lastDec) {
+                diagText += `🪙 <b>${cur}</b>: 目前無決策記錄（等待下個週期）\n\n`;
+                continue;
+            }
+
+            const opt = lastDec.optimalResult || {};
+            const diag = opt.diagnostics || {};
+
+            const frr = diag.frr ? `${(diag.frr * 100).toFixed(4)}%` : '—';
+            const equilibrium = diag.equilibriumRate ? `${(diag.equilibriumRate * 100).toFixed(4)}%` : '—';
+            const finalRate = diag.finalRate ? `${(diag.finalRate * 100).toFixed(4)}%` : '—';
+            const dsRatio = diag.demandSupplyRatio ? diag.demandSupplyRatio.toFixed(2) : '—';
+
+            diagText += `🪙 <b>${cur} 自適應指標</b>:\n`;
+            diagText += `  ├─ 當前 FRR: <code>${frr}</code> (年化 ${(diag.frr * 365 * 100).toFixed(2)}%)\n`;
+            diagText += `  ├─ 瓦爾拉斯出清: <code>${equilibrium}</code>\n`;
+            diagText += `  ├─ 最終掛單基準: <b>${finalRate}</b>\n`;
+            diagText += `  ├─ 真實供需比: <code>${dsRatio}</code>\n`;
+            diagText += `  ├─ 巨牆偵測: ${diag.wallDetected ? `⚠️ 偵測到阻力牆 (${(diag.wallRate * 100).toFixed(4)}%/天)，已觸發避讓前置掛單` : '🟢 通暢'}\n`;
+
+            if (opt.orders && opt.orders.length > 0) {
+                diagText += `  └─ <b>當前 3D Grid 拆單計劃</b>:\n`;
+                opt.orders.forEach((o, i) => {
+                    let tag = '底倉 🛡️';
+                    if (o.tag === 'grid_depth') tag = '深度探針 🔍';
+                    if (o.tag === 'grid_cascade') tag = '天價探針 ⚡';
+                    diagText += `     [${i+1}] $${o.amount.toFixed(0)} @ ${(o.rate * 100).toFixed(4)}% (${o.period}天) - ${tag}\n`;
+                });
+            } else {
+                diagText += `  └─ 當前無拆單計劃 (資金已全數放貸中)\n`;
+            }
+            diagText += `\n`;
         }
 
-        const opt = lastDec.optimalResult || {};
-        const diag = opt.diagnostics || {};
-
-        const frr = diag.frr ? `${(diag.frr * 100).toFixed(4)}%` : '—';
-        const equilibrium = diag.equilibriumRate ? `${(diag.equilibriumRate * 100).toFixed(4)}%` : '—';
-        const finalRate = diag.finalRate ? `${(diag.finalRate * 100).toFixed(4)}%` : '—';
-        const dsRatio = diag.demandSupplyRatio ? diag.demandSupplyRatio.toFixed(2) : '—';
-
-        diagText += `🪙 <b>${cur} 自適應指標</b>:\n`;
-        diagText += `  ├─ 當前 FRR: <code>${frr}</code> (年化 ${(diag.frr * 365 * 100).toFixed(2)}%)\n`;
-        diagText += `  ├─ 瓦爾拉斯出清: <code>${equilibrium}</code>\n`;
-        diagText += `  ├─ 最終掛單基準: <b>${finalRate}</b>\n`;
-        diagText += `  ├─ 真實供需比: <code>${dsRatio}</code>\n`;
-        diagText += `  ├─ 巨牆偵測: ${diag.wallDetected ? `⚠️ 偵測到阻力牆 (${(diag.wallRate * 100).toFixed(4)}%/天)，已觸發避讓前置掛單` : '🟢 通暢'}\n`;
-
-        if (opt.orders && opt.orders.length > 0) {
-            diagText += `  └─ <b>當前 3D Grid 拆單計劃</b>:\n`;
-            opt.orders.forEach((o, i) => {
-                let tag = '底倉 🛡️';
-                if (o.tag === 'grid_depth') tag = '深度探針 🔍';
-                if (o.tag === 'grid_cascade') tag = '天價探針 ⚡';
-                diagText += `     [${i+1}] $${o.amount.toFixed(0)} @ ${(o.rate * 100).toFixed(4)}% (${o.period}天) - ${tag}\n`;
-            });
-        } else {
-            diagText += `  └─ 當前無拆單計劃 (資金已全數放貸中)\n`;
-        }
-        diagText += `\n`;
+        bot.sendMessage(chatId, diagText, { parse_mode: 'HTML' }).catch(() => {});
+    } catch (err) {
+        logger.error('telegram', '發送決策診斷失敗', { error: err.message });
+        bot.sendMessage(chatId, `❌ 無法獲取決策診斷: ${err.message}`).catch(() => {});
     }
-
-    bot.sendMessage(chatId, diagText, { parse_mode: 'HTML' }).catch(() => {});
 }
 
 module.exports = {
