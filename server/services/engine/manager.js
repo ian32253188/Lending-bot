@@ -1,0 +1,256 @@
+const logger = require('../../utils/logger');
+const db = require('../database');
+const rest = require('../bitfinex/rest');
+const { getBitfinexPublicWS } = require('../bitfinex/ws');
+const { getStrategyEngine } = require('./strategy');
+const { LendingBot } = require('./lending');
+
+// 在記憶體中維護所有活躍的使用者機器人實例
+const activeRunners = new Map();
+let globalRateCollectorTimer = null;
+let globalHistoricalFRRTimer = null;
+
+/**
+ * 啟動特定使用者的放貸機器人
+ */
+async function startBot(userId) {
+    if (activeRunners.has(userId)) {
+        logger.warn('manager', `使用者 ${userId} 的放貸機器人已在運行中，跳過啟動`);
+        return activeRunners.get(userId);
+    }
+
+    // 1. 從資料庫讀取該用戶的 API 金鑰與設定
+    const userSettings = await db.getUserSettings(userId);
+    if (!userSettings) {
+        throw new Error('找不到該用戶的放貸設定，請先配置 API 金鑰');
+    }
+
+    const { bitfinex_api_key, bitfinex_api_secret, status, ...settings } = userSettings;
+    if (!bitfinex_api_key || !bitfinex_api_secret) {
+        throw new Error('API 金鑰未完整設定，無法啟動機器人');
+    }
+
+    const credentials = {
+        apiKey: bitfinex_api_key,
+        apiSecret: bitfinex_api_secret,
+    };
+
+    // 整合用戶設定
+    const botSettings = {
+        compoundingEnabled: settings.compounding_enabled !== false,
+        autoTransferEnabled: settings.auto_transfer_enabled || false,
+        autoTransferThreshold: settings.auto_transfer_threshold || 500,
+        minOfferAmount: settings.min_offer_amount || 150,
+        currencies: settings.lending_currencies || ['USD', 'USDT'],
+        strategyConfig: settings.strategy_config || { mode: 'simplified' },
+    };
+
+    // 2. 實例化並啟動機器人
+    const bot = new LendingBot(userId, credentials, botSettings);
+    await bot.start();
+
+    // 3. 快取至記憶體，並更新資料庫狀態為 running
+    activeRunners.set(userId, bot);
+    await db.saveUserSettings(userId, { status: 'running' });
+
+    logger.info('manager', `✅ 已為使用者 ${userId} 建立並啟動獨立的放貸實例`);
+    return bot;
+}
+
+/**
+ * 停止特定使用者的放貸機器人
+ */
+async function stopBot(userId) {
+    const bot = activeRunners.get(userId);
+    if (!bot) {
+        logger.warn('manager', `使用者 ${userId} 的放貸機器人未在運行中`);
+        // 確保資料庫狀態同步為 stopped
+        await db.saveUserSettings(userId, { status: 'stopped' });
+        return;
+    }
+
+    // 1. 停止運行
+    await bot.stop();
+
+    // 2. 移出快取，並更新資料庫狀態為 stopped
+    activeRunners.delete(userId);
+    await db.saveUserSettings(userId, { status: 'stopped' });
+
+    logger.info('manager', `⏹️ 已成功關閉使用者 ${userId} 的放貸實例`);
+}
+
+/**
+ * 取得特定使用者的運行實例
+ */
+function getBot(userId) {
+    return activeRunners.get(userId) || null;
+}
+
+/**
+ * 伺服器開機自動重啟所有原本處於 running 狀態的用戶
+ */
+async function autoResumeAll() {
+    logger.info('manager', '🔄 啟動自動恢復程序，查詢活躍放貸帳戶...');
+    try {
+        // 確保公開行情 WebSocket 已開啟
+        const publicWs = getBitfinexPublicWS();
+        publicWs.connect();
+
+        // 啟動全域行情定時收集器
+        startGlobalRateCollector();
+
+        const activeUserIds = await db.getActiveUsers();
+        logger.info('manager', `發現共有 ${activeUserIds.length} 個帳戶需要恢復運行`);
+
+        for (const userId of activeUserIds) {
+            try {
+                await startBot(userId);
+            } catch (err) {
+                logger.error('manager', `自動重啟使用者 ${userId} 失敗`, { error: err.message });
+                // 重開失敗則將資料庫改為 stopped 狀態避免重複循環錯誤
+                await db.saveUserSettings(userId, { status: 'stopped' });
+            }
+        }
+        logger.info('manager', '✅ 所有活躍帳戶自動恢復完成');
+    } catch (err) {
+        logger.error('manager', '自動恢復程序出錯', { error: err.message });
+    }
+}
+
+/**
+ * 關閉所有記憶體中的實例（優雅關閉用）
+ */
+async function shutdownAll() {
+    logger.info('manager', `⏹️ 正在優雅關閉所有活躍的放貸機器人 (總計 ${activeRunners.size} 個)...`);
+    
+    stopGlobalRateCollector();
+
+    for (const userId of activeRunners.keys()) {
+        try {
+            await stopBot(userId);
+        } catch (err) {
+            logger.error('manager', `關閉用戶 ${userId} 失敗`, { error: err.message });
+        }
+    }
+    
+    const publicWs = getBitfinexPublicWS();
+    publicWs.disconnect();
+    
+    logger.info('manager', '✅ 所有放貸實例關閉完成');
+}
+
+// ============== 全域公開行情收集器 (SaaS 優化) ==============
+// 只有一份全域定時器，向資料庫寫入公開市場歷史利率與 IBRR 快照，避免多用戶集體收集造成的寫入浪費
+
+function startGlobalRateCollector() {
+    if (globalRateCollectorTimer) return;
+
+    logger.info('manager', '📊 啟動全域市場行情收集器 (5分鐘週期)...');
+    
+    // 每 5 分鐘執行一次
+    globalRateCollectorTimer = setInterval(() => {
+        collectGlobalRateData();
+    }, 5 * 60 * 1000);
+
+    // 啟動 10 秒後先收集一次
+    setTimeout(() => collectGlobalRateData(), 10000);
+
+    // 啟動歷史 FRR 均值更新器（每 30 分鐘更新一次）
+    globalHistoricalFRRTimer = setInterval(() => {
+        updateGlobalHistoricalFRR();
+    }, 30 * 60 * 1000);
+    setTimeout(() => updateGlobalHistoricalFRR(), 15000);
+}
+
+function stopGlobalRateCollector() {
+    if (globalRateCollectorTimer) {
+        clearInterval(globalRateCollectorTimer);
+        globalRateCollectorTimer = null;
+    }
+    if (globalHistoricalFRRTimer) {
+        clearInterval(globalHistoricalFRRTimer);
+        globalHistoricalFRRTimer = null;
+    }
+}
+
+async function collectGlobalRateData() {
+    const publicWs = getBitfinexPublicWS();
+    if (!publicWs.isConnected()) return;
+
+    const strategy = getStrategyEngine();
+
+    for (const currency of ['USD', 'USDT']) {
+        try {
+            const marketData = publicWs.getMarketData(currency);
+            if (!marketData || !marketData.lastUpdate) continue;
+
+            const available = 10000; // 全域計算使用名義虛擬餘額
+            const optimalResult = strategy.calculateOptimalRate(marketData, currency, available);
+            
+            // 1. 儲存公開市場歷史快照
+            await db.saveRateSnapshot({
+                currency,
+                frr: marketData.frr,
+                avgRate: marketData.lastPrice || marketData.frr,
+                highRate: marketData.high || marketData.frr,
+                lowRate: marketData.low || marketData.frr,
+                volume: marketData.volume || 0,
+                bidDepth: marketData.bids?.length || 0,
+                askDepth: marketData.asks?.length || 0,
+                demandSupplyRatio: optimalResult.diagnostics?.demandSupplyRatio || 1,
+                activeOffersCount: 0,
+                activeCreditsCount: 0,
+                walletBalance: 0,
+            });
+
+            // 2. 儲存 IBRR 即時最佳預估與 ML 特徵快照
+            await db.saveIBRRSnapshot({
+                currency,
+                ibrr: optimalResult.diagnostics?.ibrrRate || marketData.frr,
+                equilibriumRate: optimalResult.diagnostics?.equilibriumRate || marketData.frr,
+                frr: marketData.frr,
+                frrTrend: optimalResult.diagnostics?.frrTrend || 'stable',
+                riskLevel: 5,
+                demandSupplyRatio: optimalResult.diagnostics?.demandSupplyRatio || 1,
+                totalDemand: optimalResult.diagnostics?.totalBidVolume || 0,
+                totalSupply: optimalResult.diagnostics?.totalAskVolume || 0,
+                mlDirection: 'stable',
+                mlConfidence: 1.0,
+                wallDetected: optimalResult.diagnostics?.wallDetected || false,
+                wallRate: optimalResult.diagnostics?.wallRate || 0,
+                bestBidRate: optimalResult.diagnostics?.bestBid || 0,
+                bestAskRate: optimalResult.diagnostics?.bestAsk || 0,
+                lastPrice: marketData.lastPrice || marketData.frr,
+                method: optimalResult.diagnostics?.method || 'ibrr_3d_hybrid',
+            });
+        } catch (err) {
+            logger.error('manager', `全域行情收集 ${currency} 失敗`, { error: err.message });
+        }
+    }
+}
+
+async function updateGlobalHistoricalFRR() {
+    const strategy = getStrategyEngine();
+    for (const currency of ['USD', 'USDT']) {
+        try {
+            // 動態計算 24h/168h(7d) 的 FRR 平均值並寫入策略快取
+            const [avg24h, avg7d] = await Promise.all([
+                db.getAverageFRR(currency, 24),
+                db.getAverageFRR(currency, 168),
+            ]);
+
+            if (avg24h) strategy.updateHistoricalAvg(currency, '24h', avg24h);
+            if (avg7d) strategy.updateHistoricalAvg(currency, '7d', avg7d);
+        } catch (err) {
+            logger.error('manager', `更新全域歷史 FRR 均值 (${currency}) 失敗`, { error: err.message });
+        }
+    }
+}
+
+module.exports = {
+    startBot,
+    stopBot,
+    getBot,
+    autoResumeAll,
+    shutdownAll,
+};
