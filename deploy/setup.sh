@@ -77,13 +77,15 @@ install_docker
 
 # 3. 處理 Oracle Cloud 防火牆限制 (開通 Port 3000)
 configure_firewall() {
-  echo -e "${YELLOW}正在設定伺服器防火牆，開放 Port 3000...${NC}"
+  echo -e "${YELLOW}正在設定伺服器防火牆，開放 Port 80 與 443...${NC}"
   
   # 方法 A: Ubuntu 預設的 iptables (OCI Ubuntu 映像檔專屬痛點解決方案)
   if [ "$OS_TYPE" = "ubuntu" ] || [ "$OS_TYPE" = "debian" ]; then
     if command -v iptables &> /dev/null; then
       # 插入規則至 INPUT 第 6 行 (通常在 REJECT 之前)
-      iptables -I INPUT 6 -p tcp --dport 3000 -j ACCEPT || iptables -I INPUT -p tcp --dport 3000 -j ACCEPT
+      # 開放 80 (HTTP) 與 443 (HTTPS)
+      iptables -I INPUT 6 -p tcp --dport 80 -j ACCEPT || iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+      iptables -I INPUT 6 -p tcp --dport 443 -j ACCEPT || iptables -I INPUT -p tcp --dport 443 -j ACCEPT
       
       # 存檔以確保重開機後依然有效
       if command -v netfilter-persistent &> /dev/null; then
@@ -91,21 +93,23 @@ configure_firewall() {
       elif apt-get install -y netfilter-persistent iptables-persistent < /dev/null; then
         netfilter-persistent save
       fi
-      echo -e "${GREEN}已成功通過 iptables 開放 Port 3000。${NC}"
+      echo -e "${GREEN}已成功通過 iptables 開放 Port 80 與 443。${NC}"
     fi
     
     # 若有啟用 ufw，也一併放行
     if command -v ufw &> /dev/null && ufw status | grep -q "active"; then
-      ufw allow 3000/tcp
-      echo -e "${GREEN}已通過 ufw 開放 Port 3000。${NC}"
+      ufw allow 80/tcp
+      ufw allow 443/tcp
+      echo -e "${GREEN}已通過 ufw 開放 Port 80 與 443。${NC}"
     fi
 
   # 方法 B: Oracle Linux / Centos 的 firewalld
   elif [ "$OS_TYPE" = "ol" ] || [ "$OS_TYPE" = "rhel" ] || [ "$OS_TYPE" = "centos" ]; then
     if systemctl is-active --quiet firewalld; then
-      firewall-cmd --zone=public --add-port=3000/tcp --permanent
+      firewall-cmd --zone=public --add-port=80/tcp --permanent
+      firewall-cmd --zone=public --add-port=443/tcp --permanent
       firewall-cmd --reload
-      echo -e "${GREEN}已成功通過 firewalld 開放 Port 3000。${NC}"
+      echo -e "${GREEN}已成功通過 firewalld 開放 Port 80 與 443。${NC}"
     else
       echo -e "${YELLOW}firewalld 未啟用，跳過此防火牆設定。${NC}"
     fi
@@ -141,7 +145,7 @@ setup_env() {
     fi
   fi
 
-  echo -e "\n${YELLOW}請注意：您必須填入 Bitfinex API 金鑰與 Supabase 資料庫資訊才能讓機器人順利運作！${NC}"
+  echo -e "\n${YELLOW}請注意：您必須填入 Bitfinex API 金鑰、Supabase 資訊，以及用於 SSL 證書申請的域名和 Email 才能運作！${NC}"
   read -p "您是否要現在編輯 .env 檔案？ (y/n): " EDIT_NOW
   if [ "$EDIT_NOW" = "y" ] || [ "$EDIT_NOW" = "Y" ]; then
     if command -v nano &> /dev/null; then
@@ -160,17 +164,18 @@ setup_env
 
 # 5. 構建並啟動 Docker 容器
 start_container() {
-  echo -e "${YELLOW}正在透過 Docker Compose 構建並啟動 Lending Bot...${NC}"
+  echo -e "${YELLOW}正在透過 Docker Compose 構建並啟動 Lending Bot, Nginx 與 SSL 精靈...${NC}"
   
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
   cd "$SCRIPT_DIR"
   
-  docker compose up -d --build
+  docker compose -f docker-compose.prod.yml up -d --build
   
   echo -e "${GREEN}======================================================================${NC}"
-  echo -e "${GREEN}🎉 部署完成！機器人與 Dashboard 已成功在背景運行。${NC}"
-  echo -e "${GREEN}👉 存取網址：http://您的主機公網IP:3000${NC}"
-  echo -e "${GREEN}🔧 您可以執行 'docker compose logs -f' 來實時查看機器人日誌。${NC}"
+  echo -e "${GREEN}🎉 部署完成！機器人與 Nginx 安全反向代理已成功運行。${NC}"
+  echo -e "${GREEN}👉 安全存取網址：https://您的網域 (需已完成 DNS 解析)${NC}"
+  echo -e "${GREEN}👉 臨時 HTTP 網址：http://您的主機公網IP (SSL 證書申請中/或未配置網域時)${NC}"
+  echo -e "${GREEN}🔧 您可以執行 'docker compose -f docker-compose.prod.yml logs -f' 來查看實時日誌。${NC}"
   echo -e "${GREEN}======================================================================${NC}"
 }
 

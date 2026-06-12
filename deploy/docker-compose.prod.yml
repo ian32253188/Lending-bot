@@ -5,12 +5,65 @@ services:
     image: ghcr.io/ian32253188/lending-bot:latest
     container_name: bitfinex-lending-bot
     restart: unless-stopped
-    ports:
-      - "3000:3000"
+    # 移除 ports: - "3000:3000"，不再對公網直接暴露 3000 Port。
+    # Nginx-Proxy 會在 Docker 內部網路中直接與 3000 Port 通訊。
+    expose:
+      - "3000"
     env_file:
       - ../.env
+    environment:
+      # 用於 Nginx-Proxy 的虛擬主機自動對接與 SSL 證書自動申請
+      - VIRTUAL_HOST=${DOMAIN_NAME}
+      - VIRTUAL_PORT=3000
+      - LETSENCRYPT_HOST=${DOMAIN_NAME}
+      - LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
+
+  nginx-proxy:
+    image: nginxproxy/nginx-proxy
+    container_name: nginx-proxy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # 如果存取沒有匹配 Domain Name（例如直接使用 IP 存取），預設轉發至 lending-bot 容器
+      - DEFAULT_HOST=bitfinex-lending-bot
+    volumes:
+      - certs:/etc/nginx/certs:ro
+      - vhost:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  acme-companion:
+    image: nginxproxy/acme-companion
+    container_name: nginx-proxy-acme
+    restart: always
+    environment:
+      - DEFAULT_EMAIL=${LETSENCRYPT_EMAIL}
+    volumes:
+      - certs:/etc/nginx/certs:rw
+      - vhost:/etc/nginx/vhost.d:rw
+      - html:/usr/share/nginx/html:rw
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - nginx-proxy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  certs:
+  vhost:
+  html:
