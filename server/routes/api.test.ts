@@ -1,0 +1,121 @@
+import { describe, it, expect, vi } from 'vitest';
+import request from 'supertest';
+
+// 1. 定義 Mock 放貸引擎
+const mockEngine = {
+  running: false,
+  paused: false,
+  start: vi.fn().mockResolvedValue(null),
+  stop: vi.fn().mockResolvedValue(null),
+  getStatus: () => ({
+    running: false,
+    connected: false
+  })
+};
+
+// 2. 利用 Node.js require.cache 全域劫持 CommonJS 模組
+const lendingPath = require.resolve('../services/engine/lending');
+const telegramPath = require.resolve('../services/telegram');
+const databasePath = require.resolve('../services/database');
+const managerPath = require.resolve('../services/engine/manager');
+
+const mockSupabase = {
+  auth: {
+    getUser: vi.fn().mockImplementation((token) => {
+      if (token === 'valid-test-token') {
+        return Promise.resolve({ data: { user: { id: 'test-user-id' } }, error: null });
+      }
+      return Promise.resolve({ data: { user: null }, error: new Error('Invalid token') });
+    })
+  }
+};
+
+require.cache[databasePath] = {
+  id: databasePath,
+  filename: databasePath,
+  loaded: true,
+  exports: {
+    getSupabase: () => mockSupabase,
+    initDatabase: vi.fn()
+  }
+} as any;
+
+require.cache[managerPath] = {
+  id: managerPath,
+  filename: managerPath,
+  loaded: true,
+  exports: {
+    getBot: vi.fn().mockReturnValue(mockEngine),
+    startBot: vi.fn().mockResolvedValue(mockEngine),
+    stopBot: vi.fn().mockResolvedValue(null)
+  }
+} as any;
+
+require.cache[lendingPath] = {
+  id: lendingPath,
+  filename: lendingPath,
+  loaded: true,
+  exports: {
+    getLendingEngine: () => mockEngine
+  }
+} as any;
+
+require.cache[telegramPath] = {
+  id: telegramPath,
+  filename: telegramPath,
+  loaded: true,
+  exports: {
+    initTelegram: vi.fn(),
+    getTelegramBot: vi.fn()
+  }
+} as any;
+
+// 3. 載入 App 路由
+const { app } = require('../index');
+
+describe('API & Endpoint 整合測試 (supertest)', () => {
+  
+  it('GET /api/health 應能成功取得健康狀態 JSON 且不需驗證', async () => {
+    const res = await request(app)
+      .get('/api/health')
+      .expect(200);
+
+    expect(res.body.status).toBe('ok');
+    expect(res.body.running).toBe(false);
+    expect(res.body.connected).toBe(false);
+  });
+
+  it('GET /metrics 應能輸出符合 Prometheus Exposition 格式之指標', async () => {
+    const res = await request(app)
+      .get('/metrics')
+      .expect(200);
+
+    // 驗證是否回傳文字格式指標
+    expect(res.text).toContain('lending_bot_balance_usd');
+    expect(res.text).toContain('lending_bot_active_loans_count');
+    expect(res.headers['content-type']).toContain('text/plain');
+  });
+
+  it('POST /api/lending/engine/start 在無 Token 時應回傳 401 Unauthorized', async () => {
+    await request(app)
+      .post('/api/lending/engine/start')
+      .expect(401);
+  });
+
+  it('POST /api/lending/engine/start 在 Token 無效時應回傳 401 Unauthorized', async () => {
+    await request(app)
+      .post('/api/lending/engine/start')
+      .set('Authorization', 'Bearer invalid-token')
+      .expect(401);
+  });
+
+  it('POST /api/lending/engine/start 在 Token 正確時應能成功執行啟動指令', async () => {
+    const res = await request(app)
+      .post('/api/lending/engine/start')
+      .set('Authorization', 'Bearer valid-test-token')
+      .expect(200);
+
+    expect(res.body.message).toContain('放貸機器人已啟動');
+  });
+
+});
