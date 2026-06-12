@@ -3,10 +3,8 @@ services:
     image: ghcr.io/ian32253188/lending-bot:latest
     container_name: bitfinex-lending-bot
     restart: unless-stopped
-    # 移除 ports: - "3000:3000"，不再對公網直接暴露 3000 Port。
-    # Nginx-Proxy 會在 Docker 內部網路中直接與 3000 Port 通訊。
-    expose:
-      - "3000"
+    ports:
+      - "3000:3000"
     env_file:
       - ../.env
     environment:
