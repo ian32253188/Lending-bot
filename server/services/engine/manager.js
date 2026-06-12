@@ -4,9 +4,11 @@ const rest = require('../bitfinex/rest');
 const { getBitfinexPublicWS } = require('../bitfinex/ws');
 const { getStrategyEngine } = require('./strategy');
 const { LendingBot } = require('./lending');
+const { decryptWithFallback } = require('../../utils/crypto');
 
 // 在記憶體中維護所有活躍的使用者機器人實例
 const activeRunners = new Map();
+const activeStarting = new Set(); // 并发启动保护
 let globalRateCollectorTimer = null;
 let globalHistoricalFRRTimer = null;
 
@@ -14,53 +16,65 @@ let globalHistoricalFRRTimer = null;
  * 啟動特定使用者的放貸機器人
  */
 async function startBot(userId) {
+    if (activeStarting.has(userId)) {
+        logger.info('manager', `使用者 ${userId} 的放貸機器人啟動中，跳過重複請求`);
+        return;
+    }
     if (activeRunners.has(userId)) {
         logger.warn('manager', `使用者 ${userId} 的放貸機器人已在運行中，跳過啟動`);
         return activeRunners.get(userId);
     }
 
-    // 1. 從資料庫讀取該用戶的 API 金鑰與設定
-    const userSettings = await db.getUserSettings(userId);
-    if (!userSettings) {
-        throw new Error('找不到該用戶的放貸設定，請先配置 API 金鑰');
+    activeStarting.add(userId);
+    try {
+        // 1. 從資料庫讀取該用戶的 API 金鑰與設定
+        const userSettings = await db.getUserSettings(userId);
+        if (!userSettings) {
+            throw new Error('找不到該用戶的放貸設定，請先配置 API 金鑰');
+        }
+
+        const { bitfinex_api_key, bitfinex_api_secret, status, ...settings } = userSettings;
+        if (!bitfinex_api_key || !bitfinex_api_secret) {
+            throw new Error('API 金鑰未完整設定，無法啟動機器人');
+        }
+
+        const decryptedKey = decryptWithFallback(bitfinex_api_key);
+        const decryptedSecret = decryptWithFallback(bitfinex_api_secret);
+
+        const credentials = {
+            apiKey: decryptedKey,
+            apiSecret: decryptedSecret,
+        };
+
+        // 整合用戶設定
+        const botSettings = {
+            compoundingEnabled: settings.compounding_enabled !== false,
+            autoTransferEnabled: settings.auto_transfer_enabled || false,
+            autoTransferThreshold: settings.auto_transfer_threshold || 500,
+            minOfferAmount: settings.min_offer_amount || 150,
+            currencies: settings.lending_currencies || ['USD', 'USDT'],
+            strategyConfig: settings.strategy_config || { mode: 'simplified' },
+        };
+
+        // 2. 實例化並啟動機器人
+        const bot = new LendingBot(userId, credentials, botSettings);
+        await bot.start();
+
+        // 3. 快取至記憶體，並更新資料庫狀態為 running
+        activeRunners.set(userId, bot);
+        await db.saveUserSettings(userId, { status: 'running' });
+
+        // 4. 初始化用戶的 Telegram Bot (若有設定)
+        if (settings.telegram_bot_token && settings.telegram_chat_id) {
+            const { initUserTelegram } = require('../telegram');
+            initUserTelegram(userId, settings.telegram_bot_token, settings.telegram_chat_id);
+        }
+
+        logger.info('manager', `✅ 已為使用者 ${userId} 建立並啟動獨立的放貸實例`);
+        return bot;
+    } finally {
+        activeStarting.delete(userId);
     }
-
-    const { bitfinex_api_key, bitfinex_api_secret, status, ...settings } = userSettings;
-    if (!bitfinex_api_key || !bitfinex_api_secret) {
-        throw new Error('API 金鑰未完整設定，無法啟動機器人');
-    }
-
-    const credentials = {
-        apiKey: bitfinex_api_key,
-        apiSecret: bitfinex_api_secret,
-    };
-
-    // 整合用戶設定
-    const botSettings = {
-        compoundingEnabled: settings.compounding_enabled !== false,
-        autoTransferEnabled: settings.auto_transfer_enabled || false,
-        autoTransferThreshold: settings.auto_transfer_threshold || 500,
-        minOfferAmount: settings.min_offer_amount || 150,
-        currencies: settings.lending_currencies || ['USD', 'USDT'],
-        strategyConfig: settings.strategy_config || { mode: 'simplified' },
-    };
-
-    // 2. 實例化並啟動機器人
-    const bot = new LendingBot(userId, credentials, botSettings);
-    await bot.start();
-
-    // 3. 快取至記憶體，並更新資料庫狀態為 running
-    activeRunners.set(userId, bot);
-    await db.saveUserSettings(userId, { status: 'running' });
-
-    // 4. 初始化用戶的 Telegram Bot (若有設定)
-    if (settings.telegram_bot_token && settings.telegram_chat_id) {
-        const { initUserTelegram } = require('../telegram');
-        initUserTelegram(userId, settings.telegram_bot_token, settings.telegram_chat_id);
-    }
-
-    logger.info('manager', `✅ 已為使用者 ${userId} 建立並啟動獨立的放貸實例`);
-    return bot;
 }
 
 /**
@@ -135,7 +149,8 @@ async function shutdownAll() {
     
     stopGlobalRateCollector();
 
-    for (const userId of activeRunners.keys()) {
+    const userIds = [...activeRunners.keys()];
+    for (const userId of userIds) {
         try {
             await stopBot(userId);
         } catch (err) {
@@ -194,7 +209,8 @@ async function collectGlobalRateData() {
             const marketData = publicWs.getMarketData(currency);
             if (!marketData || !marketData.lastUpdate) continue;
 
-            const available = 10000; // 全域計算使用名義虛擬餘額
+            // Note: We use a fixed nominal balance of $10,000 for global market metrics collection since this doesn't execute actual trades.
+            const available = 10000; 
             const optimalResult = strategy.calculateOptimalRate(marketData, currency, available);
             
             // 1. 儲存公開市場歷史快照

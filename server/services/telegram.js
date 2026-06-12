@@ -306,9 +306,10 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db) {
         const dsRatio = diag.demandSupplyRatio ? diag.demandSupplyRatio.toFixed(2) : '—';
         const avg7d = strategy.historicalFRR[cur]?.['7d'] ? `${(strategy.historicalFRR[cur]['7d'] * 100).toFixed(4)}%` : '—';
         const avg30d = strategy.historicalFRR[cur]?.['30d'] ? `${(strategy.historicalFRR[cur]['30d'] * 100).toFixed(4)}%` : '—';
+        const frrAnnualized = md.frr ? `${(md.frr * 365 * 100).toFixed(2)}%` : '—';
 
         msg += `  <b>${cur} 市場特徵</b>:\n`;
-        msg += `  ├─ 當前市場 FRR: ${currentFRR} (年化 ${(md.frr * 365 * 100).toFixed(2)}%)\n`;
+        msg += `  ├─ 當前市場 FRR: ${currentFRR} (年化 ${frrAnnualized})\n`;
         msg += `  ├─ 瓦爾拉斯出清點: ${equilibrium}\n`;
         msg += `  ├─ 真實供需比: ${dsRatio} (需求/供應)\n`;
 
@@ -461,16 +462,13 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
         const chatId = query.message.chat.id;
         const messageId = query.message.message_id;
 
-        const db = require('./database');
-        const { getBot, startBot, stopBot } = require('./engine/manager');
+        const { getBot } = require('./engine/manager');
         
-        const supabase = db.getSupabase();
-        const { data: settings } = await supabase.from('user_bot_settings').select('*').limit(1);
-        const dbSettings = settings?.[0] || null;
+        const dbSettings = await getSettingsByChatId(chatId);
         const userId = dbSettings?.user_id || null;
         
         if (!userId) {
-            await bot.answerCallbackQuery(query.id, { text: '❌ 找不到任何使用者帳戶！', show_alert: true });
+            await bot.answerCallbackQuery(query.id, { text: '❌ 找不到您的使用者帳戶設定！', show_alert: true });
             return;
         }
 
@@ -600,15 +598,36 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
 
 // ============== 管理員控制面板輔助函數 ==============
 
+async function getSettingsByChatId(chatId) {
+    try {
+        const db = require('./database');
+        const supabase = db.getSupabase();
+        if (!supabase) return null;
+        
+        // 優先使用 telegram_chat_id 進行精確匹配
+        const { data } = await supabase.from('user_bot_settings')
+            .select('*')
+            .or(`telegram_chat_id.eq.${chatId},telegram_chat_id.eq.${chatId.toString()}`)
+            .limit(1);
+            
+        if (data && data.length > 0) {
+            return data[0];
+        }
+        
+        // 如果找不到匹配的 chat_id，則回退到獲取資料庫中的第一個帳戶設定（保證向下相容單用戶）
+        const { data: firstSettings } = await supabase.from('user_bot_settings').select('*').limit(1);
+        return firstSettings?.[0] || null;
+    } catch {
+        return null;
+    }
+}
+
 async function sendAdminControlPanel(bot, chatId) {
     if (!bot) return;
     try {
-        const db = require('./database');
         const { getBot } = require('./engine/manager');
         
-        const supabase = db.getSupabase();
-        const { data: settings } = await supabase.from('user_bot_settings').select('*').limit(1);
-        const dbSettings = settings?.[0] || null;
+        const dbSettings = await getSettingsByChatId(chatId);
         const userId = dbSettings?.user_id || null;
         
         const engine = userId ? getBot(userId) : null;
@@ -629,12 +648,9 @@ async function sendAdminControlPanel(bot, chatId) {
 async function updateAdminControlPanel(bot, chatId, messageId) {
     if (!bot) return;
     try {
-        const db = require('./database');
         const { getBot } = require('./engine/manager');
         
-        const supabase = db.getSupabase();
-        const { data: settings } = await supabase.from('user_bot_settings').select('*').limit(1);
-        const dbSettings = settings?.[0] || null;
+        const dbSettings = await getSettingsByChatId(chatId);
         const userId = dbSettings?.user_id || null;
         
         const engine = userId ? getBot(userId) : null;
@@ -721,14 +737,12 @@ function getControlPanelKeyboard(engine, dbSettings = null) {
 async function sendAdminDetailedDiagnostics(bot, chatId) {
     if (!bot) return;
     try {
-        const db = require('./database');
         const { getBot } = require('./engine/manager');
         const { getBitfinexPublicWS } = require('./bitfinex/ws');
         
         const publicWs = getBitfinexPublicWS();
-        const supabase = db.getSupabase();
-        const { data: settings } = await supabase.from('user_bot_settings').select('user_id').limit(1);
-        const userId = settings?.[0]?.user_id || null;
+        const dbSettings = await getSettingsByChatId(chatId);
+        const userId = dbSettings?.user_id || null;
         
         const engine = userId ? getBot(userId) : null;
         if (!engine) {
@@ -755,13 +769,14 @@ async function sendAdminDetailedDiagnostics(bot, chatId) {
             const equilibrium = diag.equilibriumRate ? `${(diag.equilibriumRate * 100).toFixed(4)}%` : '—';
             const finalRate = diag.finalRate ? `${(diag.finalRate * 100).toFixed(4)}%` : '—';
             const dsRatio = diag.demandSupplyRatio ? diag.demandSupplyRatio.toFixed(2) : '—';
+            const frrAnnualized = diag.frr ? `${(diag.frr * 365 * 100).toFixed(2)}%` : '—';
 
             diagText += `🪙 <b>${cur} 自適應指標</b>:\n`;
-            diagText += `  ├─ 當前 FRR: <code>${frr}</code> (年化 ${(diag.frr * 365 * 100).toFixed(2)}%)\n`;
+            diagText += `  ├─ 當前 FRR: <code>${frr}</code> (年化 ${frrAnnualized})\n`;
             diagText += `  ├─ 瓦爾拉斯出清: <code>${equilibrium}</code>\n`;
             diagText += `  ├─ 最終掛單基準: <b>${finalRate}</b>\n`;
             diagText += `  ├─ 真實供需比: <code>${dsRatio}</code>\n`;
-            diagText += `  ├─ 巨牆偵測: ${diag.wallDetected ? `⚠️ 偵測到阻力牆 (${(diag.wallRate * 100).toFixed(4)}%/天)，已觸發避讓前置掛單` : '🟢 通暢'}\n`;
+            diagText += `  ├─ 巨牆偵測: ${diag.wallDetected ? `⚠️ 偵測到阻力牆 (${((diag.wallRate || 0) * 100).toFixed(4)}%/天)，已觸發避讓前置掛單` : '🟢 通暢'}\n`;
 
             if (opt.orders && opt.orders.length > 0) {
                 diagText += `  └─ <b>當前 3D Grid 拆單計劃</b>:\n`;

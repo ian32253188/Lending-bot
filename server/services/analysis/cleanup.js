@@ -1,6 +1,8 @@
 const db = require('../database');
 const logger = require('../../utils/logger');
 
+let cleanupTimer = null;
+
 /**
  * 啟動每日自動清理排程
  */
@@ -41,7 +43,7 @@ function startDailyCleanup() {
         const delay = nextRun - now;
         logger.info('cleanup', `下一次日誌清理排程將在 ${Math.round(delay / 1000 / 60)} 分鐘後 (即凌晨 3:00) 執行`);
         
-        setTimeout(() => {
+        cleanupTimer = setTimeout(() => {
             try {
                 runCleanup();
             } catch (err) {
@@ -54,4 +56,15 @@ function startDailyCleanup() {
     scheduleNextRun();
 }
 
-module.exports = { startDailyCleanup };
+/**
+ * 停止每日自動清理排程
+ */
+function stopDailyCleanup() {
+    if (cleanupTimer) {
+        clearTimeout(cleanupTimer);
+        cleanupTimer = null;
+        logger.info('cleanup', '⏹️ 已停止每日資料庫日誌清理排程');
+    }
+}
+
+module.exports = { startDailyCleanup, stopDailyCleanup };

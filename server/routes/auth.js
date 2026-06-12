@@ -30,7 +30,15 @@ router.get('/verify', async (req, res) => {
         if (error || !user) {
             return res.status(401).json({ valid: false });
         }
-        res.json({ valid: true, user });
+        res.json({ 
+            valid: true, 
+            user: {
+                id: user.id,
+                email: user.email,
+                role: user.role,
+                created_at: user.created_at
+            }
+        });
     } catch {
         res.status(401).json({ valid: false });
     }

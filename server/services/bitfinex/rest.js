@@ -22,6 +22,13 @@ function fromBfxSymbol(bfxSymbol) {
     return config.lending.symbolToCurrency?.[sym] || sym;
 }
 
+let lastNonce = 0;
+function getNextNonce() {
+    const now = Date.now() * 1000;
+    lastNonce = Math.max(now, lastNonce + 1);
+    return lastNonce.toString();
+}
+
 /**
  * 建立已認證的 API 請求
  */
@@ -33,7 +40,7 @@ function createAuthHeaders(path, body = {}, credentials = null) {
         throw new Error('Bitfinex API key or secret is not configured.');
     }
 
-    const nonce = (Date.now() * 1000).toString();
+    const nonce = getNextNonce();
     const bodyStr = JSON.stringify(body);
     const signature = `/api/v2${path}${nonce}${bodyStr}`;
     const sig = crypto
@@ -42,10 +49,13 @@ function createAuthHeaders(path, body = {}, credentials = null) {
         .digest('hex');
 
     return {
-        'Content-Type': 'application/json',
-        'bfx-nonce': nonce,
-        'bfx-apikey': apiKey,
-        'bfx-signature': sig,
+        headers: {
+            'Content-Type': 'application/json',
+            'bfx-nonce': nonce,
+            'bfx-apikey': apiKey,
+            'bfx-signature': sig,
+        },
+        bodyStr,
     };
 }
 
@@ -56,11 +66,11 @@ async function authRequest(path, body = {}, credentials = null) {
     const metrics = require('../metrics');
     const start = Date.now();
     try {
-        const headers = createAuthHeaders(path, body, credentials);
+        const { headers, bodyStr } = createAuthHeaders(path, body, credentials);
         const response = await fetch(`${BASE_URL}${path}`, {
             method: 'POST',
             headers,
-            body: JSON.stringify(body),
+            body: bodyStr,
         });
 
         const duration = (Date.now() - start) / 1000;

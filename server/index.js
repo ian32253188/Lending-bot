@@ -32,6 +32,33 @@ app.use('/api/lending', authMiddleware, lendingRoutes);
 
 // Prometheus 監控指標
 app.get('/metrics', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    const expectedUser = process.env.METRICS_USERNAME;
+    const expectedPass = process.env.METRICS_PASSWORD;
+
+    // 如果配置了 Basic Auth 環境變數，強制作出密碼校驗
+    if (expectedUser && expectedPass) {
+        if (!authHeader || !authHeader.startsWith('Basic ')) {
+            res.setHeader('WWW-Authenticate', 'Basic realm="Metrics"');
+            return res.status(401).send('Authentication required');
+        }
+        
+        const credentials = Buffer.from(authHeader.split(' ')[1], 'base64').toString('ascii').split(':');
+        const username = credentials[0];
+        const password = credentials[1];
+
+        if (username !== expectedUser || password !== expectedPass) {
+            return res.status(403).send('Forbidden');
+        }
+    } else {
+        // 預設防禦：無配置密碼時拒絕任何外部 IP 存取
+        const ip = req.ip || req.socket.remoteAddress;
+        const isLocal = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.includes('localhost');
+        if (!isLocal) {
+            return res.status(403).send('Forbidden: External access to /metrics is disabled by default.');
+        }
+    }
+
     try {
         res.set('Content-Type', metrics.registry.contentType);
         res.end(await metrics.registry.metrics());
@@ -132,9 +159,8 @@ wss.on('connection', (ws, req) => {
                 return;
             }
 
-            // 處理其他指令
             switch (msg.type) {
-                case 'getDetailed':
+                case 'getDetailed': {
                     const { getBot } = require('./services/engine/manager');
                     const engine = getBot(userId);
                     if (engine) {
@@ -154,6 +180,7 @@ wss.on('connection', (ws, req) => {
                         }));
                     }
                     break;
+                }
             }
         } catch (err) {
             logger.error('ws-server', '處理 WebSocket 訊息錯誤', { error: err.message });
@@ -201,6 +228,10 @@ async function startup() {
 process.on('SIGTERM', async () => {
     logger.info('server', '收到 SIGTERM，正在優雅關閉所有放貸機器人...');
     const { shutdownAll } = require('./services/engine/manager');
+    const { stopDailyCleanup } = require('./services/analysis/cleanup');
+    try {
+        stopDailyCleanup();
+    } catch (err) {}
     await shutdownAll();
     server.close(() => process.exit(0));
 });
@@ -208,6 +239,10 @@ process.on('SIGTERM', async () => {
 process.on('SIGINT', async () => {
     logger.info('server', '收到 SIGINT，正在優雅關閉所有放貸機器人...');
     const { shutdownAll } = require('./services/engine/manager');
+    const { stopDailyCleanup } = require('./services/analysis/cleanup');
+    try {
+        stopDailyCleanup();
+    } catch (err) {}
     await shutdownAll();
     server.close(() => process.exit(0));
 });

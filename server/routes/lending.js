@@ -35,6 +35,7 @@ router.post('/settings', async (req, res) => {
     try {
         const userId = req.user.id;
         const newSettings = req.body;
+        const { encrypt } = require('../utils/crypto');
         
         // 如果使用者沒有輸入新金鑰（傳入遮蔽的值），則保留原本的舊金鑰
         const existingSettings = await db.getUserSettings(userId);
@@ -48,6 +49,14 @@ router.post('/settings', async (req, res) => {
             if (newSettings.telegram_bot_token && newSettings.telegram_bot_token.includes('...')) {
                 newSettings.telegram_bot_token = existingSettings.telegram_bot_token;
             }
+        }
+
+        // 如果是新輸入的金鑰，進行加密存儲
+        if (newSettings.bitfinex_api_key && !newSettings.bitfinex_api_key.includes('...')) {
+            newSettings.bitfinex_api_key = encrypt(newSettings.bitfinex_api_key);
+        }
+        if (newSettings.bitfinex_api_secret && newSettings.bitfinex_api_secret !== '******') {
+            newSettings.bitfinex_api_secret = encrypt(newSettings.bitfinex_api_secret);
         }
 
         await db.saveUserSettings(userId, newSettings);
@@ -160,22 +169,42 @@ router.post('/offer', async (req, res) => {
         const userId = req.user.id;
         const { currency, amount, rate, period } = req.body;
 
-        if (!currency || !amount || !rate || !period) {
+        if (!currency || amount === undefined || rate === undefined || period === undefined) {
             return res.status(400).json({ error: '缺少必要參數: currency, amount, rate, period' });
         }
 
-        if (amount < 150) {
-            return res.status(400).json({ error: '最低掛單金額為 150' });
+        if (!['USD', 'USDT'].includes(currency)) {
+            return res.status(400).json({ error: '不支援的幣種，僅支援 USD 或 USDT' });
+        }
+
+        const parsedAmount = parseFloat(amount);
+        if (isNaN(parsedAmount) || parsedAmount < 150) {
+            return res.status(400).json({ error: '最低掛單金額為 150 且必須為數字' });
+        }
+
+        const parsedRate = parseFloat(rate);
+        if (isNaN(parsedRate) || parsedRate < 0 || parsedRate > 0.05) {
+            return res.status(400).json({ error: '利率必須在 0 到 5% (0.05) 之間且必須為數字' });
+        }
+
+        const parsedPeriod = parseInt(period);
+        if (isNaN(parsedPeriod) || parsedPeriod < 2 || parsedPeriod > 120) {
+            return res.status(400).json({ error: '天數期限必須在 2 到 120 天之間且必須為整數' });
         }
 
         const userSettings = await db.getUserSettings(userId);
         if (!userSettings || !userSettings.bitfinex_api_key || !userSettings.bitfinex_api_secret) {
             return res.status(400).json({ error: '請先在設定中配置交易所 API 金鑰' });
         }
-        const credentials = { apiKey: userSettings.bitfinex_api_key, apiSecret: userSettings.bitfinex_api_secret };
+        
+        const { decryptWithFallback } = require('../utils/crypto');
+        const credentials = { 
+            apiKey: decryptWithFallback(userSettings.bitfinex_api_key), 
+            apiSecret: decryptWithFallback(userSettings.bitfinex_api_secret) 
+        };
 
-        const result = await rest.submitFundingOffer(currency, amount, rate, period, credentials);
-        logger.info('lending', `用戶 ${userId} 手動掛單: ${currency} ${amount} @ ${(rate * 100).toFixed(4)}%`);
+        const result = await rest.submitFundingOffer(currency, parsedAmount, parsedRate, parsedPeriod, credentials);
+        logger.info('lending', `用戶 ${userId} 手動掛單: ${currency} ${parsedAmount} @ ${(parsedRate * 100).toFixed(4)}%`);
         res.json({ message: '掛單已提交', result });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -187,12 +216,20 @@ router.delete('/offer/:offerId', async (req, res) => {
     try {
         const userId = req.user.id;
         const offerId = parseInt(req.params.offerId);
+        if (isNaN(offerId)) {
+            return res.status(400).json({ error: '無效的掛單 ID' });
+        }
 
         const userSettings = await db.getUserSettings(userId);
         if (!userSettings || !userSettings.bitfinex_api_key || !userSettings.bitfinex_api_secret) {
             return res.status(400).json({ error: '請先在設定中配置交易所 API 金鑰' });
         }
-        const credentials = { apiKey: userSettings.bitfinex_api_key, apiSecret: userSettings.bitfinex_api_secret };
+        
+        const { decryptWithFallback } = require('../utils/crypto');
+        const credentials = { 
+            apiKey: decryptWithFallback(userSettings.bitfinex_api_key), 
+            apiSecret: decryptWithFallback(userSettings.bitfinex_api_secret) 
+        };
 
         const result = await rest.cancelFundingOffer(offerId, credentials);
         logger.info('lending', `用戶 ${userId} 手動取消掛單: #${offerId}`);
@@ -208,11 +245,20 @@ router.delete('/offers/:currency', async (req, res) => {
         const userId = req.user.id;
         const { currency } = req.params;
 
+        if (!['USD', 'USDT'].includes(currency)) {
+            return res.status(400).json({ error: '不支援的幣種，僅支援 USD 或 USDT' });
+        }
+
         const userSettings = await db.getUserSettings(userId);
         if (!userSettings || !userSettings.bitfinex_api_key || !userSettings.bitfinex_api_secret) {
             return res.status(400).json({ error: '請先在設定中配置交易所 API 金鑰' });
         }
-        const credentials = { apiKey: userSettings.bitfinex_api_key, apiSecret: userSettings.bitfinex_api_secret };
+        
+        const { decryptWithFallback } = require('../utils/crypto');
+        const credentials = { 
+            apiKey: decryptWithFallback(userSettings.bitfinex_api_key), 
+            apiSecret: decryptWithFallback(userSettings.bitfinex_api_secret) 
+        };
 
         const result = await rest.cancelAllFundingOffers(currency, credentials);
         logger.info('lending', `用戶 ${userId} 手動取消所有 ${currency} 掛單`);
@@ -227,19 +273,41 @@ router.post('/transfer', async (req, res) => {
     try {
         const userId = req.user.id;
         const { from, to, currency, amount } = req.body;
-        if (!from || !to || !currency || !amount) {
+        if (!from || !to || !currency || amount === undefined) {
             return res.status(400).json({ error: '缺少必要參數: from, to, currency, amount' });
+        }
+
+        const allowedWallets = ['exchange', 'margin', 'funding'];
+        if (!allowedWallets.includes(from) || !allowedWallets.includes(to)) {
+            return res.status(400).json({ error: '無效的錢包類型，僅限 exchange, margin 或 funding' });
+        }
+        if (from === to) {
+            return res.status(400).json({ error: '來源錢包與目標錢包不能相同' });
+        }
+
+        const parsedAmount = parseFloat(amount);
+        if (isNaN(parsedAmount) || parsedAmount <= 0) {
+            return res.status(400).json({ error: '金額必須為大於 0 的數字' });
+        }
+
+        if (!['USD', 'USDT'].includes(currency)) {
+            return res.status(400).json({ error: '不支援的幣種，僅支援 USD 或 USDT' });
         }
 
         const userSettings = await db.getUserSettings(userId);
         if (!userSettings || !userSettings.bitfinex_api_key || !userSettings.bitfinex_api_secret) {
             return res.status(400).json({ error: '請先在設定中配置交易所 API 金鑰' });
         }
-        const credentials = { apiKey: userSettings.bitfinex_api_key, apiSecret: userSettings.bitfinex_api_secret };
+        
+        const { decryptWithFallback } = require('../utils/crypto');
+        const credentials = { 
+            apiKey: decryptWithFallback(userSettings.bitfinex_api_key), 
+            apiSecret: decryptWithFallback(userSettings.bitfinex_api_secret) 
+        };
 
-        const result = await rest.transfer(from, to, currency, amount, credentials);
-        logger.info('lending', `用戶 ${userId} 手動轉帳: ${amount} ${currency} (${from} → ${to})`);
-        db.saveLog('info', 'lending', `手動轉帳 ${amount} ${currency} (${from} → ${to})`, null, userId);
+        const result = await rest.transfer(from, to, currency, parsedAmount, credentials);
+        logger.info('lending', `用戶 ${userId} 手動轉帳: ${parsedAmount} ${currency} (${from} → ${to})`);
+        await db.saveLog('info', 'lending', `手動轉帳 ${parsedAmount} ${currency} (${from} → ${to})`, null, userId);
         res.json({ message: '轉帳成功', result });
     } catch (err) {
         res.status(500).json({ error: err.message });

@@ -40,6 +40,7 @@ class LendingBot {
         // 事件防抖與緩衝狀態
         this._pendingDecisions = {};
         this._tradeBuffer = {};
+        this._submitTimers = [];
 
         // 初始化幣種狀態
         for (const cur of this.currencies) {
@@ -113,6 +114,20 @@ class LendingBot {
         }
         this._pendingDecisions = {};
 
+        // 清除掛單 submit delay timers
+        for (const t of this._submitTimers) {
+            clearTimeout(t);
+        }
+        this._submitTimers = [];
+
+        // 清除交易通知緩衝 timer
+        for (const buffer of Object.values(this._tradeBuffer)) {
+            if (buffer.timerId) {
+                clearTimeout(buffer.timerId);
+            }
+        }
+        this._tradeBuffer = {};
+
         // 斷開私有 WS
         if (this.bfxWs) {
             this.bfxWs.disconnect();
@@ -128,6 +143,9 @@ class LendingBot {
         this.pauseReason = reason;
         logger.info('engine', `⏸️ 放貸已暫停: ${reason}`, this.userId);
         db.saveLog('info', 'engine', `放貸已暫停: ${reason}`, null, this.userId);
+        db.saveUserSettings(this.userId, { status: 'paused', pause_reason: reason }).catch(err => {
+            logger.error('engine', '儲存暫停狀態失敗', { error: err.message, userId: this.userId });
+        });
     }
 
     resume() {
@@ -135,6 +153,9 @@ class LendingBot {
         this.pauseReason = '';
         logger.info('engine', '▶️ 放貸已恢復', this.userId);
         db.saveLog('info', 'engine', '放貸已恢復', null, this.userId);
+        db.saveUserSettings(this.userId, { status: 'running', pause_reason: '' }).catch(err => {
+            logger.error('engine', '儲存恢復狀態失敗', { error: err.message, userId: this.userId });
+        });
     }
 
     /**
@@ -281,7 +302,7 @@ class LendingBot {
         }
 
         const available = this.state.wallets[currency]?.available || 0;
-        const nominalAvailable = Math.max(available, this.minOfferAmount);
+        const nominalAvailable = available;
 
         // 核心：使用使用者個人的策略設定 (strategyConfig) 計算最佳掛單方案
         const optimalResult = strategy.calculateOptimalRate(marketData, currency, nominalAvailable, this.strategyConfig);
@@ -317,36 +338,42 @@ class LendingBot {
             if (order.amount < this.minOfferAmount) continue;
 
             const submitDelay = Math.random() * 500;
-            setTimeout(async () => {
-                if (!this.running || this.paused) return;
-                try {
-                    await rest.submitFundingOffer(
-                        currency,
-                        order.amount,
-                        order.rate,
-                        order.period,
-                        this.credentials
-                    );
-                    this.state.stats.offersPlaced++;
-                    logger.info('engine', `📝 掛單 ${currency} $${order.amount.toFixed(0)} @ ${(order.rate * 100).toFixed(4)}%/天，期限 ${order.period} 天`, this.userId);
-                } catch (err) {
-                    const isBalanceError = err.message.includes('not enough') || err.message.includes('balance');
-                    const errorMsg = `❌ 掛單失敗 ${currency}: $${order.amount.toFixed(0)}，錯誤: ${err.message}`;
-                    logger.error('engine', errorMsg, { userId: this.userId });
-                    
-                    if (!isBalanceError) {
-                        try {
-                            const { sendAlert } = require('../telegram');
-                            // 若用戶有自訂 Telegram 設定，才發送警報
-                            if (this.bfxWs && this.bfxWs.credentials) {
-                                sendAlert('🚨 掛單失敗', errorMsg, this.userId);
-                            }
-                        } catch (e) {
-                            logger.error('engine', '發送掛單失敗警報出錯', { error: e.message });
+            if (submitDelay > 0) {
+                await new Promise(resolve => {
+                    const t = setTimeout(resolve, submitDelay);
+                    this._submitTimers.push(t);
+                });
+            }
+            
+            if (!this.running || this.paused) return;
+
+            try {
+                await rest.submitFundingOffer(
+                    currency,
+                    order.amount,
+                    order.rate,
+                    order.period,
+                    this.credentials
+                );
+                this.state.stats.offersPlaced++;
+                logger.info('engine', `📝 掛單 ${currency} $${order.amount.toFixed(0)} @ ${(order.rate * 100).toFixed(4)}%/天，期限 ${order.period} 天`, this.userId);
+            } catch (err) {
+                const isBalanceError = err.message.includes('not enough') || err.message.includes('balance');
+                const errorMsg = `❌ 掛單失敗 ${currency}: $${order.amount.toFixed(0)}，錯誤: ${err.message}`;
+                logger.error('engine', errorMsg, { userId: this.userId });
+                
+                if (!isBalanceError) {
+                    try {
+                        const { sendAlert } = require('../telegram');
+                        // 若用戶有自訂 Telegram 設定，才發送警報
+                        if (this.bfxWs && this.bfxWs.credentials) {
+                            sendAlert('🚨 掛單失敗', errorMsg, this.userId);
                         }
+                    } catch (e) {
+                        logger.error('engine', '發送掛單失敗警報出錯', { error: e.message });
                     }
                 }
-            }, submitDelay);
+            }
         }
     }
 
@@ -378,18 +405,27 @@ class LendingBot {
         // 活躍掛單快照
         bfxWs.on('fundingOfferSnapshot', (data) => {
             if (Array.isArray(data)) {
+                // 先分組以清除對應幣種的快取
+                const currenciesInSnapshot = new Set();
+                const parsedOffers = [];
                 for (const o of data) {
                     const offer = rest.parseFundingOffer(o);
                     if (offer) {
-                        const cur = offer.symbol.replace('f', '');
-                        if (this.state.activeOffers[cur]) {
-                            const existing = this.state.activeOffers[cur].findIndex((x) => x.id === offer.id);
-                            if (existing >= 0) {
-                                this.state.activeOffers[cur][existing] = offer;
-                            } else {
-                                this.state.activeOffers[cur].push(offer);
-                            }
-                        }
+                        currenciesInSnapshot.add(offer.currency);
+                        parsedOffers.push(offer);
+                    }
+                }
+                // 清除 snapshot 中出現的幣種活躍掛單
+                for (const cur of currenciesInSnapshot) {
+                    if (this.state.activeOffers[cur]) {
+                        this.state.activeOffers[cur] = [];
+                    }
+                }
+                // 填充新資料
+                for (const offer of parsedOffers) {
+                    const cur = offer.currency;
+                    if (this.state.activeOffers[cur]) {
+                        this.state.activeOffers[cur].push(offer);
                     }
                 }
             }
@@ -399,7 +435,7 @@ class LendingBot {
         bfxWs.on('fundingOfferNew', (data) => {
             const offer = rest.parseFundingOffer(data);
             if (offer) {
-                const cur = offer.symbol.replace('f', '');
+                const cur = offer.currency;
                 if (this.state.activeOffers[cur]) {
                     this.state.activeOffers[cur].push(offer);
                     db.saveOffer({
@@ -414,7 +450,7 @@ class LendingBot {
         bfxWs.on('fundingOfferCancel', (data) => {
             const offer = rest.parseFundingOffer(data);
             if (offer) {
-                const cur = offer.symbol.replace('f', '');
+                const cur = offer.currency;
                 if (this.state.activeOffers[cur]) {
                     this.state.activeOffers[cur] = this.state.activeOffers[cur].filter((o) => o.id !== offer.id);
                     db.closeOffer(offer.id, this.userId);
@@ -425,13 +461,26 @@ class LendingBot {
         // 活躍貸款快照 (Credits)
         bfxWs.on('fundingCreditSnapshot', (data) => {
             if (Array.isArray(data)) {
+                const currenciesInSnapshot = new Set();
+                const parsedCredits = [];
                 for (const c of data) {
                     const credit = rest.parseFundingCredit(c);
                     if (credit) {
-                        const cur = credit.symbol.replace('f', '');
-                        if (this.state.activeCredits[cur]) {
-                            this.state.activeCredits[cur].push(credit);
-                        }
+                        currenciesInSnapshot.add(credit.currency);
+                        parsedCredits.push(credit);
+                    }
+                }
+                // 清除 snapshot 中出現的幣種活躍貸款
+                for (const cur of currenciesInSnapshot) {
+                    if (this.state.activeCredits[cur]) {
+                        this.state.activeCredits[cur] = [];
+                    }
+                }
+                // 填充新資料
+                for (const credit of parsedCredits) {
+                    const cur = credit.currency;
+                    if (this.state.activeCredits[cur]) {
+                        this.state.activeCredits[cur].push(credit);
                     }
                 }
             }
@@ -441,7 +490,7 @@ class LendingBot {
         bfxWs.on('fundingCreditNew', (data) => {
             const credit = rest.parseFundingCredit(data);
             if (credit) {
-                const cur = credit.symbol.replace('f', '');
+                const cur = credit.currency;
                 if (this.state.activeCredits[cur]) {
                     this.state.activeCredits[cur].push(credit);
                     db.saveLoan({
@@ -480,7 +529,7 @@ class LendingBot {
         bfxWs.on('fundingCreditClose', (data) => {
             const credit = rest.parseFundingCredit(data);
             if (credit) {
-                const cur = credit.symbol.replace('f', '');
+                const cur = credit.currency;
                 if (this.state.activeCredits[cur]) {
                     this.state.activeCredits[cur] = this.state.activeCredits[cur].filter((c) => c.id !== credit.id);
                     const rawInterest = Math.abs(credit.amount) * credit.rate * credit.period;
@@ -508,7 +557,7 @@ class LendingBot {
                 for (const l of data) {
                     const loan = rest.parseFundingCredit(l);
                     if (loan && loan.side === 1) {
-                        const cur = loan.symbol.replace('f', '');
+                        const cur = loan.currency;
                         if (this.state.activeCredits[cur]) {
                             if (!this.state.activeCredits[cur].some(x => x.id === loan.id)) {
                                 this.state.activeCredits[cur].push(loan);
@@ -522,7 +571,7 @@ class LendingBot {
         bfxWs.on('fundingLoanNew', (data) => {
             const loan = rest.parseFundingCredit(data);
             if (loan && loan.side === 1) {
-                const cur = loan.symbol.replace('f', '');
+                const cur = loan.currency;
                 if (this.state.activeCredits[cur]) {
                     if (!this.state.activeCredits[cur].some(x => x.id === loan.id)) {
                         this.state.activeCredits[cur].push(loan);
@@ -561,7 +610,7 @@ class LendingBot {
         bfxWs.on('fundingLoanClose', (data) => {
             const loan = rest.parseFundingCredit(data);
             if (loan && loan.side === 1) {
-                const cur = loan.symbol.replace('f', '');
+                const cur = loan.currency;
                 if (this.state.activeCredits[cur]) {
                     this.state.activeCredits[cur] = this.state.activeCredits[cur].filter((c) => c.id !== loan.id);
                     const rawInterest = Math.abs(loan.amount) * loan.rate * loan.period;

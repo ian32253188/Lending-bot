@@ -67,22 +67,29 @@ router.get('/rate-history/:currency', async (req, res) => {
 router.get('/earnings/stats', async (req, res) => {
     try {
         const userId = req.user.id;
-        const now = new Date();
+        
+        // 為了防範伺服器時區差異，採用亞洲/台北時區 (UTC+8) 作為結算基準
+        const taipeiOffset = 8 * 60 * 60 * 1000;
+        const nowTaipei = new Date(Date.now() + taipeiOffset);
 
         // 今日起始
-        const todayStart = new Date(now);
-        todayStart.setHours(0, 0, 0, 0);
+        const todayStart = new Date(Date.UTC(nowTaipei.getUTCFullYear(), nowTaipei.getUTCMonth(), nowTaipei.getUTCDate()));
+        todayStart.setTime(todayStart.getTime() - taipeiOffset);
 
         // 本週起始（週一）
-        const weekStart = new Date(now);
-        weekStart.setDate(now.getDate() - now.getDay() + 1);
-        weekStart.setHours(0, 0, 0, 0);
+        const weekStart = new Date(Date.UTC(nowTaipei.getUTCFullYear(), nowTaipei.getUTCMonth(), nowTaipei.getUTCDate()));
+        const day = nowTaipei.getUTCDay();
+        const diff = nowTaipei.getUTCDate() - day + (day === 0 ? -6 : 1);
+        weekStart.setUTCDate(diff);
+        weekStart.setTime(weekStart.getTime() - taipeiOffset);
 
         // 本月起始
-        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const monthStart = new Date(Date.UTC(nowTaipei.getUTCFullYear(), nowTaipei.getUTCMonth(), 1));
+        monthStart.setTime(monthStart.getTime() - taipeiOffset);
 
         // 今年起始
-        const yearStart = new Date(now.getFullYear(), 0, 1);
+        const yearStart = new Date(Date.UTC(nowTaipei.getUTCFullYear(), 0, 1));
+        yearStart.setTime(yearStart.getTime() - taipeiOffset);
 
         const [today, week, month, year, all] = await Promise.all([
             db.getEarnings(null, todayStart.toISOString(), null, userId),
@@ -115,12 +122,12 @@ router.get('/earnings/stats', async (req, res) => {
                 try {
                     const engine = getBot(userId);
                     if (!engine) return {};
-                    const status = engine.getStatus();
                     const util = {};
-                    for (const [cur, wallet] of Object.entries(status.wallets)) {
+                    for (const [cur, wallet] of Object.entries(engine.state.wallets)) {
                         const total = wallet.balance || 0;
-                        const activeCredits = status.activeCredits?.[cur] || 0;
-                        util[cur] = total > 0 ? Math.min(1, activeCredits / total) : 0;
+                        const activeCredits = engine.state.activeCredits?.[cur] || [];
+                        const activeAmount = activeCredits.reduce((sum, c) => sum + Math.abs(c.amount || 0), 0);
+                        util[cur] = total > 0 ? Math.min(1, activeAmount / total) : 0;
                     }
                     return util;
                 } catch { return {}; }

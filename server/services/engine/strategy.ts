@@ -15,6 +15,7 @@
 
 import * as config from '../../config';
 import * as logger from '../../utils/logger';
+// ML Predictor is currently loaded but is not actively used in the simplified balanced strategy.
 import { getMLPredictor } from './ml-predictor';
 
 export interface OrderBookItem {
@@ -144,7 +145,15 @@ export class StrategyEngine {
    * 設定歷史 FRR 均值 (相容性保留)
    */
   public setHistoricalFRR(currency: string, avgFRR: any): void {
-    this.historicalFRR[currency] = avgFRR;
+    if (typeof avgFRR === 'object') {
+      this.historicalFRR[currency] = { ...this.historicalFRR[currency], ...avgFRR };
+    } else {
+      if (typeof this.historicalFRR[currency] !== 'object') {
+        this.historicalFRR[currency] = {};
+      }
+      this.historicalFRR[currency]['24h'] = avgFRR;
+      this.historicalFRR[currency]['7d'] = avgFRR;
+    }
   }
 
   /**
@@ -448,15 +457,13 @@ export class StrategyEngine {
     return orders;
   }
 
-  /**
-   * 隨機金額生成 + 捨入誤差傳遞算法
-   */
   private _generateRandomAmounts(
     totalFunds: number,
     orderCount: number,
     minSize: number,
     randomDiff: number
   ): number[] {
+    if (orderCount <= 0) return [];
     const perOrder = totalFunds / orderCount;
     const maxRandomDiff = perOrder < minSize ? 0 : (perOrder - minSize) / perOrder;
     const safeDiff = Math.max(0, Math.min(randomDiff, maxRandomDiff, 1));

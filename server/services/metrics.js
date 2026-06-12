@@ -63,6 +63,23 @@ const lastDecisionTimestampGauge = new client.Gauge({
 });
 registry.registerMetric(lastDecisionTimestampGauge);
 
+function normalizeEndpoint(endpoint) {
+    if (!endpoint) return 'unknown';
+    // 移除查詢參數
+    let path = endpoint.split('?')[0];
+    
+    // 將 Bitfinex 幣種代碼 (例如 /fUSD, /fUST) 替換為佔位符
+    path = path.replace(/\/f[A-Z0-9]{3,4}\b/gi, '/:symbol');
+    
+    // 將訂單簿精度 (例如 /P0, /P1) 替換為佔位符
+    path = path.replace(/\/P[0-4]\b/gi, '/:prec');
+    
+    // 將數字/ID (例如 /123456) 替換為佔位符
+    path = path.replace(/\/\d+\b/g, '/:id');
+    
+    return path;
+}
+
 // ==================== 指標操作介面 ====================
 
 module.exports = {
@@ -96,9 +113,10 @@ module.exports = {
      */
     recordApiRequest(method, endpoint, status, durationSeconds) {
         try {
-            apiRequestsCounter.labels(method, endpoint, status).inc();
+            const normalized = normalizeEndpoint(endpoint);
+            apiRequestsCounter.labels(method, normalized, status).inc();
             if (durationSeconds !== undefined) {
-                apiRequestDurationHistogram.labels(method, endpoint).observe(durationSeconds);
+                apiRequestDurationHistogram.labels(method, normalized).observe(durationSeconds);
             }
         } catch (err) {
             console.error('Metrics recordApiRequest error:', err.message);
@@ -110,7 +128,8 @@ module.exports = {
      */
     recordApiError(method, endpoint, errorType) {
         try {
-            apiErrorsCounter.labels(method, endpoint, errorType).inc();
+            const normalized = normalizeEndpoint(endpoint);
+            apiErrorsCounter.labels(method, normalized, errorType).inc();
         } catch (err) {
             console.error('Metrics recordApiError error:', err.message);
         }

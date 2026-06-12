@@ -51,6 +51,7 @@ exports.StrategyEngine = void 0;
 exports.getStrategyEngine = getStrategyEngine;
 const config = __importStar(require("../../config"));
 const logger = __importStar(require("../../utils/logger"));
+// ML Predictor is currently loaded but is not actively used in the simplified balanced strategy.
 const ml_predictor_1 = require("./ml-predictor");
 // Cubic 緩和函數 (源自 Instabot Easing)
 function easeInCubic(t) {
@@ -104,7 +105,16 @@ class StrategyEngine {
      * 設定歷史 FRR 均值 (相容性保留)
      */
     setHistoricalFRR(currency, avgFRR) {
-        this.historicalFRR[currency] = avgFRR;
+        if (typeof avgFRR === 'object') {
+            this.historicalFRR[currency] = { ...this.historicalFRR[currency], ...avgFRR };
+        }
+        else {
+            if (typeof this.historicalFRR[currency] !== 'object') {
+                this.historicalFRR[currency] = {};
+            }
+            this.historicalFRR[currency]['24h'] = avgFRR;
+            this.historicalFRR[currency]['7d'] = avgFRR;
+        }
     }
     /**
      * 🎯 計算 IBRR — 融入 Harmonia 10 分鐘誠信過濾
@@ -201,15 +211,8 @@ class StrategyEngine {
     /**
      * 計算最佳掛單方案
      */
-    calculateOptimalRate(marketData, currency, availableAmount, userConfig = null) {
-        const default3DConfig = {
-            frrMultiplier: 1.0, // 以 FRR 作為物理保護底線
-            maxRate: 0.008, // 日利率上限 (0.8%)
-            minRate: 0.0002, // 日利率下限 (0.02%)
-            orderUnit: 500, // 拆單底倉基準單位
-            defaultPeriod: 2,
-        };
-        const stratConfig = userConfig ? { ...default3DConfig, ...userConfig } : this.getStrategyConfig();
+    calculateOptimalRate(marketData, currency, availableAmount) {
+        const stratConfig = this.getStrategyConfig();
         const result = {
             orders: [],
             shouldOffer: false,
@@ -361,10 +364,9 @@ class StrategyEngine {
         }
         return orders;
     }
-    /**
-     * 隨機金額生成 + 捨入誤差傳遞算法
-     */
     _generateRandomAmounts(totalFunds, orderCount, minSize, randomDiff) {
+        if (orderCount <= 0)
+            return [];
         const perOrder = totalFunds / orderCount;
         const maxRandomDiff = perOrder < minSize ? 0 : (perOrder - minSize) / perOrder;
         const safeDiff = Math.max(0, Math.min(randomDiff, maxRandomDiff, 1));

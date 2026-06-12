@@ -4,6 +4,10 @@ const config = require('../../config');
 const logger = require('../../utils/logger');
 const EventEmitter = require('events');
 
+// 單例快取
+let publicInstance = null;
+let legacyInstance = null;
+
 class BitfinexWS extends EventEmitter {
     constructor(options = {}) {
         super();
@@ -19,6 +23,7 @@ class BitfinexWS extends EventEmitter {
         this.heartbeatTimeout = null;
         this.pingInterval = null;
         this._closing = false;
+        this.reconnectTimer = null; // 重連計時器
 
         // 即時市場資料快取
         this.marketData = {
@@ -48,6 +53,7 @@ class BitfinexWS extends EventEmitter {
             return;
         }
 
+        this._cleanupSocket();
         this._closing = false;
         logger.info('bitfinex-ws', '正在連接 Bitfinex WebSocket...');
 
@@ -56,6 +62,7 @@ class BitfinexWS extends EventEmitter {
         this.ws.on('open', () => {
             logger.info('bitfinex-ws', `✅ WebSocket 已連接 (Public: ${this.publicOnly})`);
             this.reconnectAttempts = 0;
+            this.channelMap = {}; // 重連後清除舊的頻道映射，避免資訊混亂
             if (!this.publicOnly) {
                 this._authenticate();
             } else {
@@ -87,14 +94,36 @@ class BitfinexWS extends EventEmitter {
         });
     }
 
+    _cleanupSocket() {
+        if (this.ws) {
+            try {
+                this.ws.removeAllListeners();
+                this.ws.close();
+            } catch (err) {
+                // ignore
+            }
+            this.ws = null;
+        }
+    }
+
     disconnect() {
         this._closing = true;
         this._stopHeartbeat();
-        if (this.ws) {
-            this.ws.close();
-            this.ws = null;
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
         }
+        this._cleanupSocket();
         this.authenticated = false;
+
+        // 手動斷開時重置單例
+        if (this === publicInstance) {
+            publicInstance = null;
+        }
+        if (this === legacyInstance) {
+            legacyInstance = null;
+        }
+
         logger.info('bitfinex-ws', 'WebSocket 已手動關閉');
     }
 
@@ -366,6 +395,7 @@ class BitfinexWS extends EventEmitter {
 
     _reconnect() {
         if (this._closing) return;
+        if (this.reconnectTimer) return; // 避免重複重連
 
         this.reconnectAttempts++;
         if (this.reconnectAttempts > this.maxReconnectAttempts) {
@@ -377,7 +407,8 @@ class BitfinexWS extends EventEmitter {
         const delay = Math.min(this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts - 1), 30000);
         logger.info('bitfinex-ws', `${Math.round(delay / 1000)}s 後嘗試第 ${this.reconnectAttempts} 次重連...`);
 
-        setTimeout(() => {
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
             if (!this._closing) {
                 this.connect();
             }
@@ -434,7 +465,6 @@ class BitfinexWS extends EventEmitter {
 }
 
 // 單例模式 (共享公開行情 WebSocket)
-let publicInstance = null;
 function getBitfinexPublicWS() {
     if (!publicInstance) {
         publicInstance = new BitfinexWS({ publicOnly: true });
@@ -448,7 +478,6 @@ function createBitfinexPrivateWS(credentials) {
 }
 
 // 為了向下相容單用戶模式，保留 getBitfinexWS
-let legacyInstance = null;
 function getBitfinexWS() {
     if (!legacyInstance) {
         legacyInstance = new BitfinexWS();
