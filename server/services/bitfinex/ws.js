@@ -5,8 +5,11 @@ const logger = require('../../utils/logger');
 const EventEmitter = require('events');
 
 class BitfinexWS extends EventEmitter {
-    constructor() {
+    constructor(options = {}) {
         super();
+        this.credentials = options.credentials || null; // { apiKey, apiSecret }
+        this.publicOnly = options.publicOnly || false;
+
         this.ws = null;
         this.authenticated = false;
         this.channelMap = {}; // chanId -> { channel, symbol, ... }
@@ -51,10 +54,13 @@ class BitfinexWS extends EventEmitter {
         this.ws = new WebSocket(config.bitfinex.wsUrl);
 
         this.ws.on('open', () => {
-            logger.info('bitfinex-ws', '✅ WebSocket 已連接');
+            logger.info('bitfinex-ws', `✅ WebSocket 已連接 (Public: ${this.publicOnly})`);
             this.reconnectAttempts = 0;
-            this._authenticate();
-            this._subscribeFundingBooks();
+            if (!this.publicOnly) {
+                this._authenticate();
+            } else {
+                this._subscribeFundingBooks();
+            }
             this._startHeartbeat();
         });
 
@@ -93,8 +99,8 @@ class BitfinexWS extends EventEmitter {
     }
 
     _authenticate() {
-        const apiKey = config.bitfinex.apiKey;
-        const apiSecret = config.bitfinex.apiSecret;
+        const apiKey = this.credentials?.apiKey || config.bitfinex.apiKey;
+        const apiSecret = this.credentials?.apiSecret || config.bitfinex.apiSecret;
         if (!apiKey || !apiSecret) {
             logger.warn('bitfinex-ws', 'API Key 未設定，跳過認證');
             return;
@@ -427,13 +433,32 @@ class BitfinexWS extends EventEmitter {
     }
 }
 
-// 單例模式
-let instance = null;
-function getBitfinexWS() {
-    if (!instance) {
-        instance = new BitfinexWS();
+// 單例模式 (共享公開行情 WebSocket)
+let publicInstance = null;
+function getBitfinexPublicWS() {
+    if (!publicInstance) {
+        publicInstance = new BitfinexWS({ publicOnly: true });
     }
-    return instance;
+    return publicInstance;
 }
 
-module.exports = { BitfinexWS, getBitfinexWS };
+// 建立用戶私有 WebSocket
+function createBitfinexPrivateWS(credentials) {
+    return new BitfinexWS({ credentials, publicOnly: false });
+}
+
+// 為了向下相容單用戶模式，保留 getBitfinexWS
+let legacyInstance = null;
+function getBitfinexWS() {
+    if (!legacyInstance) {
+        legacyInstance = new BitfinexWS();
+    }
+    return legacyInstance;
+}
+
+module.exports = { 
+    BitfinexWS, 
+    getBitfinexWS, 
+    getBitfinexPublicWS, 
+    createBitfinexPrivateWS 
+};

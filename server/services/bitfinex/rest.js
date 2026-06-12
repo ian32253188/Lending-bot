@@ -25,19 +25,26 @@ function fromBfxSymbol(bfxSymbol) {
 /**
  * 建立已認證的 API 請求
  */
-function createAuthHeaders(path, body = {}) {
+function createAuthHeaders(path, body = {}, credentials = null) {
+    const apiKey = credentials?.apiKey || config.bitfinex.apiKey;
+    const apiSecret = credentials?.apiSecret || config.bitfinex.apiSecret;
+
+    if (!apiKey || !apiSecret) {
+        throw new Error('Bitfinex API key or secret is not configured.');
+    }
+
     const nonce = (Date.now() * 1000).toString();
     const bodyStr = JSON.stringify(body);
     const signature = `/api/v2${path}${nonce}${bodyStr}`;
     const sig = crypto
-        .createHmac('sha384', config.bitfinex.apiSecret)
+        .createHmac('sha384', apiSecret)
         .update(signature)
         .digest('hex');
 
     return {
         'Content-Type': 'application/json',
         'bfx-nonce': nonce,
-        'bfx-apikey': config.bitfinex.apiKey,
+        'bfx-apikey': apiKey,
         'bfx-signature': sig,
     };
 }
@@ -45,32 +52,62 @@ function createAuthHeaders(path, body = {}) {
 /**
  * 發送認證請求
  */
-async function authRequest(path, body = {}) {
-    const headers = createAuthHeaders(path, body);
-    const response = await fetch(`${BASE_URL}${path}`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-    });
+async function authRequest(path, body = {}, credentials = null) {
+    const metrics = require('../metrics');
+    const start = Date.now();
+    try {
+        const headers = createAuthHeaders(path, body, credentials);
+        const response = await fetch(`${BASE_URL}${path}`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+        });
 
-    if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`Bitfinex API 錯誤 (${response.status}): ${text}`);
+        const duration = (Date.now() - start) / 1000;
+        metrics.recordApiRequest('POST', path, response.status.toString(), duration);
+
+        if (!response.ok) {
+            const text = await response.text();
+            metrics.recordApiError('POST', path, `HTTP_${response.status}`);
+            throw new Error(`Bitfinex API 錯誤 (${response.status}): ${text}`);
+        }
+
+        return response.json();
+    } catch (err) {
+        if (!err.message.includes('Bitfinex API 錯誤')) {
+            const duration = (Date.now() - start) / 1000;
+            metrics.recordApiRequest('POST', path, 'error', duration);
+            metrics.recordApiError('POST', path, err.name || 'NetworkError');
+        }
+        throw err;
     }
-
-    return response.json();
 }
 
 /**
  * 發送公開請求
  */
 async function publicRequest(path) {
-    const response = await fetch(`${BASE_URL}${path}`);
-    if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`Bitfinex API 公開端點錯誤 (${response.status}): ${text}`);
+    const metrics = require('../metrics');
+    const start = Date.now();
+    try {
+        const response = await fetch(`${BASE_URL}${path}`);
+        const duration = (Date.now() - start) / 1000;
+        metrics.recordApiRequest('GET', path, response.status.toString(), duration);
+
+        if (!response.ok) {
+            const text = await response.text();
+            metrics.recordApiError('GET', path, `HTTP_${response.status}`);
+            throw new Error(`Bitfinex API 公開端點錯誤 (${response.status}): ${text}`);
+        }
+        return response.json();
+    } catch (err) {
+        if (!err.message.includes('Bitfinex API 公開端點錯誤')) {
+            const duration = (Date.now() - start) / 1000;
+            metrics.recordApiRequest('GET', path, 'error', duration);
+            metrics.recordApiError('GET', path, err.name || 'NetworkError');
+        }
+        throw err;
     }
-    return response.json();
 }
 
 // ============== Funding 操作 ==============
@@ -81,8 +118,9 @@ async function publicRequest(path) {
  * @param {number} amount - 金額
  * @param {number} rate - 日利率（例如 0.001 = 0.1%/天）
  * @param {number} period - 天數 (2-120)
+ * @param {object} credentials - 可選用戶金鑰 { apiKey, apiSecret }
  */
-async function submitFundingOffer(currency, amount, rate, period) {
+async function submitFundingOffer(currency, amount, rate, period, credentials = null) {
     const bfxSym = toBfxSymbol(currency);
     return withRetry(
         () => authRequest('/auth/w/funding/offer/submit', {
@@ -92,7 +130,7 @@ async function submitFundingOffer(currency, amount, rate, period) {
             rate: rate.toString(),
             period,
             flags: 0,
-        }),
+        }, credentials),
         { label: `提交 Funding Offer (${currency} ${amount} @ ${(rate * 100).toFixed(4)}%)` }
     );
 }
@@ -100,10 +138,11 @@ async function submitFundingOffer(currency, amount, rate, period) {
 /**
  * 取消 Funding Offer
  * @param {number} offerId - 掛單 ID
+ * @param {object} credentials - 可選用戶金鑰
  */
-async function cancelFundingOffer(offerId) {
+async function cancelFundingOffer(offerId, credentials = null) {
     return withRetry(
-        () => authRequest('/auth/w/funding/offer/cancel', { id: offerId }),
+        () => authRequest('/auth/w/funding/offer/cancel', { id: offerId }, credentials),
         { label: `取消 Funding Offer #${offerId}` }
     );
 }
@@ -111,13 +150,14 @@ async function cancelFundingOffer(offerId) {
 /**
  * 取消所有指定幣種的 Funding Offers
  * @param {string} currency - 'USD' 或 'USDT'
+ * @param {object} credentials - 可選用戶金鑰
  */
-async function cancelAllFundingOffers(currency) {
+async function cancelAllFundingOffers(currency, credentials = null) {
     const bfxSym = toBfxSymbol(currency);
     return withRetry(
         () => authRequest('/auth/w/funding/offer/cancel/all', {
             currency: `f${bfxSym}`,
-        }),
+        }, credentials),
         { label: `取消所有 ${currency} Funding Offers` }
     );
 }
@@ -126,54 +166,63 @@ async function cancelAllFundingOffers(currency) {
 
 /**
  * 取得活躍的 Funding Offers
+ * @param {string} currency - 'USD' 或 'USDT'
+ * @param {object} credentials - 可選用戶金鑰
  */
-async function getActiveFundingOffers(currency) {
+async function getActiveFundingOffers(currency, credentials = null) {
     const bfxSym = toBfxSymbol(currency);
     return withRetry(
-        () => authRequest(`/auth/r/funding/offers/f${bfxSym}`),
+        () => authRequest(`/auth/r/funding/offers/f${bfxSym}`, {}, credentials),
         { label: `查詢活躍 Funding Offers (${currency})` }
     );
 }
 
 /**
  * 取得活躍的 Funding Credits（已成交放貸）
+ * @param {string} currency - 'USD' 或 'USDT'
+ * @param {object} credentials - 可選用戶金鑰
  */
-async function getActiveFundingCredits(currency) {
+async function getActiveFundingCredits(currency, credentials = null) {
     const bfxSym = toBfxSymbol(currency);
     return withRetry(
-        () => authRequest(`/auth/r/funding/credits/f${bfxSym}`),
+        () => authRequest(`/auth/r/funding/credits/f${bfxSym}`, {}, credentials),
         { label: `查詢活躍 Funding Credits (${currency})` }
     );
 }
 
 /**
  * 取得 Funding Loans
+ * @param {string} currency - 'USD' 或 'USDT'
+ * @param {object} credentials - 可選用戶金鑰
  */
-async function getActiveFundingLoans(currency) {
+async function getActiveFundingLoans(currency, credentials = null) {
     const bfxSym = toBfxSymbol(currency);
     return withRetry(
-        () => authRequest(`/auth/r/funding/loans/f${bfxSym}`),
+        () => authRequest(`/auth/r/funding/loans/f${bfxSym}`, {}, credentials),
         { label: `查詢活躍 Funding Loans (${currency})` }
     );
 }
 
 /**
  * 取得錢包資訊
+ * @param {object} credentials - 可選用戶金鑰
  */
-async function getWallets() {
+async function getWallets(credentials = null) {
     return withRetry(
-        () => authRequest('/auth/r/wallets'),
+        () => authRequest('/auth/r/wallets', {}, credentials),
         { label: '查詢錢包資訊' }
     );
 }
 
 /**
  * 取得 Funding Info
+ * @param {string} currency - 'USD' 或 'USDT'
+ * @param {object} credentials - 可選用戶金鑰
  */
-async function getFundingInfo(currency) {
+async function getFundingInfo(currency, credentials = null) {
     const bfxSym = toBfxSymbol(currency);
     return withRetry(
-        () => authRequest(`/auth/r/info/funding/f${bfxSym}`),
+        () => authRequest(`/auth/r/info/funding/f${bfxSym}`, {}, credentials),
         { label: `查詢 Funding Info (${currency})` }
     );
 }
@@ -186,8 +235,9 @@ async function getFundingInfo(currency) {
  * @param {string} to - 目標錢包
  * @param {string} currency - 幣種
  * @param {number} amount - 金額
+ * @param {object} credentials - 可選用戶金鑰
  */
-async function transfer(from, to, currency, amount) {
+async function transfer(from, to, currency, amount, credentials = null) {
     return withRetry(
         () => authRequest('/auth/w/transfer', {
             from,
@@ -195,7 +245,7 @@ async function transfer(from, to, currency, amount) {
             currency,
             currency_to: currency,
             amount: amount.toString(),
-        }),
+        }, credentials),
         { label: `轉帳 ${amount} ${currency} (${from} → ${to})` }
     );
 }
