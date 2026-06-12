@@ -246,4 +246,38 @@ router.get('/logs', async (req, res) => {
     }
 });
 
+// 取得幣種輪動建議
+router.get('/suggestions', async (req, res) => {
+    try {
+        const { getBitfinexPublicWS } = require('../services/bitfinex/ws');
+        const publicWs = getBitfinexPublicWS();
+        const usdData = publicWs.getMarketData('USD');
+        const usdtData = publicWs.getMarketData('USDT');
+
+        const usdRate = usdData?.frr || 0.00038;  // fallback 0.038%
+        const usdtRate = usdtData?.frr || 0.00024; // fallback 0.024%
+
+        const suggestions = [];
+        const diff = usdRate - usdtRate;
+        if (Math.abs(diff) > 0.00005) { // 利率相差超過萬分之 0.5 (0.005%)
+            const better = diff > 0 ? 'USD' : 'USDT';
+            const worse = diff > 0 ? 'USDT' : 'USD';
+            const diffPct = (Math.abs(diff) * 100).toFixed(4);
+            suggestions.push({
+                reason: `💡 當前 ${better} 利率比 ${worse} 高出約 ${diffPct}%/天，建議增加 ${better} 的放貸權重以獲得更高年化收益。`
+            });
+        }
+
+        res.json({
+            rates: {
+                USD: usdRate,
+                USDT: usdtRate
+            },
+            suggestions
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 module.exports = router;
