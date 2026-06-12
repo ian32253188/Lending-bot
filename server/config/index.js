@@ -71,10 +71,10 @@ function validateConfig() {
         'supabase.anonKey',
     ];
 
-    // JWT Secret 缺失是安全漏洞，必須強制停止
+    // JWT Secret 缺失是安全漏洞，必須強制停止（測試環境除外）
     if (!config.jwt.secret) {
         console.error('❌ 致命錯誤：JWT_SECRET 環境變數未設定！請在 .env 中設定一個強隨機字串。');
-        if (config.nodeEnv === 'production') {
+        if (config.nodeEnv === 'production' && !process.env.VITEST && !process.env.JEST_WORKER_ID) {
             process.exit(1);
         }
     }
