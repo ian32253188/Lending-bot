@@ -535,9 +535,6 @@ class LendingBot {
                     const rawInterest = Math.abs(credit.amount) * credit.rate * credit.period;
                     const interestEarned = rawInterest * 0.85; // 扣 15% 手續費
                     db.closeLoan(credit.id, interestEarned, this.userId);
-                    db.saveEarning({
-                        currency: cur, amount: interestEarned, rate: credit.rate, period: credit.period,
-                    }, this.userId);
 
                     this.state.stats.totalEarned[cur] = (this.state.stats.totalEarned[cur] || 0) + interestEarned;
                     logger.info('engine', `💰 放貸到期 ${cur}，賺取利息(稅後): ${interestEarned.toFixed(4)}`, this.userId);

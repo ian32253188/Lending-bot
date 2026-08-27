@@ -50,23 +50,35 @@ async function syncUserEarnings(userId, force = false) {
         const currencies = settings.lending_currencies || ['USD', 'USDT'];
         let syncCount = 0;
 
+        // 取得 Bitfinex 分類帳歷史中的所有明細 (Category 28 為放貸利息發放)
+        const path = '/auth/r/ledgers/hist';
+        const body = { limit: 250, category: 28 };
+        let ledgerEntries = [];
+        try {
+            ledgerEntries = await rest.authRequest(path, body, credentials);
+        } catch (err) {
+            logger.error('sync', `用戶 ${userId} 取得分類帳歷史失敗: ${err.message}`);
+            return;
+        }
+
+        if (!Array.isArray(ledgerEntries) || ledgerEntries.length === 0) {
+            return;
+        }
+
+        // 整理每個有設定的放貸幣種
         for (const cur of currencies) {
-            const bfxSym = config.lending.currencyMap?.[cur] || cur;
-            const path = `/auth/r/ledgers/f${bfxSym}/hist`;
-
-            // 取得 Bitfinex 分類帳歷史中的利息支付 (Category 28)
-            const body = { limit: 100, category: 28 };
-            let ledgerEntries = [];
-            try {
-                ledgerEntries = await rest.authRequest(path, body, credentials);
-            } catch (err) {
-                logger.error('sync', `用戶 ${userId} 取得 ${cur} 分類帳失敗: ${err.message}`);
-                continue;
-            }
-
-            if (!Array.isArray(ledgerEntries) || ledgerEntries.length === 0) {
-                continue;
-            }
+            // 篩選該幣種的利息入帳明細
+            const filteredEntries = ledgerEntries.filter(entry => {
+                const entryCur = entry[1];
+                if (!entryCur) return false;
+                // 去除可能的前綴 'f' (如 fUSD -> USD, fUST -> UST)
+                const rawCur = entryCur.startsWith('f') ? entryCur.substring(1) : entryCur;
+                // 轉換為內部標示 (如 UST -> USDT)
+                const curCode = config.lending.symbolToCurrency?.[rawCur] || rawCur;
+                return curCode === cur;
+            });
+            
+            if (filteredEntries.length === 0) continue;
 
             // 取得資料庫中該用戶該幣種最近的收益紀錄，用於比對
             const existingEarnings = await db.getEarnings(cur, null, null, userId);
@@ -77,10 +89,18 @@ async function syncUserEarnings(userId, force = false) {
             );
 
             // 遍歷分類帳寫入未記錄的收益
-            for (const entry of ledgerEntries) {
-                // entry 格式: [ID, CURRENCY, MTS, null, AMOUNT, BALANCE, null, DESCRIPTION]
-                const mts = entry[2];
-                const amount = entry[4];
+            for (const entry of filteredEntries) {
+                let mts, amount;
+                // Bitfinex Ledger API 返回陣列長度可能為 8 或 9+（取決於是否包含錢包名稱欄位）
+                if (entry.length === 8) {
+                    mts = entry[2];
+                    amount = entry[4];
+                } else if (entry.length >= 9) {
+                    mts = entry[3];
+                    amount = entry[5];
+                } else {
+                    continue; // 格式不符則跳過
+                }
                 
                 // 只有正值（代表利息收入入帳）才記錄
                 if (amount <= 0) continue;
