@@ -7,3 +7,5 @@ client/dist/
 .env.production
 *.log
 *.stackdump
+*.tar
+*.tar.gz

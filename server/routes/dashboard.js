@@ -68,6 +68,10 @@ router.get('/earnings/stats', async (req, res) => {
     try {
         const userId = req.user.id;
         
+        // 自動同步最新利息收益 (有 10 分鐘冷卻保護)
+        const { syncUserEarnings } = require('../services/engine/sync');
+        await syncUserEarnings(userId);
+        
         // 為了防範伺服器時區差異，採用亞洲/台北時區 (UTC+8) 作為結算基準
         const taipeiOffset = 8 * 60 * 60 * 1000;
         const nowTaipei = new Date(Date.now() + taipeiOffset);
@@ -142,6 +146,10 @@ router.get('/earnings/stats', async (req, res) => {
 router.get('/earnings', async (req, res) => {
     try {
         const userId = req.user.id;
+        
+        // 自動同步最新利息收益 (有 10 分鐘冷卻保護)
+        const { syncUserEarnings } = require('../services/engine/sync');
+        await syncUserEarnings(userId);
         const { currency, from, to } = req.query;
         const data = await db.getEarnings(currency || null, from || null, to || null, userId);
         res.json(data);

@@ -129,32 +129,16 @@ async function sendAlert(title, details, userId = null) {
  * @param {string|null} userId - 目標用戶 ID
  */
 async function sendTradeNotification(currency, amount, rate, period, userId = null) {
-    const { getBitfinexPublicWS } = require('./bitfinex/ws');
-    const publicWs = getBitfinexPublicWS();
-    const marketData = publicWs.getMarketData(currency) || {};
-    const frr = marketData.frr || 0;
-
     const annualRate = rate * 365 * 100;
     const estimatedInterest = amount * rate * period;
     const netEstimatedInterest = estimatedInterest * 0.85; // 扣除 15% 手續費
 
-    // 🌟 3D Grid 自適應匹配判斷
-    let dimensionTag = '🛡️ 第一維度：空間穩健底倉 (平衡穩健掛單)';
-    if (frr > 0) {
-        const ratio = rate / frr;
-        if (ratio >= 2.0) {
-            dimensionTag = '⚡ <b>第三維度：Cascade 時間級聯天價探針 (天價成交！🚀)</b>';
-        } else if (ratio >= 1.05) {
-            dimensionTag = '🔍 <b>第二維度：Percent Depth 深度探針 (中溢價成交！📈)</b>';
-        }
-    }
-
-    const msg = `🎉 <b>放貸合約成交 (3D Hybrid 智能調度)</b>\n\n` +
+    const msg = `🎉 <b>放貸合約成交</b>\n\n` +
         `🪙 <b>放貸幣種</b>: ${currency}\n` +
         `💵 <b>成交金額</b>: $${amount.toFixed(2)}\n` +
-        `📉 <b>放貸利率</b>: <b>${(rate * 100).toFixed(4)}%/天</b> (年化 ${annualRate.toFixed(2)}%)\n` +
-        `⏳ <b>放貸期限</b>: <b>${period} 天</b> (自適應鎖倉)\n` +
-        `🔮 <b>策略歸屬</b>: ${dimensionTag}\n` +
+        `📉 <b>日利率</b>: <b>${(rate * 100).toFixed(4)}%/天</b>\n` +
+        `📈 <b>年化利率</b>: <b>${annualRate.toFixed(2)}%</b>\n` +
+        `⏳ <b>放貸天數</b>: <b>${period} 天</b>\n` +
         `💰 <b>預估淨利息</b>: <b>$${netEstimatedInterest.toFixed(6)} USD</b> (已扣稅)`;
 
     await sendMessage(msg, userId);
@@ -215,6 +199,10 @@ async function sendDailySummary() {
     // 3. 為每位有 Telegram 的活躍用戶發送個人摘要
     for (const { userId, engine } of targets) {
         try {
+            // 發送摘要前強制同步一次放貸利息收益
+            const { syncUserEarnings } = require('./engine/sync');
+            await syncUserEarnings(userId, true);
+
             const msg = await buildUserSummaryMessage(userId, engine, strategy, publicWs, db);
             await sendMessage(msg, userId);
         } catch (err) {
@@ -232,11 +220,13 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db) {
     const status = engine.getDetailedStatus();
     const now = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
 
-    // 取得今日與昨日的收益
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const yesterdayStart = new Date(todayStart);
-    yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+    // 為了防範伺服器時區差異，採用亞洲/台北時區 (UTC+8) 作為結算基準
+    const taipeiOffset = 8 * 60 * 60 * 1000;
+    const nowTaipei = new Date(Date.now() + taipeiOffset);
+    const todayStart = new Date(Date.UTC(nowTaipei.getUTCFullYear(), nowTaipei.getUTCMonth(), nowTaipei.getUTCDate()));
+    todayStart.setTime(todayStart.getTime() - taipeiOffset);
+
+    const yesterdayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
 
     const [todayEarnings, yesterdayEarnings, allEarnings] = await Promise.all([
         db.getEarnings(null, todayStart.toISOString(), null, userId),
@@ -252,33 +242,24 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db) {
     const yesterdayTotal = sumAmount(yesterdayEarnings);
     const allTimeTotal = sumAmount(allEarnings);
 
-    let changeText = '—';
+    let changeText = '';
     if (yesterdayTotal > 0) {
         const pct = ((todayTotal - yesterdayTotal) / yesterdayTotal * 100).toFixed(1);
-        changeText = pct > 0 ? `+${pct}% 📈` : `${pct}% 📉`;
+        changeText = pct > 0 ? ` (+${pct}% 📈)` : ` (${pct}% 📉)`;
     } else if (todayTotal > 0) {
-        changeText = '新收益 🚀';
+        changeText = ' (🚀)';
     }
 
-    let msg = `🌌 <b>3D Hybrid 放貸每日營運總結</b>\n`;
+    let msg = `📊 <b>每日放貸營運總結</b>\n`;
     msg += `📅 統計時間: <code>${now}</code>\n\n`;
 
-    // 1. 系統核心與特性狀態
-    msg += `🤖 <b>核心調配狀態</b>\n`;
-    msg += `  ├─ 引擎運作: ${status.running ? '✅ 運作中' : '⏹️ 已停止'}`;
-    if (status.paused) msg += ` (暫停: ${status.pauseReason})`;
-    msg += `\n`;
-    msg += `  ├─ 複利滾投: ${status.features?.compounding ? 'ON ♻️' : 'OFF ⏸️'}\n`;
-    msg += `  ├─ 自動轉帳: ${status.features?.autoTransfer ? `ON 🔄 (門檻 $${status.features.autoTransferThreshold})` : 'OFF ⏹️'}\n`;
-    msg += `  └─ 放貸策略: 🧠 <b>3D_Hybrid (三維自適應)</b>\n\n`;
+    // 1. 收益回報統計
+    msg += `💰 <b>量化收益回報 (已扣稅)</b>\n`;
+    msg += `  ├─ 今日收益: <b>$${todayTotal.toFixed(4)} USD</b>${changeText}\n`;
+    msg += `  ├─ 昨日收益: <b>$${yesterdayTotal.toFixed(4)} USD</b>\n`;
+    msg += `  └─ 累計收益: <b>$${allTimeTotal.toFixed(4)} USD</b>\n\n`;
 
-    // 2. 收益回報統計
-    msg += `💰 <b>量化收益回報 (已扣 15% 稅)</b>\n`;
-    msg += `  ├─ 今日收益: <b>$${todayTotal.toFixed(4)} USD</b> (${changeText})\n`;
-    msg += `  ├─ 昨日收益: $${yesterdayTotal.toFixed(4)} USD\n`;
-    msg += `  └─ 累計收益: <b>$${allTimeTotal.toFixed(4)} USD</b> 🏆\n\n`;
-
-    // 3. 各幣種錢包與放貸水位
+    // 2. 各幣種錢包與放貸水位
     msg += `💳 <b>資產與放貸水位</b>\n`;
     for (const cur of Object.keys(status.wallets)) {
         const wallet = status.wallets[cur] || { balance: 0, available: 0 };
@@ -287,50 +268,7 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db) {
         msg += `  <b>${cur} 資產</b>:\n`;
         msg += `  ├─ 錢包總額: $${wallet.balance.toFixed(2)}\n`;
         msg += `  ├─ 可用餘額: $${wallet.available.toFixed(2)}\n`;
-        msg += `  └─ 運行合約: 掛單 ${offersCount} 筆 | 放貸中 ${creditsCount} 筆\n`;
-    }
-    msg += `\n`;
-
-    // 4. 3D Hybrid 核心決策維度診斷
-    msg += `📊 <b>3D Hybrid 決策維度診斷</b>\n`;
-    for (const cur of ['USD', 'USDT']) {
-        const md = publicWs.getMarketData(cur);
-        if (!md) continue;
-
-        const lastDec = status.lastDecision?.[cur] || {};
-        const opt = lastDec.optimalResult || {};
-        const diag = opt.diagnostics || {};
-
-        const currentFRR = md.frr ? `${(md.frr * 100).toFixed(4)}%/天` : '—';
-        const equilibrium = diag.equilibriumRate ? `${(diag.equilibriumRate * 100).toFixed(4)}%/天` : '—';
-        const dsRatio = diag.demandSupplyRatio ? diag.demandSupplyRatio.toFixed(2) : '—';
-        const avg7d = strategy.historicalFRR[cur]?.['7d'] ? `${(strategy.historicalFRR[cur]['7d'] * 100).toFixed(4)}%` : '—';
-        const avg30d = strategy.historicalFRR[cur]?.['30d'] ? `${(strategy.historicalFRR[cur]['30d'] * 100).toFixed(4)}%` : '—';
-        const frrAnnualized = md.frr ? `${(md.frr * 365 * 100).toFixed(2)}%` : '—';
-
-        msg += `  <b>${cur} 市場特徵</b>:\n`;
-        msg += `  ├─ 當前市場 FRR: ${currentFRR} (年化 ${frrAnnualized})\n`;
-        msg += `  ├─ 瓦爾拉斯出清點: ${equilibrium}\n`;
-        msg += `  ├─ 真實供需比: ${dsRatio} (需求/供應)\n`;
-
-        if (diag.wallDetected) {
-            msg += `  ├─ 大資金阻力牆: ⚠️ 偵測到巨牆 (${(diag.wallRate * 100).toFixed(4)}%/天)！已觸發避讓前置掛單\n`;
-        } else {
-            msg += `  ├─ 大資金阻力牆: 🟢 通暢 (未偵測到巨牆)\n`;
-        }
-
-        msg += `  └─ 歷史均值 (7d/30d): ${avg7d} | ${avg30d}\n`;
-    }
-    msg += `\n`;
-
-    // 5. 運行效率統計
-    msg += `⚙️ <b>引擎調度效率</b>\n`;
-    msg += `  ├─ 網格掛單提交: ${status.stats.offersPlaced} 次\n`;
-    msg += `  ├─ 利率飆升取消: ${status.stats.offersCancelled} 次\n`;
-    if (status.stats.transfersExecuted > 0) {
-        msg += `  └─ 自動資金劃轉: ${status.stats.transfersExecuted} 次\n`;
-    } else {
-        msg += `  └─ 自動資金劃轉: 0 次 (無觸發)\n`;
+        msg += `  └─ 進行中合約: 掛單 ${offersCount} 筆 | 貸款中 ${creditsCount} 筆\n`;
     }
 
     return msg;
@@ -808,4 +746,5 @@ module.exports = {
     sendAlert,
     sendTradeNotification,
     sendReofferNotification,
+    buildUserSummaryMessage,
 };

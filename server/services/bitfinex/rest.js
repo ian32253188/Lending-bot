@@ -355,6 +355,7 @@ function parseWallet(arr) {
 }
 
 module.exports = {
+    authRequest,
     submitFundingOffer,
     cancelFundingOffer,
     cancelAllFundingOffers,
