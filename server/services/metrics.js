@@ -6,6 +6,43 @@ const registry = new client.Registry();
 // 收集預設 Node.js 系統指標 (CPU, Memory, Event Loop 等)
 client.collectDefaultMetrics({ register: registry });
 
+const processCpuUsageGauge = new client.Gauge({
+    name: 'lending_bot_process_cpu_usage_percent',
+    help: 'Average process CPU usage since startup as a percentage',
+});
+const processMemoryGauge = new client.Gauge({
+    name: 'lending_bot_process_memory_rss_bytes',
+    help: 'Resident process memory in bytes',
+});
+const processHeapGauge = new client.Gauge({
+    name: 'lending_bot_process_heap_used_bytes',
+    help: 'Used Node.js heap in bytes',
+});
+const activeEnginesGauge = new client.Gauge({
+    name: 'lending_bot_active_engines',
+    help: 'Number of active per-user lending engines',
+});
+const lastApiErrorTimestampGauge = new client.Gauge({
+    name: 'lending_bot_last_api_error_timestamp_seconds',
+    help: 'Unix timestamp of the most recent Bitfinex API error',
+});
+registry.registerMetric(processCpuUsageGauge);
+registry.registerMetric(processMemoryGauge);
+registry.registerMetric(processHeapGauge);
+registry.registerMetric(activeEnginesGauge);
+registry.registerMetric(lastApiErrorTimestampGauge);
+
+processCpuUsageGauge.collect = () => {
+    const cpu = process.cpuUsage();
+    const uptimeMicros = process.uptime() * 1e6;
+    const cores = typeof require('os').availableParallelism === 'function'
+        ? require('os').availableParallelism()
+        : require('os').cpus().length || 1;
+    processCpuUsageGauge.set(uptimeMicros > 0 ? ((cpu.user + cpu.system) / uptimeMicros / cores) * 100 : 0);
+};
+processMemoryGauge.collect = () => processMemoryGauge.set(process.memoryUsage().rss);
+processHeapGauge.collect = () => processHeapGauge.set(process.memoryUsage().heapUsed);
+
 // ==================== 宣告自訂監控指標 ====================
 
 // 1. 帳戶餘額 Gauge
@@ -130,8 +167,17 @@ module.exports = {
         try {
             const normalized = normalizeEndpoint(endpoint);
             apiErrorsCounter.labels(method, normalized, errorType).inc();
+            lastApiErrorTimestampGauge.setToCurrentTime();
         } catch (err) {
             console.error('Metrics recordApiError error:', err.message);
+        }
+    },
+
+    setActiveEngines(count) {
+        try {
+            activeEnginesGauge.set(Number(count) || 0);
+        } catch (err) {
+            console.error('Metrics setActiveEngines error:', err.message);
         }
     },
 

@@ -5,6 +5,7 @@ const { getBitfinexPublicWS } = require('../bitfinex/ws');
 const { getStrategyEngine } = require('./strategy');
 const { LendingBot } = require('./lending');
 const { decryptWithFallback } = require('../../utils/crypto');
+const metrics = require('../metrics');
 
 // 在記憶體中維護所有活躍的使用者機器人實例
 const activeRunners = new Map();
@@ -40,7 +41,13 @@ async function startBot(userId) {
             throw new Error('找不到該用戶的放貸設定，請先配置 API 金鑰');
         }
 
-        const { bitfinex_api_key, bitfinex_api_secret, status, ...settings } = userSettings;
+        const {
+            bitfinex_api_key,
+            bitfinex_api_secret,
+            status: persistedStatus,
+            pause_reason: persistedPauseReason,
+            ...settings
+        } = userSettings;
         if (!bitfinex_api_key || !bitfinex_api_secret) {
             throw new Error('API 金鑰未完整設定，無法啟動機器人');
         }
@@ -69,7 +76,15 @@ async function startBot(userId) {
 
         // 3. 快取至記憶體，並更新資料庫狀態為 running
         activeRunners.set(userId, bot);
+        metrics.setActiveEngines(activeRunners.size);
         await db.saveUserSettings(userId, { status: 'running' });
+
+        // 部署重啟時，保留使用者上次的暫停狀態；手動啟動暫停中的策略也必須由使用者明確恢復。
+        if (persistedStatus === 'paused') {
+            const pauseReason = persistedPauseReason || '重啟前已暫停';
+            bot.pause(pauseReason);
+            await db.saveUserSettings(userId, { status: 'paused', pause_reason: pauseReason });
+        }
 
         // 4. 初始化用戶的 Telegram Bot (若有設定)
         if (settings.telegram_bot_token && settings.telegram_chat_id) {
@@ -87,21 +102,26 @@ async function startBot(userId) {
 /**
  * 停止特定使用者的放貸機器人
  */
-async function stopBot(userId) {
+async function stopBot(userId, { persistStatus = true } = {}) {
     const bot = activeRunners.get(userId);
     if (!bot) {
         logger.warn('manager', `使用者 ${userId} 的放貸機器人未在運行中`);
-        // 確保資料庫狀態同步為 stopped
-        await db.saveUserSettings(userId, { status: 'stopped' });
+        // 手動停止時同步為 stopped；程序關閉時保留原本的 persisted status。
+        if (persistStatus) {
+            await db.saveUserSettings(userId, { status: 'stopped' });
+        }
         return;
     }
 
     // 1. 停止運行
     await bot.stop();
 
-    // 2. 移出快取，並更新資料庫狀態為 stopped
+    // 2. 移出快取；手動停止才更新資料庫狀態為 stopped
     activeRunners.delete(userId);
-    await db.saveUserSettings(userId, { status: 'stopped' });
+    metrics.setActiveEngines(activeRunners.size);
+    if (persistStatus) {
+        await db.saveUserSettings(userId, { status: 'stopped' });
+    }
 
     // 3. 保留使用者 Telegram Bot 常駐，停止後仍可由 Telegram 按「啟動策略」恢復。
     logger.info('manager', `⏹️ 已成功關閉使用者 ${userId} 的放貸實例（Telegram 控制仍保持啟用）`);
@@ -112,6 +132,10 @@ async function stopBot(userId) {
  */
 function getBot(userId) {
     return activeRunners.get(userId) || null;
+}
+
+function getActiveEngineCount() {
+    return activeRunners.size;
 }
 
 /**
@@ -127,10 +151,11 @@ async function autoResumeAll() {
         // 啟動全域行情定時收集器
         startGlobalRateCollector();
 
-        const activeUserIds = await db.getActiveUsers();
-        logger.info('manager', `發現共有 ${activeUserIds.length} 個帳戶需要恢復運行`);
+        const resumableUsers = await db.getUsersToResume();
+        logger.info('manager', `發現共有 ${resumableUsers.length} 個帳戶需要恢復運行或暫停狀態`);
 
-        for (const userId of activeUserIds) {
+        for (const user of resumableUsers) {
+            const userId = user.user_id;
             try {
                 await startBot(userId);
             } catch (err) {
@@ -156,7 +181,8 @@ async function shutdownAll() {
     const userIds = [...activeRunners.keys()];
     for (const userId of userIds) {
         try {
-            await stopBot(userId);
+            // 程序／容器重啟不是使用者要求停止，不能覆寫資料庫中的 running 或 paused。
+            await stopBot(userId, { persistStatus: false });
         } catch (err) {
             logger.error('manager', `關閉用戶 ${userId} 失敗`, { error: err.message });
         }
@@ -281,6 +307,7 @@ module.exports = {
     startBot,
     stopBot,
     getBot,
+    getActiveEngineCount,
     autoResumeAll,
     shutdownAll,
 };

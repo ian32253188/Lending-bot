@@ -4,14 +4,18 @@ const logger = require('../utils/logger');
 const cron = require('node-cron');
 const { buildFundingMarketSummary } = require('./market-summary');
 const { RATE_STRATEGY_LABELS, PERIOD_DAYS, normalizeStrategyConfig } = require('./strategy-config');
+const { normalizeTelegramChatId } = require('./telegram-routing');
 
 // ============== 多租戶 Telegram Bot 註冊表 ==============
-// key = userId, value = { bot: TelegramBot, chatId: string }
+// One polling process handles all users. Routes are keyed by userId and each
+// route is resolved from the exact Telegram Chat ID stored in the database.
 const userBots = new Map();
 
 // 系統管理員 Bot (用 .env 設定的全域 Bot，可選)
 let adminBot = null;
 let adminChatId = null;
+let sharedBotToken = null;
+let handlersReady = false;
 let dailySummaryJob = null;
 
 function ensureDailySummarySchedule() {
@@ -34,22 +38,34 @@ function ensureDailySummarySchedule() {
  * 這是向下相容的管理員通知 Bot，不對應任何特定用戶
  */
 function initTelegram() {
-    if (!config.telegram.botToken || !config.telegram.chatId) {
-        logger.info('telegram', 'Telegram 管理員 Bot 未設定 (SaaS 模式下為選配)，跳過');
+    if (!config.telegram.botToken) {
+        logger.info('telegram', '尚未設定共用 Telegram Bot Token，跳過初始化');
         return null;
     }
+    return ensureSharedBot(config.telegram.botToken);
+}
 
+function ensureSharedBot(botToken) {
+    if (!botToken) return null;
+    if (adminBot) {
+        if (sharedBotToken !== botToken) {
+            logger.warn('telegram', '收到不同的 Telegram Bot Token，仍使用既有 shared Bot');
+        }
+        return adminBot;
+    }
     try {
-        adminBot = new TelegramBot(config.telegram.botToken, { polling: true });
-        adminChatId = config.telegram.chatId;
-        logger.info('telegram', '✅ 管理員 Telegram Bot 已初始化');
-
-        // 註冊管理員控制面板指令
-        setupAdminBotHandlers(adminBot, adminChatId);
-
+        adminBot = new TelegramBot(botToken, { polling: true });
+        sharedBotToken = botToken;
+        adminChatId = config.telegram.chatId || null;
+        if (!handlersReady) {
+            setupAdminBotHandlers(adminBot);
+            handlersReady = true;
+        }
+        ensureDailySummarySchedule();
+        logger.info('telegram', '✅ shared Telegram Bot 已初始化');
         return adminBot;
     } catch (err) {
-        logger.error('telegram', '管理員 Telegram Bot 初始化失敗', { error: err.message });
+        logger.error('telegram', 'shared Telegram Bot 初始化失敗', { error: err.message });
         return null;
     }
 }
@@ -61,38 +77,28 @@ function initTelegram() {
  * @param {string} chatId - 用戶自訂的 Telegram Chat ID
  */
 function initUserTelegram(userId, botToken, chatId) {
-    if (!botToken || !chatId) {
-        logger.debug('telegram', `用戶 ${userId} 未設定 Telegram Bot，通知功能跳過`);
+    const normalizedChatId = normalizeTelegramChatId(chatId);
+    if (!normalizedChatId) {
+        logger.debug('telegram', `用戶 ${userId} 未設定 Telegram Chat ID，通知功能跳過`);
         return null;
     }
 
-    // 如果該用戶已有 Bot 實例，先停止再重建
-    destroyUserTelegram(userId);
-
-    try {
-        // 使用者自己的 Bot 也監聽 polling，讓同一個控制面板可直接操控該帳戶。
-        const bot = new TelegramBot(botToken, { polling: true });
-        userBots.set(userId, { bot, chatId });
-        setupAdminBotHandlers(bot, chatId);
-        ensureDailySummarySchedule();
-        logger.info('telegram', `✅ 用戶 ${userId} 的 Telegram Bot 已初始化`);
-        return bot;
-    } catch (err) {
-        logger.error('telegram', `用戶 ${userId} 的 Telegram Bot 初始化失敗`, { error: err.message });
+    const bot = ensureSharedBot(config.telegram.botToken || botToken);
+    if (!bot) {
+        logger.error('telegram', `用戶 ${userId} 無法取得 shared Telegram Bot`);
         return null;
     }
+
+    userBots.set(userId, { bot, chatId: normalizedChatId });
+    logger.info('telegram', `✅ 用戶 ${userId} 的 Telegram Chat ID 已註冊`);
+    return bot;
 }
 
 /**
  * 銷毀特定用戶的 Telegram Bot 實例
  */
 function destroyUserTelegram(userId) {
-    const entry = userBots.get(userId);
-    if (entry) {
-        try {
-            entry.bot.stopPolling?.();
-        } catch (e) { /* ignore */ }
-        userBots.delete(userId);
+    if (userBots.delete(userId)) {
         logger.debug('telegram', `用戶 ${userId} 的 Telegram Bot 已銷毀`);
     }
 }
@@ -101,7 +107,7 @@ function destroyUserTelegram(userId) {
 
 /**
  * 向特定用戶發送 Telegram 訊息
- * 若用戶有自訂 Bot 則用其 Bot 發送，否則嘗試管理員 Bot
+ * 指定 userId 時只允許發送到該 userId 的精確 Chat ID；未知 route 不得 fallback。
  * @param {string} text - 訊息內容 (HTML)
  * @param {string|null} userId - 目標用戶 ID
  */
@@ -117,6 +123,9 @@ async function sendMessage(text, userId = null) {
                 logger.error('telegram', `用戶 ${userId} 的 Telegram 訊息發送失敗`, { error: err.message });
             }
         }
+        // Never send a tenant's private notification to another account.
+        logger.warn('telegram', `用戶 ${userId} 尚未註冊 Telegram route，拒絕 fallback`);
+        return;
     }
 
     // 2. Fallback: 使用管理員 Bot
@@ -127,6 +136,13 @@ async function sendMessage(text, userId = null) {
             logger.error('telegram', '管理員 Telegram 訊息發送失敗', { error: err.message });
         }
     }
+}
+
+function getTelegramRoutingStats() {
+    return {
+        sharedBotActive: !!adminBot,
+        registeredUsers: userBots.size,
+    };
 }
 
 /**
@@ -374,7 +390,7 @@ async function buildGlobalSummaryMessage(strategy, publicWs, db, marketSummary =
  * 設定管理員 Bot 的指令處理器
  * 管理員 Bot 使用 getLendingEngine singleton 作為向下相容層
  */
-function setupAdminBotHandlers(bot, authorizedChatId) {
+function setupAdminBotHandlers(bot) {
     if (!bot) return;
 
     // 自動註冊指令選單到 Telegram
@@ -384,9 +400,11 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
         { command: 'help', description: '顯示操作說明與指令清單' }
     ]).catch(err => logger.error('telegram', '設定 Bot 指令選單失敗', { error: err.message }));
 
-    function isAuthorized(msg) {
-        const chatId = msg.chat.id.toString();
-        if (chatId !== authorizedChatId?.toString()) {
+    async function isAuthorized(msg) {
+        const chatId = normalizeTelegramChatId(msg.chat.id);
+        const isAdmin = config.telegram.chatId && chatId === normalizeTelegramChatId(config.telegram.chatId);
+        const binding = await getSettingsByChatId(chatId);
+        if (!isAdmin && !binding) {
             logger.warn('telegram', `⚠️ 收到未授權用戶的指令！ChatID: ${chatId}, 用戶名: ${msg.from?.username || 'unknown'}`);
             bot.sendMessage(chatId, '🚷 <b>權限不足</b>\n您無權操控此放貸機器人。', { parse_mode: 'HTML' }).catch(() => {});
             return false;
@@ -394,9 +412,11 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
         return true;
     }
 
-    function isCallbackAuthorized(query) {
-        const chatId = query.message.chat.id.toString();
-        if (chatId !== authorizedChatId?.toString()) {
+    async function isCallbackAuthorized(query) {
+        const chatId = normalizeTelegramChatId(query.message.chat.id);
+        const isAdmin = config.telegram.chatId && chatId === normalizeTelegramChatId(config.telegram.chatId);
+        const binding = await getSettingsByChatId(chatId);
+        if (!isAdmin && !binding) {
             logger.warn('telegram', `⚠️ 收到未授權用戶的按鈕點擊！ChatID: ${chatId}, 用戶名: ${query.from?.username || 'unknown'}`);
             bot.answerCallbackQuery(query.id, { text: '🚷 權限不足，拒絕操作！', show_alert: true }).catch(() => {});
             return false;
@@ -405,8 +425,8 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
     }
 
     // `/start` 指令
-    bot.onText(/\/start/, (msg) => {
-        if (!isAuthorized(msg)) return;
+    bot.onText(/\/start/, async (msg) => {
+        if (!(await isAuthorized(msg))) return;
         const welcome = `👋 <b>歡迎使用 Bitfinex 放貸機器人控制終端</b>\n\n` +
             `本機器人已啟用雙向即時長輪詢監聽 (Long Polling)，您可以隨時在此操控您的 3D Hybrid 自適應放貸策略。\n\n` +
             `⌨️ <b>可用指令</b>:\n` +
@@ -417,8 +437,8 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
     });
 
     // `/help` 指令
-    bot.onText(/\/help/, (msg) => {
-        if (!isAuthorized(msg)) return;
+    bot.onText(/\/help/, async (msg) => {
+        if (!(await isAuthorized(msg))) return;
         const helpText = `📖 <b>放貸機器人操作指南</b>\n\n` +
             `🤖 <b>指令清單</b>:\n` +
             `• <code>/control</code> - 開啟視覺化控制面板。您可以一鍵切換複利、自動劃轉、暫停或恢復放貸，或者執行緊急避險撤單。\n` +
@@ -430,7 +450,7 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
 
     // `/status` 指令
     bot.onText(/\/status/, async (msg) => {
-        if (!isAuthorized(msg)) return;
+        if (!(await isAuthorized(msg))) return;
         try {
             const db = require('./database');
             const { getBot } = require('./engine/manager');
@@ -439,10 +459,18 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
             
             const strategy = getStrategyEngine();
             const publicWs = getBitfinexPublicWS();
-            const activeUserIds = await db.getActiveUsers();
             const marketSummary = await buildFundingMarketSummary({ publicWs, db });
-            
-            if (activeUserIds.length > 0) {
+
+            const boundSettings = await getSettingsByChatId(msg.chat.id);
+            if (boundSettings?.user_id) {
+                const engine = getBot(boundSettings.user_id);
+                const report = engine
+                    ? await buildUserSummaryMessage(boundSettings.user_id, engine, strategy, publicWs, db, marketSummary)
+                    : buildInactiveUserSummaryMessage(boundSettings, marketSummary);
+                bot.sendMessage(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => {});
+            } else {
+                const activeUserIds = await db.getActiveUsers();
+                if (activeUserIds.length > 0) {
                 let report = '';
                 for (const userId of activeUserIds) {
                     const engine = getBot(userId);
@@ -452,9 +480,10 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
                     }
                 }
                 bot.sendMessage(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => {});
-            } else {
-                const summaryMsg = await buildGlobalSummaryMessage(strategy, publicWs, db, marketSummary);
-                bot.sendMessage(msg.chat.id, summaryMsg, { parse_mode: 'HTML' }).catch(() => {});
+                } else {
+                    const summaryMsg = await buildGlobalSummaryMessage(strategy, publicWs, db, marketSummary);
+                    bot.sendMessage(msg.chat.id, summaryMsg, { parse_mode: 'HTML' }).catch(() => {});
+                }
             }
         } catch (err) {
             bot.sendMessage(msg.chat.id, `❌ 查詢狀態失敗: ${err.message}`).catch(() => {});
@@ -462,14 +491,14 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
     });
 
     // `/control` 指令
-    bot.onText(/\/control/, (msg) => {
-        if (!isAuthorized(msg)) return;
+    bot.onText(/\/control/, async (msg) => {
+        if (!(await isAuthorized(msg))) return;
         sendAdminControlPanel(bot, msg.chat.id);
     });
 
     // 按鈕 Callback Query 監聽
     bot.on('callback_query', async (query) => {
-        if (!isCallbackAuthorized(query)) return;
+        if (!(await isCallbackAuthorized(query))) return;
 
         const action = query.data;
         const chatId = query.message.chat.id;
@@ -645,25 +674,37 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
 async function getSettingsByChatId(chatId) {
     try {
         const db = require('./database');
+        if (typeof db.getUserSettingsByTelegramChatId === 'function') {
+            return await db.getUserSettingsByTelegramChatId(chatId);
+        }
+
+        // Compatibility path for isolated test doubles only. It is still an
+        // exact lookup and deliberately never returns the first account.
         const supabase = db.getSupabase();
         if (!supabase) return null;
-        
-        // 優先使用 telegram_chat_id 進行精確匹配
-        const { data } = await supabase.from('user_bot_settings')
+        const normalizedChatId = normalizeTelegramChatId(chatId);
+        const { data, error } = await supabase.from('user_bot_settings')
             .select('*')
-            .or(`telegram_chat_id.eq.${chatId},telegram_chat_id.eq.${chatId.toString()}`)
-            .limit(1);
-            
-        if (data && data.length > 0) {
-            return data[0];
-        }
-        
-        // 如果找不到匹配的 chat_id，則回退到獲取資料庫中的第一個帳戶設定（保證向下相容單用戶）
-        const { data: firstSettings } = await supabase.from('user_bot_settings').select('*').limit(1);
-        return firstSettings?.[0] || null;
+            .eq('telegram_chat_id', normalizedChatId)
+            .maybeSingle();
+        if (error) return null;
+        return data || null;
     } catch {
         return null;
     }
+}
+
+function buildInactiveUserSummaryMessage(settings, marketSummary) {
+    const strategyConfig = normalizeStrategyConfig(settings?.strategy_config || {});
+    const market = marketSummary?.current || {};
+    return `📊 <b>放貸狀態</b>\n\n` +
+        `👤 帳戶：<code>${settings.user_id}</code>\n` +
+        `⏸️ 引擎：<b>${settings.status === 'paused' ? '暫停' : '停止'}</b>\n` +
+        `📈 策略：${RATE_STRATEGY_LABELS[strategyConfig.rateStrategy]}｜${strategyConfig.periodDays} 天\n\n` +
+        `🏦 <b>USD 融資市場</b>\n` +
+        `目前成交均值：${market.currentApy != null ? `${Number(market.currentApy).toFixed(2)}%` : '—'}\n` +
+        `24 小時最高：${market.high24hApy != null ? `${Number(market.high24hApy).toFixed(2)}%` : '—'}\n` +
+        `30 日最高：${market.high30dApy != null ? `${Number(market.high30dApy).toFixed(2)}%` : '—'}`;
 }
 
 async function sendAdminControlPanel(bot, chatId) {
@@ -673,6 +714,11 @@ async function sendAdminControlPanel(bot, chatId) {
         
         const dbSettings = await getSettingsByChatId(chatId);
         const userId = dbSettings?.user_id || null;
+
+        if (!dbSettings || !userId) {
+            await bot.sendMessage(chatId, '⚠️ 此 Telegram Chat ID 尚未綁定使用者帳戶，請先在網頁設定完成綁定。');
+            return;
+        }
         
         const engine = userId ? getBot(userId) : null;
 
@@ -800,6 +846,7 @@ module.exports = {
     initUserTelegram,
     destroyUserTelegram,
     sendMessage,
+    getTelegramRoutingStats,
     sendDailySummary,
     sendAlert,
     sendTradeNotification,

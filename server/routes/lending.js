@@ -5,6 +5,9 @@ const rest = require('../services/bitfinex/rest');
 const db = require('../services/database');
 const logger = require('../utils/logger');
 const { DEFAULT_STRATEGY_CONFIG, normalizeStrategyConfig, validateStrategyConfig } = require('../services/strategy-config');
+const config = require('../config');
+const { normalizeTelegramChatId } = require('../services/telegram-routing');
+const { getSharedTelegramBotToken, verifyTelegramChatId } = require('../services/telegram-binding');
 
 const router = express.Router();
 
@@ -28,6 +31,9 @@ router.get('/settings', async (req, res) => {
         }
         res.json(settings);
     } catch (err) {
+        if (err?.code === '23505' || err?.constraint === 'user_bot_settings_telegram_chat_id_unique') {
+            return res.status(409).json({ error: '此 Telegram Chat ID 已綁定其他使用者' });
+        }
         res.status(500).json({ error: err.message });
     }
 });
@@ -35,7 +41,7 @@ router.get('/settings', async (req, res) => {
 router.post('/settings', async (req, res) => {
     try {
         const userId = req.user.id;
-        const newSettings = req.body;
+        const newSettings = { ...(req.body || {}) };
         const { encrypt } = require('../utils/crypto');
         
         // 如果使用者沒有輸入新金鑰（傳入遮蔽的值），則保留原本的舊金鑰
@@ -47,9 +53,43 @@ router.post('/settings', async (req, res) => {
             if (newSettings.bitfinex_api_secret === '******') {
                 newSettings.bitfinex_api_secret = existingSettings.bitfinex_api_secret;
             }
-            if (newSettings.telegram_bot_token && newSettings.telegram_bot_token.includes('...')) {
-                newSettings.telegram_bot_token = existingSettings.telegram_bot_token;
+        if (newSettings.telegram_bot_token && newSettings.telegram_bot_token.includes('...')) {
+            newSettings.telegram_bot_token = existingSettings.telegram_bot_token;
+        }
+        }
+
+        // Telegram is a shared Bot with one exact Chat ID per tenant. Validate
+        // before persistence so a typo or duplicate cannot silently route to
+        // another account.
+        if (Object.prototype.hasOwnProperty.call(newSettings, 'telegram_chat_id')) {
+            try {
+                newSettings.telegram_chat_id = normalizeTelegramChatId(newSettings.telegram_chat_id);
+            } catch (error) {
+                return res.status(400).json({ error: error.message });
             }
+
+            if (newSettings.telegram_chat_id) {
+                const owner = await db.getUserSettingsByTelegramChatId(newSettings.telegram_chat_id);
+                if (owner && owner.user_id !== userId) {
+                    return res.status(409).json({ error: '此 Telegram Chat ID 已綁定其他使用者' });
+                }
+
+                const botToken = getSharedTelegramBotToken({
+                    telegram_bot_token: newSettings.telegram_bot_token || existingSettings?.telegram_bot_token,
+                });
+                try {
+                    await verifyTelegramChatId({ botToken, chatId: newSettings.telegram_chat_id });
+                } catch (error) {
+                    const status = error.code === 'TELEGRAM_BOT_TOKEN_MISSING' ? 400 : 422;
+                    return res.status(status).json({ error: error.message });
+                }
+            }
+        }
+
+        if (config.telegram.botToken && newSettings.telegram_bot_token &&
+            !newSettings.telegram_bot_token.includes('...') &&
+            newSettings.telegram_bot_token !== config.telegram.botToken) {
+            return res.status(400).json({ error: '目前系統使用共用 Telegram Bot，Bot Token 必須與伺服器設定一致' });
         }
 
         // 如果是新輸入的金鑰，進行加密存儲
@@ -62,6 +102,19 @@ router.post('/settings', async (req, res) => {
 
         await db.saveUserSettings(userId, newSettings);
 
+        // Register the route even while the lending engine is stopped, so the
+        // same shared Bot can still start/control this tenant from Telegram.
+        const { initUserTelegram, destroyUserTelegram } = require('../services/telegram');
+        if (newSettings.telegram_chat_id) {
+            initUserTelegram(
+                userId,
+                getSharedTelegramBotToken({ telegram_bot_token: newSettings.telegram_bot_token }),
+                newSettings.telegram_chat_id,
+            );
+        } else {
+            destroyUserTelegram(userId);
+        }
+
         // 如果該使用者的 Bot 目前正在運行，重啟以套用新設定
         const runningBot = getBot(userId);
         if (runningBot) {
@@ -72,6 +125,9 @@ router.post('/settings', async (req, res) => {
 
         res.json({ message: '設定更新成功' });
     } catch (err) {
+        if (err?.code === '23505' || err?.constraint === 'user_bot_settings_telegram_chat_id_unique') {
+            return res.status(409).json({ error: '此 Telegram Chat ID 已綁定其他使用者' });
+        }
         res.status(500).json({ error: err.message });
     }
 });

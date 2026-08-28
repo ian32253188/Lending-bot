@@ -69,12 +69,22 @@ app.get('/metrics', async (req, res) => {
 
 // 健康檢查（不需認證）
 app.get('/api/health', (req, res) => {
-    const { getBot } = require('./services/engine/manager');
+    const { getActiveEngineCount } = require('./services/engine/manager');
+    const { getTelegramRoutingStats } = require('./services/telegram');
     const publicWs = getBitfinexPublicWS();
+    const memory = process.memoryUsage();
     res.json({
         status: 'ok',
         uptime: process.uptime(),
         publicWsConnected: publicWs.isConnected(),
+        activeEngineCount: typeof getActiveEngineCount === 'function' ? getActiveEngineCount() : 0,
+        telegram: typeof getTelegramRoutingStats === 'function'
+            ? getTelegramRoutingStats()
+            : { sharedBotActive: false, registeredUsers: 0 },
+        memory: {
+            rssBytes: memory.rss,
+            heapUsedBytes: memory.heapUsed,
+        },
         timestamp: new Date().toISOString(),
     });
 });
@@ -216,7 +226,7 @@ async function startup() {
     });
 }
 
-// 優雅關閉
+// 優雅關閉：保留資料庫中的 running／paused，讓下一次啟動自動恢復上次狀態。
 process.on('SIGTERM', async () => {
     logger.info('server', '收到 SIGTERM，正在優雅關閉所有放貸機器人...');
     const { shutdownAll } = require('./services/engine/manager');

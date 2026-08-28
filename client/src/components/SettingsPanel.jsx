@@ -26,7 +26,6 @@ export default function SettingsPanel({ token }) {
     const fetchSettings = async () => {
         setLoading(true);
         try {
-            const { rateStrategy, periodDays, ...accountSettings } = settings;
             const res = await fetch('/api/lending/settings', {
                 headers: { Authorization: `Bearer ${token}` },
             });
@@ -61,6 +60,11 @@ export default function SettingsPanel({ token }) {
         setMsg({ type: '', text: '' });
 
         try {
+            // Keep strategy fields inside strategy_config. The previous code
+            // referenced accountSettings/rateStrategy/periodDays from the
+            // fetchSettings scope, which caused every save to throw before
+            // the request was sent.
+            const { rateStrategy, periodDays, ...accountSettings } = settings;
             const res = await fetch('/api/lending/settings', {
                 method: 'POST',
                 headers: {

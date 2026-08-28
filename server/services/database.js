@@ -357,16 +357,43 @@ async function saveUserSettings(userId, settings) {
     if (!requireUserId('saveUserSettings', userId)) return null;
     const db = getSupabase();
     if (!db) return null;
+    const normalizedSettings = { ...settings };
+    if (Object.prototype.hasOwnProperty.call(normalizedSettings, 'telegram_chat_id')) {
+        const { normalizeTelegramChatId } = require('./telegram-routing');
+        normalizedSettings.telegram_chat_id = normalizeTelegramChatId(normalizedSettings.telegram_chat_id);
+    }
     const { data, error } = await db
         .from('user_bot_settings')
         .upsert({
             user_id: userId,
-            ...settings,
+            ...normalizedSettings,
             updated_at: new Date().toISOString()
-        }, { onConflict: 'user_id' })
+    }, { onConflict: 'user_id' })
         .select();
-    if (error) console.error('saveUserSettings error:', error);
+    if (error) {
+        console.error('saveUserSettings error:', error);
+        throw error;
+    }
     return data;
+}
+
+async function getUserSettingsByTelegramChatId(chatId) {
+    const db = getSupabase();
+    if (!db) return null;
+    const { normalizeTelegramChatId } = require('./telegram-routing');
+    const normalizedChatId = normalizeTelegramChatId(chatId);
+    if (!normalizedChatId) return null;
+
+    const { data, error } = await db
+        .from('user_bot_settings')
+        .select('*')
+        .eq('telegram_chat_id', normalizedChatId)
+        .maybeSingle();
+    if (error) {
+        console.error('getUserSettingsByTelegramChatId error:', error);
+        return null;
+    }
+    return data || null;
 }
 
 async function getActiveUsers() {
@@ -381,6 +408,20 @@ async function getActiveUsers() {
         return [];
     }
     return data.map(x => x.user_id);
+}
+
+async function getUsersToResume() {
+    const db = getSupabase();
+    if (!db) return [];
+    const { data, error } = await db
+        .from('user_bot_settings')
+        .select('user_id, status, pause_reason')
+        .in('status', ['running', 'paused']);
+    if (error) {
+        console.error('getUsersToResume error:', error);
+        return [];
+    }
+    return data || [];
 }
 
 // ============== FRR 歷史均值 (全域共享) ==============
@@ -414,6 +455,7 @@ module.exports = {
     saveIBRRSnapshot, getIBRRTrainingData,
     saveLog, getLogs,
     getSetting, saveSetting,
-    getUserSettings, saveUserSettings, getActiveUsers,
+    getUserSettings, saveUserSettings, getUserSettingsByTelegramChatId,
+    getActiveUsers, getUsersToResume,
     getAverageFRR,
 };
