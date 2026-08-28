@@ -8,7 +8,7 @@ const PERIODS = [
     { label: '累計', key: 'allTime' },
 ];
 
-export default function EarningsPanel({ token }) {
+export default function EarningsPanel({ token, embedded = false }) {
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
     const [activePeriod, setActivePeriod] = useState('month');
@@ -60,13 +60,13 @@ export default function EarningsPanel({ token }) {
         }
     }
 
-    if (loading) return <div className="panel loading-shimmer" style={{ height: 180 }} />;
+    if (loading) return <div className={`${embedded ? 'earnings-panel-content' : 'panel'} loading-shimmer`} style={{ height: 180 }} />;
     if (!stats) return null;
 
     const current = stats[activePeriod] || { total: 0, byCurrency: {} };
 
     return (
-        <div className="panel">
+        <div className={embedded ? 'earnings-panel-content' : 'panel'}>
             <div className="panel-header">
                 <h3>💰 收益統計</h3>
                 <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>

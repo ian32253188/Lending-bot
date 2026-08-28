@@ -74,6 +74,7 @@ export default function FundingMarketDashboard({ token }) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const [selectedHour, setSelectedHour] = useState(null);
+    const [detailSort, setDetailSort] = useState({ key: 'amount', direction: 'desc' });
 
     const load = async () => {
         try {
@@ -97,6 +98,37 @@ export default function FundingMarketDashboard({ token }) {
 
     const points = useMemo(() => toPoints(summary), [summary]);
     const hourlyMatches = summary?.hourlyMatches24 || summary?.hourlyMatches || [];
+    const sortedDetails = useMemo(() => {
+        const details = selectedHour?.details || [];
+        const direction = detailSort.direction === 'asc' ? 1 : -1;
+
+        return details
+            .map((detail, index) => ({ detail, index }))
+            .sort((a, b) => {
+                const aValue = Number(a.detail?.[detailSort.key]);
+                const bValue = Number(b.detail?.[detailSort.key]);
+                const aValid = Number.isFinite(aValue);
+                const bValid = Number.isFinite(bValue);
+
+                if (!aValid && !bValid) return a.index - b.index;
+                if (!aValid) return 1;
+                if (!bValid) return -1;
+                return (aValue - bValue) * direction || a.index - b.index;
+            })
+            .map(({ detail }) => detail);
+    }, [selectedHour, detailSort]);
+
+    const toggleDetailSort = key => {
+        setDetailSort(current => current.key === key
+            ? { key, direction: current.direction === 'desc' ? 'asc' : 'desc' }
+            : { key, direction: 'desc' });
+    };
+
+    const sortIndicator = key => {
+        if (detailSort.key !== key) return '↕';
+        return detailSort.direction === 'desc' ? '↓' : '↑';
+    };
+
     if (loading && !summary) return <div className="card market-dashboard">載入 fUSD 市場資料中…</div>;
 
     return (
@@ -143,8 +175,27 @@ export default function FundingMarketDashboard({ token }) {
                             <h3 id="market-detail-title">{new Date(selectedHour.timestamp).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })} 撮合明細（USD）</h3>
                             <button type="button" className="market-detail-close" onClick={() => setSelectedHour(null)} aria-label="關閉">×</button>
                         </div>
-                        <div className="market-detail-table market-detail-table-head"><span>時間</span><span>金額</span><span>天數</span><span>成交利率</span></div>
-                        {selectedHour.details?.length ? selectedHour.details.map((detail, index) => (
+                        <div className="market-detail-table market-detail-table-head">
+                            <span>時間</span>
+                            {[
+                                ['amount', '金額'],
+                                ['period', '天數'],
+                                ['apy', '成交利率'],
+                            ].map(([key, label]) => (
+                                <button
+                                    key={key}
+                                    type="button"
+                                    className={`market-detail-sort-button ${detailSort.key === key ? 'active' : ''}`}
+                                    onClick={() => toggleDetailSort(key)}
+                                    aria-label={`依${label}排序`}
+                                    aria-sort={detailSort.key === key ? (detailSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}
+                                >
+                                    <span>{label}</span>
+                                    <span className="market-detail-sort-indicator" aria-hidden="true">{sortIndicator(key)}</span>
+                                </button>
+                            ))}
+                        </div>
+                        {sortedDetails.length ? sortedDetails.map((detail, index) => (
                             <div className="market-detail-table market-detail-row" key={`${detail.id}-${detail.timestamp}-${index}`}>
                                 <span>{new Date(detail.timestamp).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}</span>
                                 <strong>{fmtAmount(detail.amount)}</strong>

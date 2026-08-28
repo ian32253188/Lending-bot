@@ -89,13 +89,13 @@ export default function Dashboard({ status, connected, token, onLogout, onRefres
                 {activePage === 'overview' && (
                     <>
                         <div className="section">
-                            <StatusPanel status={status} />
+                            <div className="dashboard-top-summary">
+                                <StatusPanel status={status} />
+                                <EarningsPanel token={token} embedded />
+                            </div>
                         </div>
                         <div className="section">
                             <FundingMarketDashboard token={token} />
-                        </div>
-                        <div className="section">
-                            <EarningsPanel token={token} />
                         </div>
                         <div className="grid grid-2 section">
                             <StrategyPanel status={status} token={token} onRefresh={onRefresh} />

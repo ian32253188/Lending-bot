@@ -1,12 +1,12 @@
 export default function StatusPanel({ status }) {
     if (!status) return <div className="card">載入中...</div>;
 
-    const { wallets, activeOffers, activeCredits, marketData } = status;
+    const { wallets, activeOffers, activeCredits } = status;
     const privateDataAvailable = status.accountDataAvailable ?? (status.running || status.authenticated);
     const privateValue = value => privateDataAvailable && value != null ? value : '—';
 
     return (
-        <>
+        <div className="status-panel-content">
             {/* 統計卡片 */}
             <div className="grid grid-4">
                 {/* 錢包餘額 */}
@@ -24,22 +24,6 @@ export default function StatusPanel({ status }) {
                     </div>
                 ))}
 
-                {/* FRR 利率 */}
-                {Object.entries(marketData || {}).map(([cur, md]) => (
-                    md && md.frr ? (
-                        <div className="card" key={`frr-${cur}`}>
-                            <div className="card-header">
-                                <span className="card-title">📈 {cur} FRR</span>
-                            </div>
-                            <div className="stat-value blue">
-                                {(md.frr * 100).toFixed(4)}%
-                            </div>
-                            <div className="stat-label">
-                                年化: {(md.frr * 365 * 100).toFixed(2)}%
-                            </div>
-                        </div>
-                    ) : null
-                ))}
             </div>
 
             {/* 放貸概覽 */}
@@ -72,6 +56,6 @@ export default function StatusPanel({ status }) {
             {!privateDataAvailable && (
                 <div className="status-data-note">錢包、活躍掛單與放貸中屬於 Bitfinex 私有資料；目前策略尚未啟動，因此先顯示「—」。啟動策略後會建立私有連線並同步。</div>
             )}
-        </>
+        </div>
     );
 }
