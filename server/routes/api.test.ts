@@ -54,7 +54,8 @@ require.cache[managerPath] = {
   exports: {
     getBot: vi.fn().mockReturnValue(mockEngine),
     startBot: vi.fn().mockResolvedValue(mockEngine),
-    stopBot: vi.fn().mockResolvedValue(null)
+    stopBot: vi.fn().mockResolvedValue(null),
+    restartBotPreservingState: vi.fn().mockResolvedValue(mockEngine)
   }
 } as any;
 

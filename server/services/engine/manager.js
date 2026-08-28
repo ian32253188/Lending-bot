@@ -128,6 +128,21 @@ async function stopBot(userId, { persistStatus = true } = {}) {
 }
 
 /**
+ * Restart an active engine after a settings change without changing its
+ * persisted desired state. This is important for paused engines: a normal
+ * stop/start cycle would overwrite paused with stopped and then start it.
+ */
+async function restartBotPreservingState(userId) {
+    const bot = activeRunners.get(userId);
+    if (!bot) return null;
+
+    const persistedState = bot.paused ? 'paused' : bot.running ? 'running' : 'stopped';
+    await stopBot(userId, { persistStatus: false });
+    if (persistedState === 'stopped') return null;
+    return startBot(userId);
+}
+
+/**
  * 取得特定使用者的運行實例
  */
 function getBot(userId) {
@@ -160,8 +175,8 @@ async function autoResumeAll() {
                 await startBot(userId);
             } catch (err) {
                 logger.error('manager', `自動重啟使用者 ${userId} 失敗`, { error: err.message });
-                // 重開失敗則將資料庫改為 stopped 狀態避免重複循環錯誤
-                await db.saveUserSettings(userId, { status: 'stopped' });
+                // 保留使用者原本的 desired state，下一次程序啟動時再嘗試恢復。
+                // 實際是否活躍仍由 activeRunners / health metrics 判斷。
             }
         }
         logger.info('manager', '✅ 所有活躍帳戶自動恢復完成');
@@ -306,6 +321,7 @@ async function updateGlobalHistoricalFRR() {
 module.exports = {
     startBot,
     stopBot,
+    restartBotPreservingState,
     getBot,
     getActiveEngineCount,
     autoResumeAll,

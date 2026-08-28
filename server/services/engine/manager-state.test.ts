@@ -64,7 +64,7 @@ moduleMock('./strategy', { getStrategyEngine: () => ({ calculateOptimalRate: vi.
 moduleMock('./lending', { LendingBot: MockLendingBot });
 moduleMock('../../utils/crypto', { decryptWithFallback: (value: string) => value });
 
-const { getBot, startBot, shutdownAll } = require('./manager');
+const { getBot, startBot, restartBotPreservingState, shutdownAll } = require('./manager');
 
 describe('Engine manager persisted state', () => {
   beforeEach(() => {
@@ -85,6 +85,11 @@ describe('Engine manager persisted state', () => {
     expect(bot).toBe(getBot(userId));
     expect(bot.paused).toBe(true);
     expect(bot.pauseReason).toBe('手動暫停');
+
+    saveUserSettings.mockClear();
+    const restartedBot = await restartBotPreservingState(userId);
+    expect(restartedBot.paused).toBe(true);
+    expect(saveUserSettings).not.toHaveBeenCalledWith(userId, { status: 'stopped' });
   });
 
   it('程序關閉時停止引擎但不把 persisted status 改成 stopped', async () => {

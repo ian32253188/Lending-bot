@@ -88,6 +88,60 @@ function numericHistory(history, field) {
         .filter(value => value !== null);
 }
 
+function taipeiDateKey(value) {
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp)) return null;
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Taipei',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).format(new Date(timestamp));
+}
+
+function aggregateDailyRateHistory(history, now = Date.now(), days = 30) {
+    const currentDate = taipeiDateKey(new Date(now).toISOString());
+    if (!currentDate) return [];
+
+    // Taiwan has no DST, so its local midnight can be represented with +08:00.
+    const currentDayStart = Date.parse(`${currentDate}T00:00:00+08:00`);
+    const firstDayStart = currentDayStart - (days - 1) * DAY_MS;
+    const firstDate = taipeiDateKey(new Date(firstDayStart).toISOString());
+    const buckets = new Map();
+
+    for (const row of history) {
+        const date = taipeiDateKey(row?.recorded_at);
+        if (!date || date < firstDate || date > currentDate) continue;
+
+        const bucket = buckets.get(date) || {
+            date,
+            avgSum: 0,
+            avgCount: 0,
+            highRate: null,
+            lowRate: null,
+        };
+        const avgRate = numberOrNull(row?.avg_rate);
+        const highRate = numberOrNull(row?.high_rate);
+        const lowRate = numberOrNull(row?.low_rate);
+        if (avgRate !== null) {
+            bucket.avgSum += avgRate;
+            bucket.avgCount += 1;
+        }
+        if (highRate !== null) bucket.highRate = bucket.highRate === null ? highRate : Math.max(bucket.highRate, highRate);
+        if (lowRate !== null) bucket.lowRate = bucket.lowRate === null ? lowRate : Math.min(bucket.lowRate, lowRate);
+        buckets.set(date, bucket);
+    }
+
+    return [...buckets.values()]
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .map(bucket => ({
+            recorded_at: `${bucket.date}T00:00:00+08:00`,
+            avg_rate: bucket.avgCount ? bucket.avgSum / bucket.avgCount : null,
+            high_rate: bucket.highRate,
+            low_rate: bucket.lowRate,
+        }));
+}
+
 /**
  * 取得每日摘要所需的 fUSD 公開市場資料。
  * 市場成交資料來自 Bitfinex public API；30 日統計使用本機已收集的 rate_history。
@@ -107,9 +161,10 @@ async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restC
     const trades = (tradesResult.status === 'fulfilled' && Array.isArray(tradesResult.value))
         ? tradesResult.value.map(parsePublicFundingTrade).filter(Boolean)
         : [];
-    const history = (historyResult.status === 'fulfilled' && Array.isArray(historyResult.value))
+    const rawHistory = (historyResult.status === 'fulfilled' && Array.isArray(historyResult.value))
         ? historyResult.value
         : [];
+    const history = aggregateDailyRateHistory(rawHistory, now, 30);
 
     const tradeVolume = trades.reduce((sum, trade) => sum + trade.amount, 0);
     const weightedRate = tradeVolume > 0
@@ -174,6 +229,7 @@ async function getCachedFundingMarketSummary(options = {}) {
 
 module.exports = {
     annualizedPercent,
+    aggregateDailyRateHistory,
     buildHourlyFundingMatches,
     buildFundingMarketSummary,
     getCachedFundingMarketSummary,

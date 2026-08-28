@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { annualizedPercent, buildFundingMarketSummary, buildHourlyFundingMatches } from './market-summary';
+import { aggregateDailyRateHistory, annualizedPercent, buildFundingMarketSummary, buildHourlyFundingMatches } from './market-summary';
 
 describe('fUSD market summary helpers', () => {
   it('converts Bitfinex daily funding rates to annualized percentages', () => {
@@ -19,6 +19,21 @@ describe('fUSD market summary helpers', () => {
     expect(rows[0].count).toBe(2);
     expect(rows[0].minApy).toBeCloseTo(10.95, 6);
     expect(rows[0].maxApy).toBeCloseTo(14.6, 6);
+  });
+
+  it('aggregates five-minute snapshots into one point per Taipei calendar day', () => {
+    const now = Date.parse('2026-08-28T08:00:00Z');
+    const rows = aggregateDailyRateHistory([
+      { recorded_at: '2026-08-27T00:00:00Z', avg_rate: 0.0002, high_rate: 0.0004, low_rate: 0.0001 },
+      { recorded_at: '2026-08-27T12:00:00Z', avg_rate: 0.0004, high_rate: 0.0005, low_rate: 0.00015 },
+      { recorded_at: '2026-08-28T00:00:00Z', avg_rate: 0.0003, high_rate: 0.0006, low_rate: 0.00015 },
+    ], now);
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0].recorded_at).toBe('2026-08-27T00:00:00+08:00');
+    expect(rows[0].avg_rate).toBeCloseTo(0.0003, 10);
+    expect(rows[0].high_rate).toBeCloseTo(0.0005, 10);
+    expect(rows[0].low_rate).toBeCloseTo(0.0001, 10);
   });
 
   it('builds the dashboard metrics from public trades and local 30-day history', async () => {

@@ -279,14 +279,31 @@ async function getRateHistory(currency, hours = 24) {
     const db = getSupabase();
     if (!db) return [];
     const fromDate = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-    const { data, error } = await db
-        .from('rate_history')
-        .select('*')
-        .eq('currency', currency)
-        .gte('recorded_at', fromDate)
-        .order('recorded_at', { ascending: true });
-    if (error) console.error('getRateHistory error:', error);
-    return data || [];
+    const pageSize = 1000;
+    const rows = [];
+
+    // Supabase Data API limits one response to max_rows (1000 in this project).
+    // Walk through result pages so a 30-day window is not truncated to the
+    // oldest few days of five-minute snapshots.
+    for (let page = 0; ; page += 1) {
+        const { data, error } = await db
+            .from('rate_history')
+            .select('*')
+            .eq('currency', currency)
+            .gte('recorded_at', fromDate)
+            .order('recorded_at', { ascending: true })
+            .range(page * pageSize, (page + 1) * pageSize - 1);
+
+        if (error) {
+            console.error('getRateHistory error:', error);
+            return rows;
+        }
+
+        rows.push(...(data || []));
+        if (!data || data.length < pageSize) break;
+    }
+
+    return rows;
 }
 
 // ============== 操作日誌 ==============
@@ -413,10 +430,22 @@ async function getActiveUsers() {
 async function getUsersToResume() {
     const db = getSupabase();
     if (!db) return [];
-    const { data, error } = await db
+    let { data, error } = await db
         .from('user_bot_settings')
         .select('user_id, status, pause_reason')
         .in('status', ['running', 'paused']);
+
+    // Keep running users recoverable during a rolling deployment where the
+    // application may be newer than the database migration. Paused reasons
+    // become available once migration 007 is applied.
+    if (error && /pause_reason|column .* does not exist/i.test(error.message || '')) {
+        console.warn('getUsersToResume: pause_reason 欄位尚未存在，先以狀態恢復運行帳戶');
+        ({ data, error } = await db
+            .from('user_bot_settings')
+            .select('user_id, status')
+            .in('status', ['running', 'paused']));
+    }
+
     if (error) {
         console.error('getUsersToResume error:', error);
         return [];

@@ -1,5 +1,5 @@
 const express = require('express');
-const { getBot, startBot, stopBot } = require('../services/engine/manager');
+const { getBot, startBot, stopBot, restartBotPreservingState } = require('../services/engine/manager');
 const { getStrategyEngine } = require('../services/engine/strategy');
 const rest = require('../services/bitfinex/rest');
 const db = require('../services/database');
@@ -119,8 +119,7 @@ router.post('/settings', async (req, res) => {
         const runningBot = getBot(userId);
         if (runningBot) {
             logger.info('routes', `用戶 ${userId} 設定更新，重啟機器人以套用新設定`);
-            await stopBot(userId);
-            await startBot(userId);
+            await restartBotPreservingState(userId);
         }
 
         res.json({ message: '設定更新成功' });
@@ -210,11 +209,10 @@ router.post('/strategy-settings', async (req, res) => {
         if (errors.length) return res.status(400).json({ error: errors.join('; ') });
         const strategyConfig = normalizeStrategyConfig(candidateConfig);
 
-        const wasRunning = !!getBot(userId)?.running;
+        const wasRunning = !!getBot(userId);
         await db.saveUserSettings(userId, { strategy_config: strategyConfig });
         if (wasRunning) {
-            await stopBot(userId);
-            await startBot(userId);
+            await restartBotPreservingState(userId);
         }
         res.json({
             message: wasRunning ? '策略設定已更新並重新啟動引擎' : '策略設定已更新，下次啟動時套用',
