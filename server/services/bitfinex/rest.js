@@ -279,6 +279,21 @@ async function getFundingStats(currency) {
 }
 
 /**
+ * 取得公開 Funding 成交紀錄
+ * @param {string} currency - 'USD' 或 'USDT'
+ * @param {object} options - Bitfinex 公開 trades endpoint 的查詢參數
+ */
+async function getFundingTrades(currency, options = {}) {
+    const bfxSym = toBfxSymbol(currency);
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(options)) {
+        if (value !== undefined && value !== null) params.set(key, String(value));
+    }
+    const query = params.toString();
+    return publicRequest(`/trades/f${bfxSym}/hist${query ? `?${query}` : ''}`);
+}
+
+/**
  * 取得 Funding Book
  */
 async function getFundingBook(currency, precision = 'P0') {
@@ -367,6 +382,7 @@ module.exports = {
     transfer,
     getFundingTicker,
     getFundingStats,
+    getFundingTrades,
     getFundingBook,
     parseFundingOffer,
     parseFundingCredit,

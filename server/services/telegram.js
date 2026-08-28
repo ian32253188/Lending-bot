@@ -2,6 +2,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const config = require('../config');
 const logger = require('../utils/logger');
 const cron = require('node-cron');
+const { buildFundingMarketSummary } = require('./market-summary');
 
 // ============== 多租戶 Telegram Bot 註冊表 ==============
 // key = userId, value = { bot: TelegramBot, chatId: string }
@@ -10,6 +11,22 @@ const userBots = new Map();
 // 系統管理員 Bot (用 .env 設定的全域 Bot，可選)
 let adminBot = null;
 let adminChatId = null;
+let dailySummaryJob = null;
+
+function ensureDailySummarySchedule() {
+    if (dailySummaryJob) return;
+
+    // 每日摘要與管理員 Bot 無關；SaaS 使用者只設定自己的 Bot 時也必須啟動
+    dailySummaryJob = cron.schedule('55 23 * * *', () => {
+        logger.info('telegram', '⏰ 觸發每日放貸摘要定時任務...');
+        sendDailySummary().catch(err => {
+            logger.error('telegram', '定時發送每日摘要失敗', { error: err.message });
+        });
+    }, {
+        timezone: 'Asia/Taipei'
+    });
+    logger.info('telegram', '📅 已註冊每日放貸摘要排程 (每晚 23:55 台北時間)');
+}
 
 /**
  * 初始化系統管理員 Telegram Bot (使用 .env 全域設定)
@@ -55,6 +72,7 @@ function initUserTelegram(userId, botToken, chatId) {
         // 用戶 Bot 使用 polling: false (只用來發送訊息，不監聽指令)
         const bot = new TelegramBot(botToken, { polling: false });
         userBots.set(userId, { bot, chatId });
+        ensureDailySummarySchedule();
         logger.info('telegram', `✅ 用戶 ${userId} 的 Telegram Bot 已初始化`);
         return bot;
     } catch (err) {
@@ -173,6 +191,7 @@ async function sendDailySummary() {
     const { getBitfinexPublicWS } = require('./bitfinex/ws');
     const strategy = getStrategyEngine();
     const publicWs = getBitfinexPublicWS();
+    const marketSummary = await buildFundingMarketSummary({ publicWs, db });
 
     // 收集所有需要發送摘要的 targets: (userId, engine)
     const targets = [];
@@ -187,7 +206,7 @@ async function sendDailySummary() {
 
     // 2. 若無任何用戶目標但有管理員 Bot，發送管理員全域摘要
     if (targets.length === 0 && adminBot && adminChatId) {
-        const summaryMsg = await buildGlobalSummaryMessage(strategy, publicWs, db);
+        const summaryMsg = await buildGlobalSummaryMessage(strategy, publicWs, db, marketSummary);
         try {
             await adminBot.sendMessage(adminChatId, summaryMsg, { parse_mode: 'HTML' });
         } catch (err) {
@@ -203,7 +222,7 @@ async function sendDailySummary() {
             const { syncUserEarnings } = require('./engine/sync');
             await syncUserEarnings(userId, true);
 
-            const msg = await buildUserSummaryMessage(userId, engine, strategy, publicWs, db);
+            const msg = await buildUserSummaryMessage(userId, engine, strategy, publicWs, db, marketSummary);
             await sendMessage(msg, userId);
         } catch (err) {
             logger.error('telegram', `用戶 ${userId} 每日摘要發送失敗`, { error: err.message });
@@ -216,7 +235,7 @@ async function sendDailySummary() {
 /**
  * 組合特定用戶的每日摘要訊息
  */
-async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db) {
+async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, marketSummary = null) {
     const status = engine.getDetailedStatus();
     const now = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
 
@@ -253,34 +272,87 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db) {
     let msg = `📊 <b>每日放貸營運總結</b>\n`;
     msg += `📅 統計時間: <code>${now}</code>\n\n`;
 
-    // 1. 收益回報統計
+    // 1. fUSD 市場行情
+    msg += formatFundingMarketSection(marketSummary);
+
+    // 2. 收益回報統計
     msg += `💰 <b>量化收益回報 (已扣稅)</b>\n`;
     msg += `  ├─ 今日收益: <b>$${todayTotal.toFixed(4)} USD</b>${changeText}\n`;
     msg += `  ├─ 昨日收益: <b>$${yesterdayTotal.toFixed(4)} USD</b>\n`;
     msg += `  └─ 累計收益: <b>$${allTimeTotal.toFixed(4)} USD</b>\n\n`;
 
-    // 2. 各幣種錢包與放貸水位
+    // 3. 各幣種錢包與放貸水位
     msg += `💳 <b>資產與放貸水位</b>\n`;
     for (const cur of Object.keys(status.wallets)) {
         const wallet = status.wallets[cur] || { balance: 0, available: 0 };
         const offersCount = Array.isArray(status.activeOffers[cur]) ? status.activeOffers[cur].length : (status.activeOffers[cur] || 0);
         const creditsCount = Array.isArray(status.activeCredits[cur]) ? status.activeCredits[cur].length : (status.activeCredits[cur] || 0);
+        const offersAmount = Array.isArray(status.activeOffers[cur])
+            ? status.activeOffers[cur].reduce((sum, offer) => sum + (Number(offer.amount) || 0), 0)
+            : 0;
+        const creditsAmount = Array.isArray(status.activeCredits[cur])
+            ? status.activeCredits[cur].reduce((sum, credit) => sum + (Number(credit.amount) || 0), 0)
+            : 0;
+        const lendingAmount = Math.max(0, (Number(wallet.balance) || 0) - (Number(wallet.available) || 0));
         msg += `  <b>${cur} 資產</b>:\n`;
         msg += `  ├─ 錢包總額: $${wallet.balance.toFixed(2)}\n`;
         msg += `  ├─ 可用餘額: $${wallet.available.toFixed(2)}\n`;
-        msg += `  └─ 進行中合約: 掛單 ${offersCount} 筆 | 貸款中 ${creditsCount} 筆\n`;
+        msg += `  ├─ 已投入放貸: $${lendingAmount.toFixed(2)}\n`;
+        msg += `  └─ 進行中: 掛單 ${offersCount} 筆 ($${offersAmount.toFixed(2)}) | 貸款中 ${creditsCount} 筆 ($${creditsAmount.toFixed(2)})\n`;
     }
 
+    return msg;
+}
+
+function formatPercent(value) {
+    return value === null || value === undefined || !Number.isFinite(Number(value))
+        ? '—'
+        : `${Number(value).toFixed(2)}%`;
+}
+
+function formatAmount(value) {
+    const amount = Number(value);
+    return Number.isFinite(amount) ? `$${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—';
+}
+
+function formatFundingMarketSection(summary) {
+    if (!summary) return `📈 <b>fUSD 市場行情</b>\n  └─ 公開市場資料暫時無法取得\n\n`;
+
+    let msg = `📈 <b>fUSD 市場行情</b>（Bitfinex 公開資料）\n`;
+    msg += `  ├─ 目前成交均值: <b>${formatPercent(summary.currentApy)}</b>\n`;
+    msg += `  ├─ 24H 區間: ${formatPercent(summary.low24hApy)} – ${formatPercent(summary.high24hApy)}\n`;
+    msg += `  ├─ 24H 最高: ${formatPercent(summary.high24hApy)}\n`;
+    msg += `  ├─ 24H 成交額: ${formatAmount(summary.volume24h)}\n`;
+    msg += `  ├─ 30 日平均: ${formatPercent(summary.average30dApy)}\n`;
+    msg += `  ├─ 30 日最高: ${formatPercent(summary.high30dApy)}\n`;
+    msg += `  ├─ 30 日最低: ${formatPercent(summary.low30dApy)}\n`;
+
+    const hourly = Array.isArray(summary.hourlyMatches) ? summary.hourlyMatches : [];
+    if (hourly.length === 0) {
+        msg += `  └─ 近 24H 撮合: 暫無資料\n\n`;
+        return msg;
+    }
+
+    msg += `  └─ 近幾小時撮合:\n`;
+    for (const row of hourly) {
+        const time = new Date(row.timestamp).toLocaleTimeString('zh-TW', {
+            timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false,
+        });
+        msg += `      ${time} ${formatPercent(row.minApy)}–${formatPercent(row.maxApy)} | ${formatAmount(row.amount)}\n`;
+    }
+    msg += `\n`;
     return msg;
 }
 
 /**
  * 組合全域管理員摘要訊息 (無特定用戶)
  */
-async function buildGlobalSummaryMessage(strategy, publicWs, db) {
+async function buildGlobalSummaryMessage(strategy, publicWs, db, marketSummary = null) {
     const now = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
     let msg = `🌌 <b>3D Hybrid 系統管理員每日摘要</b>\n`;
     msg += `📅 統計時間: <code>${now}</code>\n\n`;
+
+    msg += formatFundingMarketSection(marketSummary);
 
     for (const cur of ['USD', 'USDT']) {
         const md = publicWs.getMarketData(cur);
@@ -522,16 +594,7 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
         }
     });
 
-    // 🌟 每日放貸摘要排程（每晚 23:55 台北時間）
-    cron.schedule('55 23 * * *', () => {
-        logger.info('telegram', '⏰ 觸發每日放貸摘要定時任務...');
-        sendDailySummary().catch(err => {
-            logger.error('telegram', '定時發送每日摘要失敗', { error: err.message });
-        });
-    }, {
-        timezone: "Asia/Taipei"
-    });
-    logger.info('telegram', '📅 已註冊每日放貸摘要排程 (每晚 23:55 台北時間)');
+    ensureDailySummarySchedule();
 }
 
 // ============== 管理員控制面板輔助函數 ==============
