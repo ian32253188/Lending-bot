@@ -15,6 +15,9 @@ describe('Telegram strategy controls', () => {
       'period_2', 'period_10', 'period_30', 'period_60', 'period_90', 'period_120',
     ]));
     expect(callbackData).toContain('start_engine');
+    expect(callbackData).not.toContain('get_diagnostics');
+    expect(getControlPanelText(null, { strategy_config: { rateStrategy: 'high_24h', periodDays: 30 } }))
+      .not.toContain('即時決策診斷');
     expect(callbackData).not.toContain('pause_engine');
     expect(callbackData).not.toContain('resume_engine');
     expect(getControlPanelText(null, { strategy_config: { rateStrategy: 'high_24h', periodDays: 30 } }))

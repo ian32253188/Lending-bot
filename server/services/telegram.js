@@ -440,19 +440,20 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
             const strategy = getStrategyEngine();
             const publicWs = getBitfinexPublicWS();
             const activeUserIds = await db.getActiveUsers();
+            const marketSummary = await buildFundingMarketSummary({ publicWs, db });
             
             if (activeUserIds.length > 0) {
                 let report = '';
                 for (const userId of activeUserIds) {
                     const engine = getBot(userId);
                     if (engine) {
-                        const userReport = await buildUserSummaryMessage(userId, engine, strategy, publicWs, db);
+                        const userReport = await buildUserSummaryMessage(userId, engine, strategy, publicWs, db, marketSummary);
                         report += userReport + '\n';
                     }
                 }
                 bot.sendMessage(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => {});
             } else {
-                const summaryMsg = await buildGlobalSummaryMessage(strategy, publicWs, db);
+                const summaryMsg = await buildGlobalSummaryMessage(strategy, publicWs, db, marketSummary);
                 bot.sendMessage(msg.chat.id, summaryMsg, { parse_mode: 'HTML' }).catch(() => {});
             }
         } catch (err) {
@@ -583,11 +584,6 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
                         await startBot(userId);
                     }
                     await updateAdminControlPanel(bot, chatId, messageId);
-                    break;
-                }
-                case 'get_diagnostics': {
-                    await bot.answerCallbackQuery(query.id, { text: '📊 正在獲取 3D Hybrid 決策診斷...' });
-                    await sendAdminDetailedDiagnostics(bot, chatId);
                     break;
                 }
                 case 'emergency_stop': {
@@ -777,8 +773,7 @@ function getControlPanelKeyboard(engine, dbSettings = null) {
                 [
                     isRunning
                         ? { text: '⏹️ 停止策略', callback_data: 'stop_engine' }
-                        : { text: '🚀 啟動策略', callback_data: 'start_engine' },
-                    { text: '📊 即時決策診斷', callback_data: 'get_diagnostics' }
+                        : { text: '🚀 啟動策略', callback_data: 'start_engine' }
                 ],
                 [
                     ...strategyButtons
@@ -797,74 +792,6 @@ async function saveTelegramStrategySettings(userId, strategyConfig, wasRunning) 
     if (wasRunning) {
         await stopBot(userId);
         await startBot(userId);
-    }
-}
-
-/**
- * 發送管理員用的詳細決策診斷
- */
-async function sendAdminDetailedDiagnostics(bot, chatId) {
-    if (!bot) return;
-    try {
-        const { getBot } = require('./engine/manager');
-        const { getBitfinexPublicWS } = require('./bitfinex/ws');
-        
-        const publicWs = getBitfinexPublicWS();
-        const dbSettings = await getSettingsByChatId(chatId);
-        const userId = dbSettings?.user_id || null;
-        
-        const engine = userId ? getBot(userId) : null;
-        if (!engine) {
-            bot.sendMessage(chatId, '⚠️ <b>放貸機器人目前未在運行中，無法獲取決策診斷。</b>', { parse_mode: 'HTML' }).catch(() => {});
-            return;
-        }
-        
-        const status = engine.getDetailedStatus();
-
-        let diagText = `📊 <b>3D Hybrid 決策診斷即時反饋</b>\n`;
-        diagText += `⏰ 查詢時間: <code>${new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</code>\n\n`;
-
-        for (const cur of ['USD', 'USDT']) {
-            const lastDec = status.lastDecision?.[cur];
-            if (!lastDec) {
-                diagText += `🪙 <b>${cur}</b>: 目前無決策記錄（等待下個週期）\n\n`;
-                continue;
-            }
-
-            const opt = lastDec.optimalResult || {};
-            const diag = opt.diagnostics || {};
-
-            const frr = diag.frr ? `${(diag.frr * 100).toFixed(4)}%` : '—';
-            const equilibrium = diag.equilibriumRate ? `${(diag.equilibriumRate * 100).toFixed(4)}%` : '—';
-            const finalRate = diag.finalRate ? `${(diag.finalRate * 100).toFixed(4)}%` : '—';
-            const dsRatio = diag.demandSupplyRatio ? diag.demandSupplyRatio.toFixed(2) : '—';
-            const frrAnnualized = diag.frr ? `${(diag.frr * 365 * 100).toFixed(2)}%` : '—';
-
-            diagText += `🪙 <b>${cur} 自適應指標</b>:\n`;
-            diagText += `  ├─ 當前 FRR: <code>${frr}</code> (年化 ${frrAnnualized})\n`;
-            diagText += `  ├─ 瓦爾拉斯出清: <code>${equilibrium}</code>\n`;
-            diagText += `  ├─ 最終掛單基準: <b>${finalRate}</b>\n`;
-            diagText += `  ├─ 真實供需比: <code>${dsRatio}</code>\n`;
-            diagText += `  ├─ 巨牆偵測: ${diag.wallDetected ? `⚠️ 偵測到阻力牆 (${((diag.wallRate || 0) * 100).toFixed(4)}%/天)，已觸發避讓前置掛單` : '🟢 通暢'}\n`;
-
-            if (opt.orders && opt.orders.length > 0) {
-                diagText += `  └─ <b>當前 3D Grid 拆單計劃</b>:\n`;
-                opt.orders.forEach((o, i) => {
-                    let tag = '底倉 🛡️';
-                    if (o.tag === 'grid_depth') tag = '深度探針 🔍';
-                    if (o.tag === 'grid_cascade') tag = '天價探針 ⚡';
-                    diagText += `     [${i+1}] $${o.amount.toFixed(0)} @ ${(o.rate * 100).toFixed(4)}% (${o.period}天) - ${tag}\n`;
-                });
-            } else {
-                diagText += `  └─ 當前無拆單計劃 (資金已全數放貸中)\n`;
-            }
-            diagText += `\n`;
-        }
-
-        bot.sendMessage(chatId, diagText, { parse_mode: 'HTML' }).catch(() => {});
-    } catch (err) {
-        logger.error('telegram', '發送決策診斷失敗', { error: err.message });
-        bot.sendMessage(chatId, `❌ 無法獲取決策診斷: ${err.message}`).catch(() => {});
     }
 }
 
