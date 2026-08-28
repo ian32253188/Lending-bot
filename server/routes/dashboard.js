@@ -2,27 +2,9 @@ const express = require('express');
 const { getBot } = require('../services/engine/manager');
 const db = require('../services/database');
 const { getCachedFundingMarketSummary } = require('../services/market-summary');
+const { getInactiveDashboardStatus } = require('../services/dashboard-status');
 
 const router = express.Router();
-
-const defaultStatus = {
-    running: false,
-    paused: false,
-    pauseReason: '',
-    monitorOnly: false,
-    compounding: false,
-    autoTransfer: false,
-    autoTransferThreshold: 500,
-    strategyMode: 'balanced',
-    connected: false,
-    authenticated: false,
-    stats: { offersPlaced: 0, offersCancelled: 0, totalEarned: { USD: 0, USDT: 0 }, lastUpdate: null },
-    wallets: { USD: { balance: 0, available: 0 }, USDT: { balance: 0, available: 0 } },
-    activeOffers: { USD: 0, USDT: 0 },
-    activeCredits: { USD: 0, USDT: 0 },
-    marketData: {},
-    strategy: { mode: 'balanced', config: {} }
-};
 
 // 取得儀表板總覽
 router.get('/overview', async (req, res) => {
@@ -30,7 +12,7 @@ router.get('/overview', async (req, res) => {
         const userId = req.user.id;
         const engine = getBot(userId);
         if (!engine) {
-            return res.json(defaultStatus);
+            return res.json(getInactiveDashboardStatus());
         }
         res.json(engine.getStatus());
     } catch (err) {
@@ -44,7 +26,7 @@ router.get('/detailed', async (req, res) => {
         const userId = req.user.id;
         const engine = getBot(userId);
         if (!engine) {
-            return res.json(defaultStatus);
+            return res.json(getInactiveDashboardStatus());
         }
         res.json(engine.getDetailedStatus());
     } catch (err) {

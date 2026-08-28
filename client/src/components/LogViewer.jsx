@@ -9,7 +9,7 @@ export default function LogViewer({ token }) {
     const [loading, setLoading] = useState(false);
     const [levelFilter, setLevelFilter] = useState('all');
     const [keyword, setKeyword] = useState('');
-    const [autoScroll, setAutoScroll] = useState(true);
+    const [autoScroll, setAutoScroll] = useState(false);
     const bottomRef = useRef(null);
 
     const fetchLogs = async () => {

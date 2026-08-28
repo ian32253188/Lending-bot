@@ -135,16 +135,8 @@ wss.on('connection', (ws, req) => {
                                     data: engine.getStatus(),
                                 }));
                             } else {
-                                ws.send(JSON.stringify({
-                                    type: 'status',
-                                    data: {
-                                        running: false,
-                                        connected: false,
-                                        wallets: { USD: { balance: 0, available: 0 }, USDT: { balance: 0, available: 0 } },
-                                        activeOffers: { USD: 0, USDT: 0 },
-                                        activeCredits: { USD: 0, USDT: 0 }
-                                    }
-                                }));
+                                const { getInactiveDashboardStatus } = require('./services/dashboard-status');
+                                ws.send(JSON.stringify({ type: 'status', data: getInactiveDashboardStatus() }));
                             }
                         }
                     }, 2000); // 每 2 秒推送

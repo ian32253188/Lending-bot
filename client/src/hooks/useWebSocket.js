@@ -6,6 +6,22 @@ export function useWebSocket(token) {
     const wsRef = useRef(null);
     const reconnectTimer = useRef(null);
 
+    const refresh = useCallback(async () => {
+        if (!token) return null;
+        try {
+            const response = await fetch('/api/dashboard/overview', {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!response.ok) return null;
+            const data = await response.json();
+            setStatus(data);
+            return data;
+        } catch (err) {
+            console.error('Dashboard status refresh failed:', err);
+            return null;
+        }
+    }, [token]);
+
     const connect = useCallback(() => {
         if (!token) return;
 
@@ -51,12 +67,13 @@ export function useWebSocket(token) {
     }, [token]);
 
     useEffect(() => {
+        refresh();
         connect();
         return () => {
             if (wsRef.current) wsRef.current.close();
             if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
         };
-    }, [connect]);
+    }, [connect, refresh]);
 
     const send = useCallback((data) => {
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -64,5 +81,5 @@ export function useWebSocket(token) {
         }
     }, []);
 
-    return { status, connected, send };
+    return { status, connected, send, refresh };
 }

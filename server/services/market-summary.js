@@ -27,7 +27,7 @@ function parsePublicFundingTrade(row) {
     return { id: row[0], timestamp, amount: Math.abs(amount), rate, period };
 }
 
-function buildHourlyFundingMatches(trades, now = Date.now(), limit = 6) {
+function buildHourlyFundingMatches(trades, now = Date.now(), limit = 6, includeEmpty = false) {
     const buckets = new Map();
     for (const trade of trades) {
         if (trade.timestamp < now - DAY_MS || trade.timestamp > now) continue;
@@ -38,12 +38,37 @@ function buildHourlyFundingMatches(trades, now = Date.now(), limit = 6) {
             minRate: Infinity,
             maxRate: -Infinity,
             count: 0,
+            details: [],
         };
         bucket.amount += trade.amount;
         bucket.minRate = Math.min(bucket.minRate, trade.rate);
         bucket.maxRate = Math.max(bucket.maxRate, trade.rate);
         bucket.count += 1;
+        bucket.details.push({
+            id: trade.id,
+            timestamp: trade.timestamp,
+            amount: trade.amount,
+            period: trade.period,
+            apy: annualizedPercent(trade.rate),
+        });
         buckets.set(timestamp, bucket);
+    }
+
+    if (includeEmpty) {
+        const currentHour = Math.floor(now / HOUR_MS) * HOUR_MS;
+        for (let index = 0; index < limit; index += 1) {
+            const timestamp = currentHour - index * HOUR_MS;
+            if (!buckets.has(timestamp)) {
+                buckets.set(timestamp, {
+                    timestamp,
+                    amount: 0,
+                    minRate: null,
+                    maxRate: null,
+                    count: 0,
+                    details: [],
+                });
+            }
+        }
     }
 
     return [...buckets.values()]
@@ -51,8 +76,9 @@ function buildHourlyFundingMatches(trades, now = Date.now(), limit = 6) {
         .slice(0, limit)
         .map(bucket => ({
             ...bucket,
-            minApy: annualizedPercent(bucket.minRate),
-            maxApy: annualizedPercent(bucket.maxRate),
+            minApy: bucket.minRate === null || bucket.minRate === Infinity ? null : annualizedPercent(bucket.minRate),
+            maxApy: bucket.maxRate === null || bucket.maxRate === -Infinity ? null : annualizedPercent(bucket.maxRate),
+            details: bucket.details.sort((a, b) => b.timestamp - a.timestamp),
         }));
 }
 
@@ -121,6 +147,7 @@ async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restC
         high30dApy: highRates.length ? annualizedPercent(Math.max(...highRates)) : null,
         low30dApy: lowRates.length ? annualizedPercent(Math.min(...lowRates)) : null,
         hourlyMatches: buildHourlyFundingMatches(trades, now),
+        hourlyMatches24: buildHourlyFundingMatches(trades, now, 24, true),
         collectedTradeCount: trades.length,
         historyPointCount: history.length,
     };

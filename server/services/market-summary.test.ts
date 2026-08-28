@@ -46,5 +46,21 @@ describe('fUSD market summary helpers', () => {
     expect(summary.high30dApy).toBeCloseTo(21.9, 5);
     expect(summary.history).toHaveLength(2);
     expect(summary.hourlyMatches).toHaveLength(1);
+    expect(summary.hourlyMatches24).toHaveLength(24);
+    expect(summary.hourlyMatches24[1].details).toHaveLength(2);
+    expect(summary.hourlyMatches24[1].details[0].apy).toBeCloseTo(10.95, 5);
+  });
+
+  it('keeps empty hours visible while preserving the 24-hour window', () => {
+    const now = Date.parse('2026-08-28T08:00:00Z');
+    const rows = buildHourlyFundingMatches([
+      { id: 1, timestamp: Date.parse('2026-08-28T07:15:00Z'), amount: 500, rate: 0.0003, period: 2 },
+    ], now, 24, true);
+
+    expect(rows).toHaveLength(24);
+    expect(rows[0].timestamp).toBe(Date.parse('2026-08-28T08:00:00Z'));
+    expect(rows[0].count).toBe(0);
+    expect(rows[1].count).toBe(1);
+    expect(rows[1].details[0].period).toBe(2);
   });
 });

@@ -189,41 +189,6 @@ export default function StrategyPanel({ status, token, onRefresh }) {
                 ))}
             </div>
 
-            {/* 📖 策略運作機制深入介紹 */}
-            <div style={{
-                marginTop: 14,
-                padding: '12px 14px',
-                background: 'var(--surface-2)',
-                borderRadius: '8px',
-                fontSize: '0.78rem',
-                border: '1px solid var(--border)'
-            }}>
-                <div style={{ fontWeight: 'bold', color: 'var(--text-primary)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
-                    📖 3D_Hybrid 運作機制與優勢：
-                </div>
-                <ul style={{ paddingLeft: 16, margin: 0, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <li>
-                        <strong style={{ color: 'var(--text-primary)' }}>🛡️ 10分鐘誠信過濾 (Harmonia)：</strong>
-                        排除最近 10 分鐘內建立的委託單，徹底擠乾訂單簿內高頻釣魚假單的「水分」，還原真實供需。
-                    </li>
-                    <li>
-                        <strong style={{ color: 'var(--text-primary)' }}>🧱 阻力牆繞道避讓：</strong>
-                        實時檢測占比大於 25% 的大資金阻力牆，定價自動搶先在牆前 2% 利率插隊，確保高效成交不踏空。
-                    </li>
-                    <li>
-                        <strong style={{ color: 'var(--text-primary)' }}>📈 空間底倉 (60% - Cubic網格)：</strong>
-                        以均衡出清利率為基底，採立方緩和曲線向上拉升 12% 溢價網格，金額隨機微幅抖動，完美規避莊家檢測。
-                    </li>
-                    <li>
-                        <strong style={{ color: 'var(--text-primary)' }}>🔬 深度與時間雙探針 (各20%)：</strong>
-                         Percent Depth 捕捉訂單簿 15% 交易量深度的溢價防線；級聯天價探針 (2.5x 息) 隨時間指數衰減降息以釣魚天價。
-                    </li>
-                    <li>
-                        <strong style={{ color: 'var(--text-primary)' }}>📅 期限彈性拉伸：</strong>
-                        依據 Bitfinex 全網平均成交期限自適應拉伸 (2~30天)，低息借 2 天保留流動性，高息鎖 30 天鎖定超額暴利。
-                    </li>
-                </ul>
-            </div>
         </div>
     );
 }

@@ -15,14 +15,16 @@ function toPoints(summary) {
     }
     return (summary?.hourlyMatches || []).slice().reverse().map(row => ({
         label: new Date(row.timestamp).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
-        avg: ((row.minApy || 0) + (row.maxApy || 0)) / 2,
-        high: row.maxApy || 0,
-        low: row.minApy || 0,
-    }));
+        avg: row.count ? ((row.minApy + row.maxApy) / 2) : null,
+        high: row.maxApy,
+        low: row.minApy,
+    })).filter(point => point.avg != null);
 }
 
 function MarketChart({ points }) {
+    const [hoveredIndex, setHoveredIndex] = useState(null);
     if (!points.length) return <div className="market-empty">等待公開市場歷史資料…</div>;
+
     const width = 720;
     const height = 190;
     const values = points.flatMap(point => [point.high, point.low, point.avg]).filter(Number.isFinite);
@@ -35,13 +37,33 @@ function MarketChart({ points }) {
         const index = points.length - 1 - reverseIndex;
         return `${x(index)},${y(point.low)}`;
     }).join(' ')}`;
+    const hovered = hoveredIndex == null ? null : points[hoveredIndex];
+    const handleMouseMove = event => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        const ratio = rect.width ? Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) : 0;
+        setHoveredIndex(Math.round(ratio * (points.length - 1)));
+    };
 
     return (
         <div className="market-chart-wrap">
-            <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="fUSD 30 日利率走勢">
+            <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="fUSD 30 日利率走勢" onMouseMove={handleMouseMove} onMouseLeave={() => setHoveredIndex(null)}>
                 <polygon points={band} fill="rgba(148, 163, 184, 0.2)" />
                 <polyline points={line('avg')} fill="none" stroke="#18a999" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                {hovered && (
+                    <>
+                        <line x1={x(hoveredIndex)} x2={x(hoveredIndex)} y1="0" y2={height} stroke="#cbd5e1" strokeDasharray="4 4" />
+                        <circle cx={x(hoveredIndex)} cy={y(hovered.avg)} r="5" fill="#18a999" stroke="#fff" strokeWidth="2" />
+                    </>
+                )}
             </svg>
+            {hovered && (
+                <div className="market-tooltip" style={{ left: `${(x(hoveredIndex) / width) * 100}%` }}>
+                    <strong>{hovered.label}</strong>
+                    <span><b>最高</b> {fmt(hovered.high)}</span>
+                    <span><b>平均</b> {fmt(hovered.avg)}</span>
+                    <span><b>最低</b> {fmt(hovered.low)}</span>
+                </div>
+            )}
             <div className="market-chart-axis"><span>{points[0].label}</span><span>{points[Math.floor(points.length / 2)].label}</span><span>{points[points.length - 1].label}</span></div>
         </div>
     );
@@ -51,6 +73,7 @@ export default function FundingMarketDashboard({ token }) {
     const [summary, setSummary] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    const [selectedHour, setSelectedHour] = useState(null);
 
     const load = async () => {
         try {
@@ -73,6 +96,7 @@ export default function FundingMarketDashboard({ token }) {
     }, [token]);
 
     const points = useMemo(() => toPoints(summary), [summary]);
+    const hourlyMatches = summary?.hourlyMatches24 || summary?.hourlyMatches || [];
     if (loading && !summary) return <div className="card market-dashboard">載入 fUSD 市場資料中…</div>;
 
     return (
@@ -99,17 +123,36 @@ export default function FundingMarketDashboard({ token }) {
                 <div className="market-matches">
                     <h3>◷ 過去每小時撮合</h3>
                     <div className="market-table-head"><span>時間</span><span>成交利率</span><span>借量</span></div>
-                    {(summary?.hourlyMatches || []).map(row => (
-                        <div className="market-table-row" key={row.timestamp}>
+                    {hourlyMatches.map(row => (
+                        <button className="market-table-row" key={row.timestamp} type="button" onClick={() => setSelectedHour(row)}>
                             <span>{new Date(row.timestamp).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}</span>
-                            <strong>{fmt(row.minApy)} - {fmt(row.maxApy)}</strong>
+                            <strong>{row.count ? `${fmt(row.minApy)} - ${fmt(row.maxApy)}` : '—'}</strong>
                             <span>{fmtAmount(row.amount)}</span>
-                        </div>
+                        </button>
                     ))}
-                    {!summary?.hourlyMatches?.length && <div className="market-empty">目前沒有最近 24 小時成交紀錄</div>}
+                    {!hourlyMatches.length && <div className="market-empty">目前沒有最近 24 小時成交紀錄</div>}
                 </div>
             </div>
             {error && <div className="market-error">{error}</div>}
+            {selectedHour && (
+                <div className="market-detail-backdrop" role="presentation" onClick={() => setSelectedHour(null)}>
+                    <div className="market-detail-modal" role="dialog" aria-modal="true" aria-labelledby="market-detail-title" onClick={event => event.stopPropagation()}>
+                        <div className="market-detail-header">
+                            <h3 id="market-detail-title">{new Date(selectedHour.timestamp).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })} 撮合明細（USD）</h3>
+                            <button type="button" className="market-detail-close" onClick={() => setSelectedHour(null)} aria-label="關閉">×</button>
+                        </div>
+                        <div className="market-detail-table market-detail-table-head"><span>時間</span><span>金額</span><span>天數</span><span>成交利率</span></div>
+                        {selectedHour.details?.length ? selectedHour.details.map((detail, index) => (
+                            <div className="market-detail-table market-detail-row" key={`${detail.id}-${detail.timestamp}-${index}`}>
+                                <span>{new Date(detail.timestamp).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}</span>
+                                <strong>{fmtAmount(detail.amount)}</strong>
+                                <span>{detail.period}d</span>
+                                <strong>{fmt(detail.apy)}</strong>
+                            </div>
+                        )) : <div className="market-empty market-detail-empty">這個時段目前沒有撮合成交。</div>}
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

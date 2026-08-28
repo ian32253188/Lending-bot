@@ -10,7 +10,7 @@ export default function App() {
     const [authenticated, setAuthenticated] = useState(false);
     const [user, setUser] = useState(null);
     const [loading, setLoading] = useState(true);
-    const { status, connected } = useWebSocket(authenticated ? token : null);
+    const { status, connected, refresh: refreshStatus } = useWebSocket(authenticated ? token : null);
 
     // 1. 初始化 Supabase Client 與監聽 Session 變更
     useEffect(() => {
@@ -63,14 +63,6 @@ export default function App() {
         handleLogoutInternal();
         if (supabase) {
             await supabase.auth.signOut();
-        }
-    };
-
-    const refreshStatus = () => {
-        if (token) {
-            fetch('/api/dashboard/overview', {
-                headers: { Authorization: `Bearer ${token}` },
-            }).catch(() => { });
         }
     };
 
