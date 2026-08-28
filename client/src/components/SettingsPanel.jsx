@@ -11,6 +11,8 @@ export default function SettingsPanel({ token }) {
         auto_transfer_enabled: false,
         auto_transfer_threshold: 500,
         lending_currencies: ['USD', 'USDT'],
+        rateStrategy: 'current_avg',
+        periodDays: 2,
     });
 
     const [loading, setLoading] = useState(false);
@@ -24,6 +26,7 @@ export default function SettingsPanel({ token }) {
     const fetchSettings = async () => {
         setLoading(true);
         try {
+            const { rateStrategy, periodDays, ...accountSettings } = settings;
             const res = await fetch('/api/lending/settings', {
                 headers: { Authorization: `Bearer ${token}` },
             });
@@ -40,6 +43,8 @@ export default function SettingsPanel({ token }) {
                         auto_transfer_enabled: data.auto_transfer_enabled ?? false,
                         auto_transfer_threshold: data.auto_transfer_threshold ?? 500,
                         lending_currencies: data.lending_currencies || ['USD', 'USDT'],
+                        rateStrategy: data.strategy_config?.rateStrategy || 'current_avg',
+                        periodDays: data.strategy_config?.periodDays || 2,
                     });
                 }
             }
@@ -62,7 +67,10 @@ export default function SettingsPanel({ token }) {
                     Authorization: `Bearer ${token}`,
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(settings),
+                body: JSON.stringify({
+                    ...accountSettings,
+                    strategy_config: { rateStrategy, periodDays, useAllAvailable: true },
+                }),
             });
 
             const data = await res.json();
@@ -207,6 +215,27 @@ export default function SettingsPanel({ token }) {
                                     USDT 泰達幣
                                 </label>
                             </div>
+                        </div>
+
+                        <div className="grid grid-2" style={{ gap: 16 }}>
+                            <div className="form-group">
+                                <label>fUSD 利率策略</label>
+                                <select value={settings.rateStrategy} onChange={(e) => setSettings({ ...settings, rateStrategy: e.target.value })}>
+                                    <option value="current_avg">目前成交均值</option>
+                                    <option value="high_24h">24 小時最高</option>
+                                    <option value="high_30d">30 日最高</option>
+                                </select>
+                            </div>
+                            <div className="form-group">
+                                <label>放貸天數</label>
+                                <select value={settings.periodDays} onChange={(e) => setSettings({ ...settings, periodDays: Number(e.target.value) })}>
+                                    {[2, 10, 30, 60, 90, 120].map(days => <option key={days} value={days}>{days} 天</option>)}
+                                </select>
+                            </div>
+                        </div>
+
+                        <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-secondary)', fontSize: '0.82rem', marginBottom: 16 }}>
+                            💰 掛單金額固定使用 Funding Wallet 當下全部可用餘額；已放貸中的資金不會重複掛單。
                         </div>
 
                         <div className="grid grid-2" style={{ gap: 16 }}>

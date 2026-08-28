@@ -1,6 +1,7 @@
 const express = require('express');
 const { getBot } = require('../services/engine/manager');
 const db = require('../services/database');
+const { getCachedFundingMarketSummary } = require('../services/market-summary');
 
 const router = express.Router();
 
@@ -48,6 +49,20 @@ router.get('/detailed', async (req, res) => {
         res.json(engine.getDetailedStatus());
     } catch (err) {
         res.status(500).json({ error: err.message });
+    }
+});
+
+// fUSD 公開融資市場儀錶板（公開市場資料，不包含其他用戶私有資料）
+router.get('/funding-market', async (req, res) => {
+    try {
+        const { getBitfinexPublicWS } = require('../services/bitfinex/ws');
+        const summary = await getCachedFundingMarketSummary({
+            publicWs: getBitfinexPublicWS(),
+            db,
+        });
+        res.json(summary);
+    } catch (err) {
+        res.status(502).json({ error: `無法取得 fUSD 市場資料: ${err.message}` });
     }
 });
 

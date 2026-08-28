@@ -7,6 +7,7 @@ import RateChart from './RateChart';
 import HeatmapView from './HeatmapView';
 import HistoryPage from './HistoryPage';
 import SettingsPanel from './SettingsPanel';
+import FundingMarketDashboard from './FundingMarketDashboard';
 
 const NAV_ITEMS = [
     { key: 'overview', icon: '📊', label: '總覽' },
@@ -89,6 +90,9 @@ export default function Dashboard({ status, connected, token, onLogout, onRefres
                     <>
                         <div className="section">
                             <StatusPanel status={status} />
+                        </div>
+                        <div className="section">
+                            <FundingMarketDashboard token={token} />
                         </div>
                         <div className="section">
                             <EarningsPanel token={token} />

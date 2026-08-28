@@ -238,4 +238,40 @@ describe('StrategyEngine - 3D_Hybrid 核心策略演算法測試', () => {
       expect(result.orders.length).toBe(0); // 低於 minOfferAmount 150
     });
   });
+
+  describe('fUSD 使用者策略基準與固定期限', () => {
+    it('應依三種選項選取對應公開利率，且所有拆單都使用指定天數', () => {
+      const marketData: MarketData = {
+        frr: 0.0001,
+        lastPrice: 0.0002,
+        currentTradeAvg: 0.0003,
+        high24h: 0.0004,
+        high30d: 0.0005,
+        high: 0.0004,
+        low: 0.0001,
+        volume: 1000,
+        bidSize: 100,
+        askSize: 100,
+        bid: 0.0001,
+        ask: 0.0002,
+        asks: [],
+        bids: [],
+      };
+
+      for (const [rateStrategy, expectedRate] of [
+        ['current_avg', 0.0003],
+        ['high_24h', 0.0004],
+        ['high_30d', 0.0005],
+      ] as const) {
+        const result = engine.calculateOptimalRate(marketData, 'USD', 2000, {
+          rateStrategy,
+          periodDays: 120,
+        });
+        expect(result.diagnostics?.referenceRate).toBe(expectedRate);
+        expect(result.orders.length).toBeGreaterThan(0);
+        expect(result.orders.every(order => order.period === 120)).toBe(true);
+        expect(result.orders.reduce((sum, order) => sum + order.amount, 0)).toBeCloseTo(2000, 8);
+      }
+    });
+  });
 });

@@ -53,6 +53,8 @@ const config = __importStar(require("../../config"));
 const logger = __importStar(require("../../utils/logger"));
 // ML Predictor is currently loaded but is not actively used in the simplified balanced strategy.
 const ml_predictor_1 = require("./ml-predictor");
+const VALID_RATE_STRATEGIES = ['current_avg', 'high_24h', 'high_30d'];
+const VALID_PERIOD_DAYS = [2, 10, 30, 60, 90, 120];
 // Cubic 緩和函數 (源自 Instabot Easing)
 function easeInCubic(t) {
     return t * t * t;
@@ -80,7 +82,13 @@ class StrategyEngine {
             orderUnit: 500, // 拆單底倉基準單位
             defaultPeriod: 2,
         };
-        return { ...default3DConfig, ...this.customOverrides };
+        return {
+            ...default3DConfig,
+            rateStrategy: 'current_avg',
+            periodDays: 2,
+            useAllAvailable: true,
+            ...this.customOverrides,
+        };
     }
     /**
      * 鎖定 3D_Hybrid 策略，拒絕切換到其他舊模式
@@ -211,8 +219,18 @@ class StrategyEngine {
     /**
      * 計算最佳掛單方案
      */
-    calculateOptimalRate(marketData, currency, availableAmount) {
-        const stratConfig = this.getStrategyConfig();
+    calculateOptimalRate(marketData, currency, availableAmount, userConfig = {}) {
+        const mergedConfig = { ...this.getStrategyConfig(), ...userConfig };
+        const stratConfig = {
+            ...mergedConfig,
+            rateStrategy: VALID_RATE_STRATEGIES.includes(mergedConfig.rateStrategy)
+                ? mergedConfig.rateStrategy
+                : 'current_avg',
+            periodDays: VALID_PERIOD_DAYS.includes(Number(mergedConfig.periodDays))
+                ? Number(mergedConfig.periodDays)
+                : 2,
+            useAllAvailable: true,
+        };
         const result = {
             orders: [],
             shouldOffer: false,
@@ -231,11 +249,16 @@ class StrategyEngine {
         const ibrrRate = ibrrResult.ibrr;
         // 🛡️ 鋼板級 FRR 底線保護
         const frrRate = frr * stratConfig.frrMultiplier;
-        let baseRate = Math.max(ibrrRate, frrRate);
+        const referenceRate = this._getReferenceRate(marketData, stratConfig);
+        let baseRate = Math.max(referenceRate, frrRate, stratConfig.minRate || 0);
         baseRate = Math.min(baseRate, stratConfig.maxRate);
         result.diagnostics = {
             frr,
             frrRate,
+            referenceRate,
+            rateStrategy: stratConfig.rateStrategy,
+            periodDays: stratConfig.periodDays,
+            useAllAvailable: true,
             ibrrRate,
             equilibriumRate: ibrrResult.equilibriumRate,
             finalRate: baseRate,
@@ -256,13 +279,24 @@ class StrategyEngine {
         result.shouldOffer = true;
         // 調用唯一核心：三維自適應拆單網格
         result.orders = this._calculateGridOrders(availableAmount, baseRate, marketData, stratConfig, currency);
-        result.reason = `IBRR: ${(ibrrRate * 100).toFixed(4)}%, 均衡: ${(ibrrResult.equilibriumRate * 100).toFixed(4)}%, FRR: ${(frr * 100).toFixed(4)}%, 最終: ${(baseRate * 100).toFixed(4)}%, 模式: 3D_Hybrid`;
+        result.reason = `基準(${stratConfig.rateStrategy}): ${(referenceRate * 100).toFixed(4)}%, IBRR: ${(ibrrRate * 100).toFixed(4)}%, 最終: ${(baseRate * 100).toFixed(4)}%, 期限: ${stratConfig.periodDays}天`;
         return result;
+    }
+    _getReferenceRate(marketData, stratConfig) {
+        const candidates = {
+            current_avg: marketData.currentTradeAvg || marketData.lastPrice || marketData.frr,
+            high_24h: marketData.high24h || marketData.high || marketData.lastPrice || marketData.frr,
+            high_30d: marketData.high30d || marketData.high || marketData.lastPrice || marketData.frr,
+        };
+        return Number(candidates[stratConfig.rateStrategy || 'current_avg'] || marketData.frr || 0);
     }
     /**
      * 期限自適應選擇器
      */
     _selectPeriod(rate, marketData, stratConfig, currency) {
+        if (VALID_PERIOD_DAYS.includes(Number(stratConfig.periodDays))) {
+            return Number(stratConfig.periodDays);
+        }
         const frr = marketData.frr || 0.0001;
         const consensusBaseDays = marketData.durationLend || 6;
         if (rate <= frr) {

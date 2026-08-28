@@ -13,6 +13,11 @@ const mockEngine = {
   })
 };
 
+const mockGetUserSettings = vi.fn().mockResolvedValue({
+  strategy_config: { rateStrategy: 'current_avg', periodDays: 2, useAllAvailable: true },
+});
+const mockSaveUserSettings = vi.fn().mockResolvedValue(null);
+
 // 2. 利用 Node.js require.cache 全域劫持 CommonJS 模組
 const lendingPath = require.resolve('../services/engine/lending');
 const telegramPath = require.resolve('../services/telegram');
@@ -36,7 +41,9 @@ require.cache[databasePath] = {
   loaded: true,
   exports: {
     getSupabase: () => mockSupabase,
-    initDatabase: vi.fn()
+    initDatabase: vi.fn(),
+    getUserSettings: mockGetUserSettings,
+    saveUserSettings: mockSaveUserSettings,
   }
 } as any;
 
@@ -116,6 +123,27 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
       .expect(200);
 
     expect(res.body.message).toContain('放貸機器人已啟動');
+  });
+
+  it('POST /api/lending/strategy-settings 應只接受三種利率基準與六種期限', async () => {
+    const valid = await request(app)
+      .post('/api/lending/strategy-settings')
+      .set('Authorization', 'Bearer valid-test-token')
+      .send({ rateStrategy: 'high_30d', periodDays: 120 })
+      .expect(200);
+
+    expect(valid.body.rateStrategy).toBe('high_30d');
+    expect(valid.body.periodDays).toBe(120);
+    expect(valid.body.useAllAvailable).toBe(true);
+    expect(mockSaveUserSettings).toHaveBeenCalledWith('test-user-id', expect.objectContaining({
+      strategy_config: expect.objectContaining({ rateStrategy: 'high_30d', periodDays: 120, useAllAvailable: true }),
+    }));
+
+    await request(app)
+      .post('/api/lending/strategy-settings')
+      .set('Authorization', 'Bearer valid-test-token')
+      .send({ rateStrategy: 'not-supported', periodDays: 7 })
+      .expect(400);
   });
 
 });

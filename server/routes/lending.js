@@ -4,6 +4,7 @@ const { getStrategyEngine } = require('../services/engine/strategy');
 const rest = require('../services/bitfinex/rest');
 const db = require('../services/database');
 const logger = require('../utils/logger');
+const { DEFAULT_STRATEGY_CONFIG, normalizeStrategyConfig, validateStrategyConfig } = require('../services/strategy-config');
 
 const router = express.Router();
 
@@ -118,6 +119,55 @@ router.post('/engine/:action', async (req, res) => {
 router.get('/strategy', (req, res) => {
     const strategy = getStrategyEngine();
     res.json(strategy.getStatus());
+});
+
+// 取得本使用者的 fUSD 策略設定
+router.get('/strategy-settings', async (req, res) => {
+    try {
+        const settings = await db.getUserSettings(req.user.id);
+        const strategyConfig = normalizeStrategyConfig(settings?.strategy_config || DEFAULT_STRATEGY_CONFIG);
+        const engine = getBot(req.user.id);
+        res.json({
+            ...strategyConfig,
+            running: !!engine?.running,
+            rateStrategy: strategyConfig.rateStrategy,
+            periodDays: strategyConfig.periodDays,
+            useAllAvailable: true,
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// 儲存本使用者的 fUSD 策略設定；運行中的引擎會重啟套用新設定
+router.post('/strategy-settings', async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const existing = await db.getUserSettings(userId);
+        const candidateConfig = {
+            ...(existing?.strategy_config || {}),
+            rateStrategy: req.body?.rateStrategy,
+            periodDays: req.body?.periodDays,
+            useAllAvailable: true,
+        };
+        const errors = validateStrategyConfig(candidateConfig);
+        if (errors.length) return res.status(400).json({ error: errors.join('; ') });
+        const strategyConfig = normalizeStrategyConfig(candidateConfig);
+
+        const wasRunning = !!getBot(userId)?.running;
+        await db.saveUserSettings(userId, { strategy_config: strategyConfig });
+        if (wasRunning) {
+            await stopBot(userId);
+            await startBot(userId);
+        }
+        res.json({
+            message: wasRunning ? '策略設定已更新並重新啟動引擎' : '策略設定已更新，下次啟動時套用',
+            ...strategyConfig,
+            running: !!getBot(userId)?.running,
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // 複利模式開關

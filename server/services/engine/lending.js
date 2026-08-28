@@ -4,6 +4,7 @@ const db = require('../database');
 const rest = require('../bitfinex/rest');
 const { getBitfinexPublicWS, createBitfinexPrivateWS } = require('../bitfinex/ws');
 const { getStrategyEngine } = require('./strategy');
+const { getCachedFundingMarketSummary } = require('../market-summary');
 
 class LendingBot {
     constructor(userId, credentials, settings = {}) {
@@ -277,8 +278,24 @@ class LendingBot {
      */
     async _processForCurrency(currency) {
         const publicWs = getBitfinexPublicWS();
-        const marketData = publicWs.getMarketData(currency);
+        let marketData = publicWs.getMarketData(currency);
         if (!marketData || !marketData.lastUpdate) return;
+
+        // fUSD 的三種策略基準來自公開成交/歷史資料；使用 60 秒快取，避免每個決策週期重複打 API。
+        if (currency === 'USD') {
+            const summary = await getCachedFundingMarketSummary({ publicWs, db });
+            const toDailyRate = value => Number.isFinite(Number(value)) ? Number(value) / (365 * 100) : null;
+            marketData = {
+                ...marketData,
+                currentTradeAvg: summary.currentRate,
+                high24h: summary.high24h,
+                high30d: summary.high30d,
+            };
+            // 避免摘要 API 暫時無資料時覆寫 WebSocket 的即時行情。
+            if (!marketData.currentTradeAvg) marketData.currentTradeAvg = toDailyRate(summary.currentApy);
+            if (!marketData.high24h) marketData.high24h = toDailyRate(summary.high24hApy);
+            if (!marketData.high30d) marketData.high30d = toDailyRate(summary.high30dApy);
+        }
 
         const strategy = getStrategyEngine();
 
@@ -648,11 +665,13 @@ class LendingBot {
         }
 
         const strategyStatus = strategy.getStatus();
+        const userStrategyConfig = { ...this.strategyConfig };
         strategyStatus.config = {
             ...strategyStatus.config,
+            ...userStrategyConfig,
             frrDelta: frrDelta,
-            orderUnit: this.autoTransferThreshold,
-            defaultPeriod: '自適應 (2-30天)',
+            periodDays: userStrategyConfig.periodDays || 2,
+            useAllAvailable: true,
             reserveRatio: 0
         };
         strategyStatus.mode = 'balanced';
@@ -684,7 +703,12 @@ class LendingBot {
                 compounding: this.compoundingEnabled,
                 autoTransfer: this.autoTransferEnabled,
                 autoTransferThreshold: this.autoTransferThreshold,
-            }
+            },
+            strategySettings: {
+                rateStrategy: userStrategyConfig.rateStrategy || 'current_avg',
+                periodDays: userStrategyConfig.periodDays || 2,
+                useAllAvailable: true,
+            },
         };
     }
 

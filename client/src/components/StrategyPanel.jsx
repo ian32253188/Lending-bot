@@ -1,13 +1,31 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 export default function StrategyPanel({ status, token, onRefresh }) {
     const [loading, setLoading] = useState(false);
     const [msg, setMsg] = useState('');
     const [suggestion, setSuggestion] = useState(null);
+    const [strategySettings, setStrategySettings] = useState({ rateStrategy: 'current_avg', periodDays: 2 });
 
     const features = status?.features || {};
     const strategyConfig = status?.strategy?.config || {};
     const currentMode = status?.strategy?.mode || 'balanced';
+    const strategyActive = status?.running && !status?.paused;
+
+    useEffect(() => {
+        fetch('/api/lending/strategy-settings', { headers: { Authorization: `Bearer ${token}` } })
+            .then(res => res.ok ? res.json() : null)
+            .then(data => data && setStrategySettings({ rateStrategy: data.rateStrategy, periodDays: data.periodDays }))
+            .catch(() => {});
+    }, [token]);
+
+    useEffect(() => {
+        if (status?.strategySettings) {
+            setStrategySettings({
+                rateStrategy: status.strategySettings.rateStrategy || 'current_avg',
+                periodDays: status.strategySettings.periodDays || 2,
+            });
+        }
+    }, [status?.strategySettings?.rateStrategy, status?.strategySettings?.periodDays]);
 
     const post = async (url, body = {}) => {
         const res = await fetch(url, {
@@ -34,6 +52,8 @@ export default function StrategyPanel({ status, token, onRefresh }) {
 
     const engineAction = (action) => apiCall(() => post(`/api/lending/engine/${action}`));
 
+    const saveStrategy = () => apiCall(() => post('/api/lending/strategy-settings', strategySettings));
+
     const toggleCompounding = () => apiCall(() =>
         post('/api/lending/compounding', { enabled: !features.compounding })
     );
@@ -59,20 +79,11 @@ export default function StrategyPanel({ status, token, onRefresh }) {
             <div className="card-header">
                 <span className="card-title">⚙️ 策略控制</span>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    {status?.running && !status?.paused && (
-                        <button className="btn btn-outline btn-sm" onClick={() => engineAction('pause')} disabled={loading}>⏸️ 暫停</button>
-                    )}
-                    {status?.paused && (
-                        <button className="btn btn-success btn-sm" onClick={() => engineAction('resume')} disabled={loading}>▶️ 恢復</button>
-                    )}
-                    {!status?.running && (
+                    {!strategyActive && (
                         <button className="btn btn-success btn-sm" onClick={() => engineAction('start')} disabled={loading}>🚀 啟動放貸</button>
                     )}
-                    {status?.running && (
-                        <>
-                            <button className="btn btn-outline btn-sm" onClick={() => engineAction('stop')} disabled={loading}>⏹️ 停止</button>
-                            <button className="btn btn-danger btn-sm" onClick={() => engineAction('emergency-stop')} disabled={loading}>🚨 緊急停止</button>
-                        </>
+                    {strategyActive && (
+                        <button className="btn btn-outline btn-sm" onClick={() => engineAction('stop')} disabled={loading}>⏹️ 停止</button>
                     )}
                 </div>
             </div>
@@ -83,41 +94,29 @@ export default function StrategyPanel({ status, token, onRefresh }) {
                 </div>
             )}
 
-            {/* 🌌 響應用戶需求：舊策略直接拿掉，只保留 3D_Hybrid 核心策略大卡片 */}
-            <div style={{ margin: '8px 0 12px 0' }}>
-                <div style={{
-                    background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(5, 150, 105, 0.05) 100%)',
-                    border: '1px solid rgba(16, 185, 129, 0.3)',
-                    borderRadius: '10px',
-                    padding: '14px 16px',
-                    position: 'relative',
-                    overflow: 'hidden'
-                }}>
-                    <div style={{ position: 'absolute', right: '-10px', top: '-10px', fontSize: '4.5rem', opacity: 0.08 }}>🌌</div>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                        <span style={{ fontSize: '1.05rem', fontWeight: 700, color: '#10b981', display: 'flex', alignItems: 'center', gap: 6 }}>
-                            🌌 3D 防禦型自適應策略 (3D_Hybrid)
-                        </span>
-                        <span style={{
-                            background: '#10b981',
-                            color: '#fff',
-                            fontSize: '0.68rem',
-                            fontWeight: 'bold',
-                            padding: '2px 8px',
-                            borderRadius: '20px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 4,
-                            boxShadow: '0 0 10px rgba(16, 185, 129, 0.4)'
-                        }}>
-                            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fff', display: 'inline-block', animation: 'pulse 1.5s infinite' }}></span>
-                            核心已接管
-                        </span>
-                    </div>
-                    <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
-                        融合瓦爾拉斯供需均衡 (IBRR)、10分鐘誠信時間過濾 (防假單) 與三維動態分配 (底倉/深度/級聯)，全面阻斷高頻釣魚，極大化複利收益。
-                    </div>
+            <div className="strategy-settings-box">
+                <div className="strategy-settings-title">fUSD 策略基準</div>
+                <div className="strategy-choice-grid">
+                    {[
+                        ['current_avg', '目前成交均值'],
+                        ['high_24h', '24 小時最高'],
+                        ['high_30d', '30 日最高'],
+                    ].map(([value, label]) => (
+                        <button key={value} type="button" className={`strategy-choice ${strategySettings.rateStrategy === value ? 'selected' : ''}`} onClick={() => setStrategySettings({ ...strategySettings, rateStrategy: value })} disabled={loading}>
+                            {label}
+                        </button>
+                    ))}
                 </div>
+                <div className="strategy-settings-title" style={{ marginTop: 12 }}>放貸期限</div>
+                <div className="strategy-choice-grid period-grid">
+                    {[2, 10, 30, 60, 90, 120].map(days => (
+                        <button key={days} type="button" className={`strategy-choice ${strategySettings.periodDays === days ? 'selected' : ''}`} onClick={() => setStrategySettings({ ...strategySettings, periodDays: days })} disabled={loading}>
+                            {days} 天
+                        </button>
+                    ))}
+                </div>
+                <div className="strategy-settings-footnote">掛單金額：Funding Wallet 當下全部可用餘額（不含已放貸中的資金）</div>
+                <button type="button" className="btn btn-primary btn-sm" onClick={saveStrategy} disabled={loading} style={{ marginTop: 10 }}>💾 儲存策略設定</button>
             </div>
 
             {/* Phase 2: 功能開關 */}
@@ -178,7 +177,7 @@ export default function StrategyPanel({ status, token, onRefresh }) {
                 {[
                     ['FRR Delta', strategyConfig.frrDelta != null ? `${strategyConfig.frrDelta > 0 ? '+' : ''}${(strategyConfig.frrDelta * 100).toFixed(4)}%` : '-'],
                     ['單筆金額', strategyConfig.orderUnit ? `$${strategyConfig.orderUnit} USD` : '-'],
-                    ['預設期限', strategyConfig.defaultPeriod || '-'],
+                    ['選定期限', `${strategySettings.periodDays || 2} 天`],
                     ['預留資金', `${((strategyConfig.reserveRatio || 0) * 100).toFixed(0)}%`],
                     ['防假單過濾 (Spoofing)', currentMode === 'balanced' ? '🟢 ON (10min誠信過濾)' : '❌ OFF'],
                     ['時空深度分佈 (3D)', currentMode === 'balanced' ? '60%底倉 / 20%深度 / 20%級聯' : '100%空間單一'],

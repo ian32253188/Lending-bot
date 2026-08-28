@@ -3,6 +3,7 @@ const config = require('../config');
 const logger = require('../utils/logger');
 const cron = require('node-cron');
 const { buildFundingMarketSummary } = require('./market-summary');
+const { RATE_STRATEGY_LABELS, PERIOD_DAYS, normalizeStrategyConfig } = require('./strategy-config');
 
 // ============== 多租戶 Telegram Bot 註冊表 ==============
 // key = userId, value = { bot: TelegramBot, chatId: string }
@@ -69,9 +70,10 @@ function initUserTelegram(userId, botToken, chatId) {
     destroyUserTelegram(userId);
 
     try {
-        // 用戶 Bot 使用 polling: false (只用來發送訊息，不監聽指令)
-        const bot = new TelegramBot(botToken, { polling: false });
+        // 使用者自己的 Bot 也監聽 polling，讓同一個控制面板可直接操控該帳戶。
+        const bot = new TelegramBot(botToken, { polling: true });
         userBots.set(userId, { bot, chatId });
+        setupAdminBotHandlers(bot, chatId);
         ensureDailySummarySchedule();
         logger.info('telegram', `✅ 用戶 ${userId} 的 Telegram Bot 已初始化`);
         return bot;
@@ -473,6 +475,7 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
         const messageId = query.message.message_id;
 
         const { getBot } = require('./engine/manager');
+        const db = require('./database');
         
         const dbSettings = await getSettingsByChatId(chatId);
         const userId = dbSettings?.user_id || null;
@@ -514,6 +517,49 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
                     await updateAdminControlPanel(bot, chatId, messageId);
                     break;
                 }
+                case 'strategy_current_avg':
+                case 'strategy_high_24h':
+                case 'strategy_high_30d': {
+                    const rateStrategy = action.replace('strategy_', '');
+                    const nextConfig = normalizeStrategyConfig({
+                        ...(dbSettings?.strategy_config || {}),
+                        rateStrategy,
+                    });
+                    await saveTelegramStrategySettings(userId, nextConfig, !!engine?.running);
+                    await bot.answerCallbackQuery(query.id, { text: `利率策略：${RATE_STRATEGY_LABELS[rateStrategy]}` });
+                    await updateAdminControlPanel(bot, chatId, messageId);
+                    break;
+                }
+                case 'period_2':
+                case 'period_10':
+                case 'period_30':
+                case 'period_60':
+                case 'period_90':
+                case 'period_120': {
+                    const periodDays = Number(action.replace('period_', ''));
+                    const nextConfig = normalizeStrategyConfig({
+                        ...(dbSettings?.strategy_config || {}),
+                        periodDays,
+                    });
+                    await saveTelegramStrategySettings(userId, nextConfig, !!engine?.running);
+                    await bot.answerCallbackQuery(query.id, { text: `放貸期限：${periodDays} 天` });
+                    await updateAdminControlPanel(bot, chatId, messageId);
+                    break;
+                }
+                case 'start_engine': {
+                    const { startBot } = require('./engine/manager');
+                    await startBot(userId);
+                    await bot.answerCallbackQuery(query.id, { text: '放貸策略已啟動' });
+                    await updateAdminControlPanel(bot, chatId, messageId);
+                    break;
+                }
+                case 'stop_engine': {
+                    const { stopBot } = require('./engine/manager');
+                    await stopBot(userId);
+                    await bot.answerCallbackQuery(query.id, { text: '放貸策略已停止' });
+                    await updateAdminControlPanel(bot, chatId, messageId);
+                    break;
+                }
                 case 'pause_engine': {
                     if (engine) {
                         engine.pause('Telegram 手動暫停');
@@ -526,6 +572,7 @@ function setupAdminBotHandlers(bot, authorizedChatId) {
                     break;
                 }
                 case 'resume_engine': {
+                    const { startBot } = require('./engine/manager');
                     if (engine) {
                         engine.resume();
                         await db.saveUserSettings(userId, { paused: false });
@@ -676,6 +723,8 @@ function getControlPanelText(engine, dbSettings = null) {
     const compoundingEnabled = engine ? engine.compoundingEnabled : dbSettings?.compounding_enabled !== false;
     const autoTransferEnabled = engine ? engine.autoTransferEnabled : dbSettings?.auto_transfer_enabled || false;
     const autoTransferThreshold = engine ? engine.autoTransferThreshold : dbSettings?.auto_transfer_threshold || 500;
+    const strategyConfig = normalizeStrategyConfig(dbSettings?.strategy_config || engine?.strategyConfig || {});
+    const strategyLabel = RATE_STRATEGY_LABELS[strategyConfig.rateStrategy];
     
     const compounding = compoundingEnabled ? '開啟 ♻️' : '關閉 ⏸️';
     const autoTransfer = autoTransferEnabled ? `開啟 🔄 ($${autoTransferThreshold})` : '關閉 ⏹️';
@@ -691,7 +740,9 @@ function getControlPanelText(engine, dbSettings = null) {
         `當前放貸引擎與策略設定：\n` +
         `──────────────────────\n` +
         `⚙️ <b>引擎狀態</b>: <b>${engineStatus}</b>\n` +
-        `🧠 <b>目前策略</b>: <code>3D_Hybrid</code>\n` +
+        `🧠 <b>利率基準</b>: <b>${strategyLabel}</b>\n` +
+        `📅 <b>放貸期限</b>: <b>${strategyConfig.periodDays} 天</b>\n` +
+        `💰 <b>掛單金額</b>: Funding Wallet 全部可用餘額\n` +
         `♻️ <b>複利滾投</b>: <b>${compounding}</b>\n` +
         `🔄 <b>自動劃轉</b>: <b>${autoTransfer}</b>\n` +
         `──────────────────────\n` +
@@ -701,17 +752,20 @@ function getControlPanelText(engine, dbSettings = null) {
 function getControlPanelKeyboard(engine, dbSettings = null) {
     const compoundingEnabled = engine ? engine.compoundingEnabled : dbSettings?.compounding_enabled !== false;
     const autoTransferEnabled = engine ? engine.autoTransferEnabled : dbSettings?.auto_transfer_enabled || false;
-    const isPaused = engine ? engine.paused : true;
-    const isRunning = engine ? engine.running : false;
+    const isRunning = engine ? engine.running && !engine.paused : false;
+    const strategyConfig = normalizeStrategyConfig(dbSettings?.strategy_config || engine?.strategyConfig || {});
 
     const compoundingLabel = compoundingEnabled ? '♻️ 關閉複利滾投' : '♻️ 開啟複利滾投';
     const autoTransferLabel = autoTransferEnabled ? '🔄 關閉自動劃轉' : '🔄 開啟自動劃轉';
 
-    const pauseOrResumeBtn = (!isRunning)
-        ? { text: '▶️ 啟動自動放貸', callback_data: 'resume_engine' }
-        : (isPaused
-            ? { text: '▶️ 恢復自動放貸', callback_data: 'resume_engine' }
-            : { text: '⏸️ 暫停自動放貸', callback_data: 'pause_engine' });
+    const strategyButtons = Object.entries(RATE_STRATEGY_LABELS).map(([value, label]) => ({
+        text: `${strategyConfig.rateStrategy === value ? '✅ ' : ''}${label}`,
+        callback_data: `strategy_${value}`,
+    }));
+    const periodButtons = PERIOD_DAYS.map(days => ({
+        text: `${strategyConfig.periodDays === days ? '✅ ' : ''}${days}天`,
+        callback_data: `period_${days}`,
+    }));
 
     return {
         reply_markup: {
@@ -721,15 +775,29 @@ function getControlPanelKeyboard(engine, dbSettings = null) {
                     { text: autoTransferLabel, callback_data: 'toggle_autotransfer' }
                 ],
                 [
-                    pauseOrResumeBtn,
+                    isRunning
+                        ? { text: '⏹️ 停止策略', callback_data: 'stop_engine' }
+                        : { text: '🚀 啟動策略', callback_data: 'start_engine' },
                     { text: '📊 即時決策診斷', callback_data: 'get_diagnostics' }
                 ],
                 [
-                    { text: '🚨 緊急撤單與避險', callback_data: 'emergency_stop' }
-                ]
+                    ...strategyButtons
+                ],
+                periodButtons.slice(0, 3),
+                periodButtons.slice(3),
             ]
         }
     };
+}
+
+async function saveTelegramStrategySettings(userId, strategyConfig, wasRunning) {
+    const db = require('./database');
+    const { startBot, stopBot } = require('./engine/manager');
+    await db.saveUserSettings(userId, { strategy_config: strategyConfig });
+    if (wasRunning) {
+        await stopBot(userId);
+        await startBot(userId);
+    }
 }
 
 /**
@@ -810,4 +878,6 @@ module.exports = {
     sendTradeNotification,
     sendReofferNotification,
     buildUserSummaryMessage,
+    getControlPanelText,
+    getControlPanelKeyboard,
 };

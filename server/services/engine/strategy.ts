@@ -18,6 +18,9 @@ import * as logger from '../../utils/logger';
 // ML Predictor is currently loaded but is not actively used in the simplified balanced strategy.
 import { getMLPredictor } from './ml-predictor';
 
+const VALID_RATE_STRATEGIES = ['current_avg', 'high_24h', 'high_30d'];
+const VALID_PERIOD_DAYS = [2, 10, 30, 60, 90, 120];
+
 export interface OrderBookItem {
   rate: number;
   amount: number;
@@ -32,6 +35,9 @@ export interface MarketData {
   high: number;
   low: number;
   volume: number;
+  currentTradeAvg?: number;
+  high24h?: number;
+  high30d?: number;
   bidSize: number;
   askSize: number;
   bid: number;
@@ -76,6 +82,9 @@ export interface StrategyConfig {
   minRate?: number;
   orderUnit?: number;
   defaultPeriod?: number;
+  rateStrategy?: 'current_avg' | 'high_24h' | 'high_30d';
+  periodDays?: number;
+  useAllAvailable?: boolean;
   [key: string]: any;
 }
 
@@ -117,7 +126,13 @@ export class StrategyEngine {
       orderUnit: 500,      // 拆單底倉基準單位
       defaultPeriod: 2,
     };
-    return { ...default3DConfig, ...this.customOverrides };
+    return {
+      ...default3DConfig,
+      rateStrategy: 'current_avg',
+      periodDays: 2,
+      useAllAvailable: true,
+      ...this.customOverrides,
+    };
   }
 
   /**
@@ -268,8 +283,18 @@ export class StrategyEngine {
   /**
    * 計算最佳掛單方案
    */
-  public calculateOptimalRate(marketData: MarketData, currency: string, availableAmount: number): OptimalRateResult {
-    const stratConfig = this.getStrategyConfig();
+  public calculateOptimalRate(marketData: MarketData, currency: string, availableAmount: number, userConfig: Partial<StrategyConfig> = {}): OptimalRateResult {
+    const mergedConfig = { ...this.getStrategyConfig(), ...userConfig };
+    const stratConfig: StrategyConfig = {
+      ...mergedConfig,
+      rateStrategy: VALID_RATE_STRATEGIES.includes(mergedConfig.rateStrategy as string)
+        ? mergedConfig.rateStrategy
+        : 'current_avg',
+      periodDays: VALID_PERIOD_DAYS.includes(Number(mergedConfig.periodDays))
+        ? Number(mergedConfig.periodDays)
+        : 2,
+      useAllAvailable: true,
+    };
     const result: OptimalRateResult = {
       orders: [],
       shouldOffer: false,
@@ -293,12 +318,17 @@ export class StrategyEngine {
     // 🛡️ 鋼板級 FRR 底線保護
     const frrRate = frr * stratConfig.frrMultiplier;
 
-    let baseRate = Math.max(ibrrRate, frrRate);
+    const referenceRate = this._getReferenceRate(marketData, stratConfig);
+    let baseRate = Math.max(referenceRate, frrRate, stratConfig.minRate || 0);
     baseRate = Math.min(baseRate, stratConfig.maxRate);
 
     result.diagnostics = {
       frr,
       frrRate,
+      referenceRate,
+      rateStrategy: stratConfig.rateStrategy,
+      periodDays: stratConfig.periodDays,
+      useAllAvailable: true,
       ibrrRate,
       equilibriumRate: ibrrResult.equilibriumRate,
       finalRate: baseRate,
@@ -324,15 +354,27 @@ export class StrategyEngine {
       availableAmount, baseRate, marketData, stratConfig, currency
     );
 
-    result.reason = `IBRR: ${(ibrrRate * 100).toFixed(4)}%, 均衡: ${(ibrrResult.equilibriumRate * 100).toFixed(4)}%, FRR: ${(frr * 100).toFixed(4)}%, 最終: ${(baseRate * 100).toFixed(4)}%, 模式: 3D_Hybrid`;
+    result.reason = `基準(${stratConfig.rateStrategy}): ${(referenceRate * 100).toFixed(4)}%, IBRR: ${(ibrrRate * 100).toFixed(4)}%, 最終: ${(baseRate * 100).toFixed(4)}%, 期限: ${stratConfig.periodDays}天`;
 
     return result;
+  }
+
+  public _getReferenceRate(marketData: MarketData, stratConfig: StrategyConfig): number {
+    const candidates: Record<string, number | undefined> = {
+      current_avg: marketData.currentTradeAvg || marketData.lastPrice || marketData.frr,
+      high_24h: (marketData as any).high24h || marketData.high || marketData.lastPrice || marketData.frr,
+      high_30d: (marketData as any).high30d || marketData.high || marketData.lastPrice || marketData.frr,
+    };
+    return Number(candidates[stratConfig.rateStrategy || 'current_avg'] || marketData.frr || 0);
   }
 
   /**
    * 期限自適應選擇器
    */
   public _selectPeriod(rate: number, marketData: MarketData, stratConfig: StrategyConfig, currency: string): number {
+    if (VALID_PERIOD_DAYS.includes(Number(stratConfig.periodDays))) {
+      return Number(stratConfig.periodDays);
+    }
     const frr = marketData.frr || 0.0001;
     const consensusBaseDays = marketData.durationLend || 6; 
 

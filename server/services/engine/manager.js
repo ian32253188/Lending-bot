@@ -21,8 +21,15 @@ async function startBot(userId) {
         return;
     }
     if (activeRunners.has(userId)) {
-        logger.warn('manager', `使用者 ${userId} 的放貸機器人已在運行中，跳過啟動`);
-        return activeRunners.get(userId);
+        const existingBot = activeRunners.get(userId);
+        if (existingBot.paused) {
+            existingBot.resume();
+            await db.saveUserSettings(userId, { status: 'running', pause_reason: '' });
+            logger.info('manager', `使用者 ${userId} 的放貸機器人已由內部暫停恢復`);
+        } else {
+            logger.warn('manager', `使用者 ${userId} 的放貸機器人已在運行中，跳過啟動`);
+        }
+        return existingBot;
     }
 
     activeStarting.add(userId);
@@ -96,11 +103,8 @@ async function stopBot(userId) {
     activeRunners.delete(userId);
     await db.saveUserSettings(userId, { status: 'stopped' });
 
-    // 3. 銷毀該用戶的 Telegram Bot 實例
-    const { destroyUserTelegram } = require('../telegram');
-    destroyUserTelegram(userId);
-
-    logger.info('manager', `⏹️ 已成功關閉使用者 ${userId} 的放貸實例`);
+    // 3. 保留使用者 Telegram Bot 常駐，停止後仍可由 Telegram 按「啟動策略」恢復。
+    logger.info('manager', `⏹️ 已成功關閉使用者 ${userId} 的放貸實例（Telegram 控制仍保持啟用）`);
 }
 
 /**
