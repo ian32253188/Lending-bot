@@ -1,7 +1,7 @@
 export default function StatusPanel({ status }) {
     if (!status) return <div className="card">載入中...</div>;
 
-    const { wallets, activeOffers, activeCredits, marketData, stats, strategy } = status;
+    const { wallets, activeOffers, activeCredits, marketData } = status;
     const privateDataAvailable = status.accountDataAvailable ?? (status.running || status.authenticated);
     const privateValue = value => privateDataAvailable && value != null ? value : '—';
 
@@ -43,7 +43,7 @@ export default function StatusPanel({ status }) {
             </div>
 
             {/* 放貸概覽 */}
-            <div className="grid grid-3" style={{ marginTop: 20 }}>
+            <div className="grid grid-2 status-summary-grid" style={{ marginTop: 20 }}>
                 <div className="card">
                     <div className="card-header">
                         <span className="card-title">📋 活躍掛單</span>
@@ -68,30 +68,9 @@ export default function StatusPanel({ status }) {
                     ))}
                 </div>
 
-                <div className="card">
-                    <div className="card-header">
-                        <span className="card-title">📊 統計</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                        <span style={{ color: 'var(--text-secondary)' }}>掛單數</span>
-                        <span>{privateValue(stats?.offersPlaced)}</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                        <span style={{ color: 'var(--text-secondary)' }}>取消數</span>
-                        <span>{privateValue(stats?.offersCancelled)}</span>
-                    </div>
-                    {Object.entries(stats?.totalEarned || {}).map(([cur, earned]) => (
-                        <div key={cur} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                            <span style={{ color: 'var(--text-secondary)' }}>{cur} 收益</span>
-                            <span className="stat-value green" style={{ fontSize: 16 }}>
-                                {privateDataAvailable && earned != null ? earned.toFixed(4) : '—'}
-                            </span>
-                        </div>
-                    ))}
-                </div>
             </div>
             {!privateDataAvailable && (
-                <div className="status-data-note">錢包、活躍掛單、放貸中與統計屬於 Bitfinex 私有資料；目前策略尚未啟動，因此先顯示「—」。啟動策略後會建立私有連線並同步。</div>
+                <div className="status-data-note">錢包、活躍掛單與放貸中屬於 Bitfinex 私有資料；目前策略尚未啟動，因此先顯示「—」。啟動策略後會建立私有連線並同步。</div>
             )}
         </>
     );

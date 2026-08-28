@@ -7,8 +7,6 @@ export default function StrategyPanel({ status, token, onRefresh }) {
     const [strategySettings, setStrategySettings] = useState({ rateStrategy: 'current_avg', periodDays: 2 });
 
     const features = status?.features || {};
-    const strategyConfig = status?.strategy?.config || {};
-    const currentMode = status?.strategy?.mode || 'balanced';
     const strategyActive = status?.running && !status?.paused;
 
     useEffect(() => {
@@ -170,23 +168,6 @@ export default function StrategyPanel({ status, token, onRefresh }) {
                         )}
                     </div>
                 )}
-            </div>
-
-            {/* 當前策略參數 */}
-            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 10, marginTop: 10, fontSize: 12, color: 'var(--text-secondary)' }}>
-                {[
-                    ['FRR Delta', strategyConfig.frrDelta != null ? `${strategyConfig.frrDelta > 0 ? '+' : ''}${(strategyConfig.frrDelta * 100).toFixed(4)}%` : '-'],
-                    ['單筆金額', strategyConfig.orderUnit ? `$${strategyConfig.orderUnit} USD` : '-'],
-                    ['選定期限', `${strategySettings.periodDays || 2} 天`],
-                    ['預留資金', `${((strategyConfig.reserveRatio || 0) * 100).toFixed(0)}%`],
-                    ['防假單過濾 (Spoofing)', currentMode === 'balanced' ? '🟢 ON (10min誠信過濾)' : '❌ OFF'],
-                    ['時空深度分佈 (3D)', currentMode === 'balanced' ? '60%底倉 / 20%深度 / 20%級聯' : '100%空間單一'],
-                ].map(([k, v]) => (
-                    <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px dashed var(--border-light)' }}>
-                        <span style={{ color: 'var(--text-secondary)' }}>{k}</span>
-                        <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>{v}</span>
-                    </div>
-                ))}
             </div>
 
         </div>

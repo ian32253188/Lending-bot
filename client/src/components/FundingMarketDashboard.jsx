@@ -123,13 +123,15 @@ export default function FundingMarketDashboard({ token }) {
                 <div className="market-matches">
                     <h3>◷ 過去每小時撮合</h3>
                     <div className="market-table-head"><span>時間</span><span>成交利率</span><span>借量</span></div>
-                    {hourlyMatches.map(row => (
-                        <button className="market-table-row" key={row.timestamp} type="button" onClick={() => setSelectedHour(row)}>
-                            <span>{new Date(row.timestamp).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}</span>
-                            <strong>{row.count ? `${fmt(row.minApy)} - ${fmt(row.maxApy)}` : '—'}</strong>
-                            <span>{fmtAmount(row.amount)}</span>
-                        </button>
-                    ))}
+                    <div className="market-table-scroll">
+                        {hourlyMatches.map(row => (
+                            <button className="market-table-row" key={row.timestamp} type="button" onClick={() => setSelectedHour(row)}>
+                                <span>{new Date(row.timestamp).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}</span>
+                                <strong>{row.count ? `${fmt(row.minApy)} - ${fmt(row.maxApy)}` : '—'}</strong>
+                                <span>{fmtAmount(row.amount)}</span>
+                            </button>
+                        ))}
+                    </div>
                     {!hourlyMatches.length && <div className="market-empty">目前沒有最近 24 小時成交紀錄</div>}
                 </div>
             </div>

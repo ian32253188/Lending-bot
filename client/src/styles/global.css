@@ -388,6 +388,12 @@ body {
   font-weight: 700;
 }
 
+.market-table-scroll {
+  max-height: 236px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
 .market-table-row {
   color: var(--text-secondary);
   font-size: 0.82rem;
