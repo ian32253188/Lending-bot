@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 const PERIODS = [
     { label: '今日', key: 'today' },
@@ -11,7 +11,6 @@ const PERIODS = [
 export default function EarningsPanel({ token, embedded = false }) {
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
-    const [activePeriod, setActivePeriod] = useState('month');
 
     useEffect(() => {
         fetchStats();
@@ -63,53 +62,44 @@ export default function EarningsPanel({ token, embedded = false }) {
     if (loading) return <div className={`${embedded ? 'earnings-panel-content' : 'panel'} loading-shimmer`} style={{ height: 180 }} />;
     if (!stats) return null;
 
-    const current = stats[activePeriod] || { total: 0, byCurrency: {} };
+    const accumulated = stats.allTime || { total: 0, byCurrency: {} };
+    const formatEarnings = value => `$${Number(value || 0).toFixed(4)}`;
 
     return (
         <div className={embedded ? 'earnings-panel-content' : 'panel'}>
             <div className="panel-header">
                 <h3>💰 收益統計</h3>
-                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
-                    {PERIODS.map(p => (
-                        <button
-                            key={p.key}
-                            className={`btn btn-sm ${activePeriod === p.key ? 'btn-primary' : 'btn-ghost'}`}
-                            onClick={() => setActivePeriod(p.key)}
-                        >
-                            {p.label}
-                        </button>
-                    ))}
-                    <button
-                        className="btn btn-sm btn-outline"
-                        onClick={resetEarnings}
-                        style={{ marginLeft: '8px', opacity: 0.8 }}
-                        title="清空所有歷史收益紀錄"
-                    >
-                        🔄 重置紀錄
-                    </button>
-                </div>
+                <button
+                    className="btn btn-sm btn-outline"
+                    onClick={resetEarnings}
+                    title="清空所有歷史收益紀錄"
+                >
+                    🔄 重置紀錄
+                </button>
+            </div>
+
+            <div className="earnings-periods" aria-label="各期間收益">
+                {PERIODS.map(period => (
+                    <div key={period.key} className={`earnings-period-card ${period.key === 'allTime' ? 'featured' : ''}`}>
+                        <span>{period.label}收益</span>
+                        <strong>{formatEarnings(stats[period.key]?.total)}</strong>
+                    </div>
+                ))}
             </div>
 
             <div className="earnings-grid">
                 <div className="earnings-main">
-                    <div className="earnings-total">
-                        <span className="earnings-label">{PERIODS.find(p => p.key === activePeriod)?.label}收益</span>
-                        <span className="earnings-value">
-                            ${current.total?.toFixed(4) || '0.0000'}
-                        </span>
-                    </div>
-
-                    {/* 各幣種明細 */}
+                    <div className="earnings-label">累積收益明細</div>
                     <div className="earnings-breakdown">
-                        {Object.entries(current.byCurrency || {}).map(([cur, amount]) => (
+                        {Object.entries(accumulated.byCurrency || {}).map(([cur, amount]) => (
                             <div key={cur} className="earnings-currency">
                                 <span className="badge">{cur}</span>
-                                <span>{amount?.toFixed(4) || '0.0000'}</span>
+                                <span>{formatEarnings(amount)}</span>
                             </div>
                         ))}
-                        {Object.keys(current.byCurrency || {}).length === 0 && (
+                        {Object.keys(accumulated.byCurrency || {}).length === 0 && (
                             <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                                此期間暫無收益紀錄
+                                目前暫無收益紀錄
                             </div>
                         )}
                     </div>
@@ -136,20 +126,6 @@ export default function EarningsPanel({ token, embedded = false }) {
                         </div>
                     ))}
                 </div>
-            </div>
-
-            {/* 快速比較 */}
-            <div className="earnings-compare">
-                {[
-                    { label: '今日', value: stats.today?.total },
-                    { label: '本週', value: stats.week?.total },
-                    { label: '本月', value: stats.month?.total },
-                ].map(({ label, value }) => (
-                    <div key={label} className="compare-item">
-                        <span className="compare-label">{label}</span>
-                        <span className="compare-value">${(value || 0).toFixed(4)}</span>
-                    </div>
-                ))}
             </div>
         </div>
     );

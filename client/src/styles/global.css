@@ -1215,7 +1215,53 @@ tr:hover td {
   gap: 20px;
 }
 
+.earnings-periods {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.earnings-period-card {
+  min-width: 0;
+  padding: 10px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+}
+
+.earnings-period-card span,
+.earnings-period-card strong {
+  display: block;
+}
+
+.earnings-period-card span {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.earnings-period-card strong {
+  margin-top: 3px;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+.earnings-period-card.featured {
+  border-color: rgba(63, 185, 80, 0.55);
+  background: rgba(63, 185, 80, 0.1);
+}
+
+.earnings-period-card.featured strong {
+  color: var(--accent-green);
+}
+
 @media (max-width: 600px) {
+  .earnings-periods {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .earnings-grid {
     grid-template-columns: 1fr;
   }
