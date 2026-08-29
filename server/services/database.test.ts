@@ -5,9 +5,12 @@ import config from '../config';
 // 判斷是否為預設佔位符或缺失，若是則跳過真實資料庫整合測試
 const isConfigured = 
   config.supabase.url && 
-  config.supabase.key && 
+  config.supabase.key &&
   !config.supabase.url.includes('your-project') &&
   !config.supabase.key.includes('your_service_role_key');
+// Real writes are opt-in so the default test command remains deterministic and
+// cannot create test rows in a developer's or CI project's database.
+const runIntegration = isConfigured && process.env.RUN_DB_INTEGRATION_TESTS === '1';
 
 describe('Supabase 資料庫整合測試 (Integration Tests)', () => {
   const TEST_OFFER_ID = 999999999;
@@ -19,7 +22,7 @@ describe('Supabase 資料庫整合測試 (Integration Tests)', () => {
   });
 
   afterAll(async () => {
-    if (isConfigured) {
+    if (runIntegration) {
       try {
         const client = db.getSupabase();
         if (client) {
@@ -46,7 +49,7 @@ describe('Supabase 資料庫整合測試 (Integration Tests)', () => {
   });
 
   // 真實資料庫寫入測試，僅在憑證存在時執行
-  const itConditional = isConfigured ? it : it.skip;
+  const itConditional = runIntegration ? it : it.skip;
 
   itConditional('saveOffer() & closeOffer() 應能正確寫入並更新掛單且執行自清', async () => {
     const mockOffer = {

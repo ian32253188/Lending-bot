@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Tests-21%2F21%20Passing-brightgreen?style=flat-square&logo=vitest" alt="Tests"/>
+  <img src="https://img.shields.io/badge/Tests-65%20passed-brightgreen?style=flat-square&logo=vitest" alt="Tests"/>
   <img src="https://img.shields.io/badge/Node.js-20+-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js"/>
   <img src="https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black" alt="React"/>
   <img src="https://img.shields.io/badge/Express-5-000000?style=flat-square&logo=express&logoColor=white" alt="Express"/>
@@ -151,7 +151,7 @@ graph LR
 graph LR
     A[git push to main] --> B[GitHub Actions Trigger]
     B --> C[Install Dependencies]
-    C --> D[Run Tests - 21 tests]
+    C --> D[Run Tests - 65 passed + 2 opt-in integration]
     D -->|All Pass| E[Docker Build]
     E --> F[Push to GHCR]
     F --> G[SSH to OCI VM]
@@ -355,25 +355,52 @@ npm run test:watch
 
 | 測試檔 | 測試數 | 涵蓋內容 |
 |--------|--------|---------|
-| `strategy.test.ts` | 7 | 3D Hybrid 核心演算法：IBRR 均衡利率計算、莊家釣魚假單過濾 (Spoofing Age Filter)、極端供需情境處理、三維拆單金額精準度驗證、最低金額邊界條件 |
-| `api.test.ts` | 5 | API 端點整合測試：健康檢查 (`/api/health`)、Prometheus 指標格式驗證 (`/metrics`)、未認證請求 401 拒絕、SPA Fallback 路由 |
-| `database.test.ts` | 3 | Supabase 資料庫整合：掛單寫入/關閉 (saveOffer/closeOffer)、日誌寫入 (saveLog)、**測試數據自動清理**（確保不污染生產資料庫） |
-| `ml-predictor.test.ts` | 2 | Phase 2 AI 預測器：ML 權重模型載入驗證、歷史數據不足時的統計模型 Fallback |
-| `logger.test.ts` | 2 | 日誌系統：Production 模式輸出 structured JSON、Development 模式輸出 human-readable 格式 |
+| `api.test.ts` | 9 | API 端點整合測試：健康檢查 (`/api/health`)、Prometheus 指標、Token 驗證、引擎生命週期與交易輸入驗證 |
+| `database.test.ts` | 3 | Supabase 客戶端初始化；真實掛單/日誌寫入測試需 `RUN_DB_INTEGRATION_TESTS=1` 才執行 |
+| `database-history.test.ts` | 2 | `rate_history` 分頁讀取與 30 日五分鐘資料不截斷、快照欄位映射 |
+| `logger.test.ts` | 4 | Production/Development 格式、debug 不寫入 `operation_logs`、警告去重與抑制計數 |
 | `reoffer.test.ts` | 2 | 自動降息重掛模組：荷蘭拍衰減機制 (Dutch Auction Decay)、保底利率 Floor 觸發 |
+| `market-summary.test.ts` | 5 | fUSD 市場摘要、24 小時撮合、30 日利率走勢與空時段 |
+| `rest.test.ts` | 7 | Bitfinex REST 公開/認證端點、USDT/fUST 映射、HMAC 簽名、交易參數與錯誤 |
+| `ws.test.ts` | 5 | Bitfinex WebSocket ticker、訂單簿快照/更新、認證、維護事件與多實例隔離 |
+| `strategy-config.test.ts` | 2 | 3 種利率基準、6 種期限與安全預設值 |
+| `telegram-controls.test.ts` | 1 | Telegram 策略控制選項 |
+| `telegram-binding.test.ts` | 3 | 共用 Bot Token、Chat ID 驗證與錯誤碼 |
+| `telegram-multi-tenant.test.ts` | 2 | 共用 Bot 的多使用者路由與資料隔離 |
+| `telegram-routing.test.ts` | 2 | Chat ID 正規化、唯一綁定與群組 ID |
+| `lending-settings.test.ts` | 3 | 設定儲存、Chat ID 唯一性與綁定驗證 |
+| `dashboard.test.ts` | 7 | Dashboard 使用者隔離、收益統計、日誌篩選、歷史資料與市場服務路由 |
+| `manager-state.test.ts` | 3 | 引擎 paused/running 狀態恢復與關閉時狀態保留 |
+| `metrics.test.ts` | 1 | CPU、記憶體、活躍引擎與 Bitfinex API 錯誤指標 |
+| `crypto.test.ts` | 3 | API 金鑰加密解密、隨機 IV、竄改偵測與舊資料 fallback |
+| `FundingMarketDashboard.test.jsx` | 3 | 前端 30 日圖 tooltip、24 小時明細開啟與三種排序、API 錯誤顯示 |
 
 **最新測試結果**：
 ```
- ✓ server/services/analysis/reoffer.test.ts    (2 tests)
- ✓ server/utils/logger.test.ts                  (2 tests)
- ✓ server/services/engine/ml-predictor.test.ts  (2 tests)
- ✓ server/services/engine/strategy.test.ts      (7 tests)
- ✓ server/routes/api.test.ts                    (5 tests)
- ✓ server/services/database.test.ts             (3 tests)
+ ✓ server/services/analysis/reoffer.test.ts       (2 tests)
+ ✓ server/utils/logger.test.ts                    (4 tests)
+ ✓ server/services/market-summary.test.ts         (5 tests)
+ ✓ server/routes/api.test.ts                      (9 tests)
+ ✓ server/services/database.test.ts                (3 tests, 2 integration skipped by default)
+ ✓ server/services/database-history.test.ts        (2 tests)
+ ✓ server/services/bitfinex/rest.test.ts           (7 tests)
+ ✓ server/services/bitfinex/ws.test.ts             (5 tests)
+ ✓ server/services/strategy-config.test.ts         (2 tests)
+ ✓ server/services/telegram-binding.test.ts        (3 tests)
+ ✓ server/services/telegram-multi-tenant.test.ts  (2 tests)
+ ✓ server/services/telegram-routing.test.ts       (2 tests)
+ ✓ server/services/telegram-controls.test.ts      (1 test)
+ ✓ server/routes/lending-settings.test.ts           (3 tests)
+ ✓ server/routes/dashboard.test.ts                 (7 tests)
+ ✓ server/services/engine/manager-state.test.ts   (3 tests)
+ ✓ server/services/metrics.test.ts                 (1 test)
+ ✓ server/utils/crypto.test.ts                     (3 tests)
+ ✓ client/src/components/FundingMarketDashboard.test.jsx (3 tests)
 
- Test Files  6 passed (6)
-      Tests  21 passed (21)
-   Duration  1.33s
+ Server Test Files  18 passed (18)
+        Tests  62 passed (64; 2 opt-in integration skipped)
+ Client Test Files  1 passed (1)
+        Tests  3 passed (3)
 ```
 
 ---

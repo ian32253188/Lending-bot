@@ -1,9 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Mock database saveLog to avoid network/configuration issues in tests
-vi.mock('../services/database', () => ({
-  saveLog: vi.fn().mockResolvedValue(null)
-}));
+const mockDatabase = { saveLog: vi.fn().mockResolvedValue(null) };
+const databasePath = require.resolve('../services/database');
 
 describe('Logger Utility JSON Format Tests', () => {
   const originalEnv = process.env.NODE_ENV;
@@ -16,6 +14,13 @@ describe('Logger Utility JSON Format Tests', () => {
     vi.resetModules();
     vi.clearAllMocks();
     vi.restoreAllMocks();
+    mockDatabase.saveLog.mockResolvedValue(null);
+    require.cache[databasePath] = {
+      id: databasePath,
+      filename: databasePath,
+      loaded: true,
+      exports: mockDatabase,
+    } as any;
   });
 
   afterEach(() => {
@@ -73,5 +78,29 @@ describe('Logger Utility JSON Format Tests', () => {
 
     expect(consoleSpy).toHaveBeenCalled();
     expect(saveLogSpy).not.toHaveBeenCalled();
+  });
+
+  it('should deduplicate repeated warnings and report suppressed count later', () => {
+    process.env.NODE_ENV = 'development';
+    process.env.LOG_LEVEL = 'warn';
+    vi.useFakeTimers();
+
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const database = require('../services/database');
+    const logger = require('./logger');
+
+    logger.warn('bitfinex-ws', '連線暫時中斷', { dedupeKey: 'public-ws' });
+    logger.warn('bitfinex-ws', '連線暫時中斷', { dedupeKey: 'public-ws' });
+    expect(database.saveLog).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+    logger.warn('bitfinex-ws', '連線暫時中斷', { dedupeKey: 'public-ws' });
+    expect(database.saveLog).toHaveBeenCalledTimes(2);
+    expect(database.saveLog.mock.calls[1][3]).toMatchObject({
+      suppressedCount: 1,
+      suppressionWindowMs: 5 * 60 * 1000,
+    });
+    expect(consoleSpy).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
   });
 });

@@ -7,6 +7,9 @@ const mockEngine = {
   paused: false,
   start: vi.fn().mockResolvedValue(null),
   stop: vi.fn().mockResolvedValue(null),
+  pause: vi.fn(),
+  resume: vi.fn(),
+  emergencyStop: vi.fn().mockResolvedValue(null),
   getStatus: () => ({
     running: false,
     connected: false
@@ -17,6 +20,12 @@ const mockGetUserSettings = vi.fn().mockResolvedValue({
   strategy_config: { rateStrategy: 'current_avg', periodDays: 2, useAllAvailable: true },
 });
 const mockSaveUserSettings = vi.fn().mockResolvedValue(null);
+const mockManager = {
+  getBot: vi.fn().mockReturnValue(mockEngine),
+  startBot: vi.fn().mockResolvedValue(mockEngine),
+  stopBot: vi.fn().mockResolvedValue(null),
+  restartBotPreservingState: vi.fn().mockResolvedValue(mockEngine)
+};
 
 // 2. 利用 Node.js require.cache 全域劫持 CommonJS 模組
 const lendingPath = require.resolve('../services/engine/lending');
@@ -52,10 +61,7 @@ require.cache[managerPath] = {
   filename: managerPath,
   loaded: true,
   exports: {
-    getBot: vi.fn().mockReturnValue(mockEngine),
-    startBot: vi.fn().mockResolvedValue(mockEngine),
-    stopBot: vi.fn().mockResolvedValue(null),
-    restartBotPreservingState: vi.fn().mockResolvedValue(mockEngine)
+    ...mockManager,
   }
 } as any;
 
@@ -124,6 +130,59 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
       .expect(200);
 
     expect(res.body.message).toContain('放貸機器人已啟動');
+  });
+
+  it('引擎 pause/resume/emergency-stop 應路由到該使用者的引擎', async () => {
+    await request(app)
+      .post('/api/lending/engine/pause')
+      .set('Authorization', 'Bearer valid-test-token')
+      .send({ reason: '測試暫停' })
+      .expect(200);
+    await request(app)
+      .post('/api/lending/engine/resume')
+      .set('Authorization', 'Bearer valid-test-token')
+      .expect(200);
+    await request(app)
+      .post('/api/lending/engine/emergency-stop')
+      .set('Authorization', 'Bearer valid-test-token')
+      .expect(200);
+
+    expect(mockEngine.pause).toHaveBeenCalledWith('測試暫停');
+    expect(mockEngine.resume).toHaveBeenCalledOnce();
+    expect(mockEngine.emergencyStop).toHaveBeenCalledOnce();
+  });
+
+  it('未知引擎操作或沒有已啟動引擎時應拒絕請求', async () => {
+    await request(app)
+      .post('/api/lending/engine/restart')
+      .set('Authorization', 'Bearer valid-test-token')
+      .expect(400);
+
+    mockManager.getBot.mockReturnValueOnce(null);
+    await request(app)
+      .post('/api/lending/engine/pause')
+      .set('Authorization', 'Bearer valid-test-token')
+      .expect(400);
+  });
+
+  it('手動掛單與轉帳的輸入驗證應在觸碰交易 API 前完成', async () => {
+    await request(app)
+      .post('/api/lending/offer')
+      .set('Authorization', 'Bearer valid-test-token')
+      .send({ currency: 'BTC', amount: 500, rate: 0.001, period: 2 })
+      .expect(400);
+
+    await request(app)
+      .post('/api/lending/offer')
+      .set('Authorization', 'Bearer valid-test-token')
+      .send({ currency: 'USD', amount: 100, rate: 0.001, period: 2 })
+      .expect(400);
+
+    await request(app)
+      .post('/api/lending/transfer')
+      .set('Authorization', 'Bearer valid-test-token')
+      .send({ from: 'funding', to: 'funding', currency: 'USD', amount: 1 })
+      .expect(400);
   });
 
   it('POST /api/lending/strategy-settings 應只接受三種利率基準與六種期限', async () => {

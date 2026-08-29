@@ -1,0 +1,131 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import crypto from 'node:crypto';
+
+const configMock = {
+  bitfinex: {
+    restUrl: 'https://api.test/v2',
+    apiKey: undefined,
+    apiSecret: undefined,
+  },
+  lending: {
+    currencyMap: { USD: 'USD', USDT: 'UST' },
+    symbolToCurrency: { USD: 'USD', UST: 'USDT' },
+  },
+};
+
+const loggerMock = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+};
+
+const retryMock = {
+  withRetry: (operation: () => unknown) => operation(),
+};
+
+const mockModule = (modulePath: string, exports: unknown) => {
+  const resolved = require.resolve(modulePath);
+  require.cache[resolved] = { id: resolved, filename: resolved, loaded: true, exports } as any;
+};
+mockModule('../../config', configMock);
+mockModule('../../utils/logger', loggerMock);
+mockModule('../../utils/retry', retryMock);
+
+const rest = require('./rest');
+
+function okResponse(data: unknown) {
+  return {
+    ok: true,
+    status: 200,
+    json: vi.fn().mockResolvedValue(data),
+    text: vi.fn().mockResolvedValue(''),
+  };
+}
+
+describe('Bitfinex REST adapter', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('maps USDT to Bitfinex fUST for public ticker requests', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse([0.0003]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await rest.getFundingTicker('USDT');
+
+    expect(fetchMock).toHaveBeenCalledWith('https://api.test/v2/ticker/fUST');
+  });
+
+  it('serializes only provided public trade query parameters', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await rest.getFundingTrades('USD', { limit: 25, start: 100, end: null, sort: undefined });
+
+    expect(fetchMock).toHaveBeenCalledWith('https://api.test/v2/trades/fUSD/hist?limit=25&start=100');
+  });
+
+  it('uses per-user credentials and a Bitfinex HMAC signature for private calls', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse([{ type: 'funding' }]));
+    vi.stubGlobal('fetch', fetchMock);
+    const body = { currency: 'USD' };
+
+    await rest.authRequest('/auth/r/wallets', body, { apiKey: 'user-key', apiSecret: 'user-secret' });
+
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://api.test/v2/auth/r/wallets');
+    expect(options.method).toBe('POST');
+    expect(options.headers['bfx-apikey']).toBe('user-key');
+    expect(options.headers['bfx-nonce']).toMatch(/^\d+$/);
+    const expectedSignature = crypto
+      .createHmac('sha384', 'user-secret')
+      .update(`/api/v2/auth/r/wallets${options.headers['bfx-nonce']}${JSON.stringify(body)}`)
+      .digest('hex');
+    expect(options.headers['bfx-signature']).toBe(expectedSignature);
+    expect(options.body).toBe(JSON.stringify(body));
+  });
+
+  it('rejects an authenticated request before fetch when credentials are missing', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(rest.authRequest('/auth/r/wallets', {}, { apiKey: '', apiSecret: '' }))
+      .rejects.toThrow('Bitfinex API key or secret is not configured');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('maps funding offer and transfer payloads to Bitfinex API fields', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await rest.submitFundingOffer('USDT', 500, 0.0004, 10, { apiKey: 'key', apiSecret: 'secret' });
+    await rest.transfer('exchange', 'funding', 'USDT', 123.45, { apiKey: 'key', apiSecret: 'secret' });
+
+    const offerBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(offerBody).toMatchObject({ type: 'LIMIT', symbol: 'fUST', amount: '500', rate: '0.0004', period: 10 });
+    const transferBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(transferBody).toEqual({ from: 'exchange', to: 'funding', currency: 'USDT', currency_to: 'USDT', amount: '123.45' });
+  });
+
+  it('converts Bitfinex array responses into isolated domain objects', () => {
+    const offer = rest.parseFundingOffer([1, 'fUST', 1700000000000, 1700000001000, '500', '500', 'LIMIT', null, null, 0, 'ACTIVE', null, null, null, '0.0004', 10, 0, 0, null, 0]);
+    const credit = rest.parseFundingCredit([2, 'fUSD', 'CREDIT', 1700000000000, 1700000001000, '250', 0, 'ACTIVE', null, null, null, '0.0003', 7, 1700000002000, null]);
+    const wallet = rest.parseWallet(['funding', 'UST', '1000', '2', '998']);
+
+    expect(offer).toMatchObject({ id: 1, currency: 'USDT', amount: '500', period: 10 });
+    expect(credit).toMatchObject({ id: 2, currency: 'USD', amount: '250', period: 7 });
+    expect(wallet).toMatchObject({ type: 'funding', currency: 'USDT', rawCurrency: 'UST', balance: '1000', available: '998' });
+  });
+
+  it('turns public HTTP failures into an actionable error', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      text: vi.fn().mockResolvedValue('rate limited'),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(rest.getFundingBook('USD')).rejects.toThrow('Bitfinex API 公開端點錯誤 (429)');
+  });
+});

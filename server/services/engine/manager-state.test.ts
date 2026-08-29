@@ -92,6 +92,23 @@ describe('Engine manager persisted state', () => {
     expect(saveUserSettings).not.toHaveBeenCalledWith(userId, { status: 'stopped' });
   });
 
+  it('恢復 running 使用者時會持久化 running 而不意外改成 stopped', async () => {
+    const runningUserId = 'running-user';
+    getUserSettings.mockResolvedValueOnce({
+      bitfinex_api_key: 'key',
+      bitfinex_api_secret: 'secret',
+      status: 'running',
+      lending_currencies: ['USD'],
+      strategy_config: { rateStrategy: 'current_avg', periodDays: 2 },
+    });
+
+    const bot = await startBot(runningUserId);
+
+    expect(bot.running).toBe(true);
+    expect(saveUserSettings).toHaveBeenCalledWith(runningUserId, { status: 'running' });
+    expect(saveUserSettings).not.toHaveBeenCalledWith(runningUserId, { status: 'stopped' });
+  });
+
   it('程序關閉時停止引擎但不把 persisted status 改成 stopped', async () => {
     await shutdownAll();
 
