@@ -228,53 +228,6 @@ async function saveOrderBookSnapshot(snapshot) {
     return data;
 }
 
-// ============== IBRR 即時最佳利率快照 (全域共享) ==============
-
-async function saveIBRRSnapshot(snapshot) {
-    const db = getSupabase();
-    if (!db) return null;
-    const { data, error } = await db
-        .from('ibrr_history')
-        .insert({
-            currency: snapshot.currency,
-            ibrr: snapshot.ibrr,
-            equilibrium_rate: snapshot.equilibriumRate,
-            frr: snapshot.frr,
-            frr_trend: snapshot.frrTrend,
-            risk_level: snapshot.riskLevel,
-            demand_supply_ratio: snapshot.demandSupplyRatio,
-            total_demand: snapshot.totalDemand,
-            total_supply: snapshot.totalSupply,
-            ml_direction: snapshot.mlDirection,
-            ml_confidence: snapshot.mlConfidence,
-            wall_detected: snapshot.wallDetected,
-            wall_rate: snapshot.wallRate,
-            best_bid_rate: snapshot.bestBidRate,
-            best_ask_rate: snapshot.bestAskRate,
-            last_price: snapshot.lastPrice,
-            method: snapshot.method,
-            recorded_at: new Date().toISOString(),
-        })
-        .select();
-    if (error) console.error('saveIBRRSnapshot error:', error);
-    return data;
-}
-
-// 取得 IBRR 訓練資料
-async function getIBRRTrainingData(currency, hours = 168) {
-    const db = getSupabase();
-    if (!db) return [];
-    const fromDate = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-    const { data, error } = await db
-        .from('ibrr_history')
-        .select('*')
-        .eq('currency', currency)
-        .gte('recorded_at', fromDate)
-        .order('recorded_at', { ascending: true });
-    if (error) console.error('getIBRRTrainingData error:', error);
-    return data || [];
-}
-
 async function getRateHistory(currency, hours = 24) {
     const db = getSupabase();
     if (!db) return [];
@@ -309,6 +262,8 @@ async function getRateHistory(currency, hours = 24) {
 // ============== 操作日誌 ==============
 
 async function saveLog(level, category, message, metadata = null, userId = null) {
+    // debug 只存在於應用程式輸出，不應繞過 logger 寫入資料庫。
+    if (level === 'debug') return null;
     requireUserId('saveLog', userId);
     const db = getSupabase();
     if (!db) return null;
@@ -481,7 +436,6 @@ module.exports = {
     saveEarning, getEarnings, deleteEarnings,
     saveRateSnapshot, getRateHistory,
     saveOrderBookSnapshot,
-    saveIBRRSnapshot, getIBRRTrainingData,
     saveLog, getLogs,
     getSetting, saveSetting,
     getUserSettings, saveUserSettings, getUserSettingsByTelegramChatId,

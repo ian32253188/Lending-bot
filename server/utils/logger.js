@@ -1,9 +1,37 @@
 const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 const currentLevel = process.env.LOG_LEVEL || 'info';
 const db = require('../services/database');
+const WARNING_SUPPRESSION_WINDOW_MS = 5 * 60 * 1000;
+const warningState = new Map();
 
 function formatTime() {
     return new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
+}
+
+function getWarningPersistence(category, message, userId, metadata) {
+    const now = Date.now();
+    const dedupeKey = metadata && typeof metadata === 'object' && metadata.dedupeKey
+        ? metadata.dedupeKey
+        : message;
+    const key = JSON.stringify([category, dedupeKey, userId || '']);
+    const previous = warningState.get(key);
+
+    if (previous && now - previous.lastPersistedAt < WARNING_SUPPRESSION_WINDOW_MS) {
+        previous.suppressedCount += 1;
+        previous.lastSeenAt = now;
+        return null;
+    }
+
+    const suppressedCount = previous?.suppressedCount || 0;
+    warningState.set(key, { lastPersistedAt: now, lastSeenAt: now, suppressedCount: 0 });
+
+    if (!suppressedCount) return metadata;
+    const baseMetadata = metadata && typeof metadata === 'object' ? metadata : {};
+    return {
+        ...baseMetadata,
+        suppressedCount,
+        suppressionWindowMs: WARNING_SUPPRESSION_WINDOW_MS,
+    };
 }
 
 function log(level, category, message, metadata = null, userId = null) {
@@ -68,8 +96,19 @@ function log(level, category, message, metadata = null, userId = null) {
         }
     }
 
+    // debug 只保留在應用程式輸出，不寫入資料庫。
+    // 策略每次決策都可能產生 debug 訊息，寫入 operation_logs 會造成不必要的高頻 IO。
+    if (level === 'debug') return;
+
+    const metadataForPersistence = level === 'warn'
+        ? getWarningPersistence(category, message, finalUserId, finalMetadata)
+        : finalMetadata;
+
+    // 相同警告在短時間內只入庫一次；下次入庫時附帶被抑制的次數。
+    if (level === 'warn' && metadataForPersistence === null) return;
+
     // 非同步寫入資料庫（不阻塞）
-    db.saveLog(level, category, message, finalMetadata, finalUserId).catch(() => { });
+    db.saveLog(level, category, message, metadataForPersistence, finalUserId).catch(() => { });
 }
 
 module.exports = {

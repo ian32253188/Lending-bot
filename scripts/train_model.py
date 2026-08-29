@@ -16,24 +16,7 @@ def load_env():
     return env_vars
 
 def fetch_supabase_data(env):
-    supabase_url = env.get('SUPABASE_URL')
-    supabase_key = env.get('SUPABASE_KEY')
-    if not supabase_url or not supabase_key:
-        raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY in .env file.")
-    
-    url = f"{supabase_url}/rest/v1/ibrr_history?select=*&order=recorded_at.desc&limit=2000"
-    req = urllib.request.Request(
-        url,
-        headers={
-            'apikey': supabase_key,
-            'Authorization': f'Bearer {supabase_key}'
-        }
-    )
-    
-    print("[INFO] Fetching historical data from Supabase Cloud...")
-    with urllib.request.urlopen(req) as res:
-        data = json.loads(res.read().decode('utf-8'))
-    return data
+    raise RuntimeError("IBRR 歷史資料表已移除；此舊版 ML 訓練流程已停用。")
 
 def sigmoid(x):
     return 1 / (1 + np.exp(-np.clip(x, -50, 50)))
@@ -42,25 +25,8 @@ def relu(x):
     return np.maximum(0, x)
 
 def train_mlp():
-    env = load_env()
-    try:
-        raw_data = fetch_supabase_data(env)
-    except Exception as e:
-        print(f"[ERROR] Failed to fetch data: {e}")
-        print("[INFO] Fallback: Generating synthetic training data for simulation...")
-        # Fallback synthetic data
-        raw_data = []
-        for i in range(500):
-            raw_data.append({
-                'frr': 0.00035 + 0.00005 * np.sin(i / 10.0),
-                'best_ask_rate': 0.00036 + 0.00005 * np.sin(i / 10.0),
-                'best_bid_rate': 0.00034 + 0.00005 * np.sin(i / 10.0),
-                'total_demand': 5000 + 1000 * np.random.randn(),
-                'total_supply': 8000 + 2000 * np.random.randn(),
-                'demand_supply_ratio': 0.625,
-                'last_price': 0.00035,
-                'recorded_at': f"2026-06-12T12:{i:02d}:00Z"
-            })
+    print("[INFO] IBRR 歷史資料表已移除，舊版 ML 訓練流程不再執行。")
+    return
 
     print(f"[INFO] Loaded {len(raw_data)} data snapshots for training.")
     

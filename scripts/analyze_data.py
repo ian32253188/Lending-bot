@@ -18,7 +18,7 @@ def load_env():
 def fetch_data(env):
     supabase_url = env.get('SUPABASE_URL')
     supabase_key = env.get('SUPABASE_KEY')
-    url = f"{supabase_url}/rest/v1/ibrr_history?select=*&order=recorded_at.desc&limit=1000"
+    url = f"{supabase_url}/rest/v1/rate_history?select=*&order=recorded_at.desc&limit=1000"
     req = urllib.request.Request(
         url,
         headers={'apikey': supabase_key, 'Authorization': f'Bearer {supabase_key}'}
@@ -41,23 +41,23 @@ def analyze():
         groups[cur].append(d)
         
     for cur, records in groups.items():
-        # 提取欄位
+        # rate_history 是目前保留的公開市場歷史來源；IBRR 歷史表已移除。
         frrs = [r['frr'] for r in records if r.get('frr') is not None]
-        ibrrs = [r['ibrr'] for r in records if r.get('ibrr') is not None]
-        eqs = [r['equilibrium_rate'] for r in records if r.get('equilibrium_rate') is not None]
-        ratios = [r['demand_supply_ratio'] for r in records if r.get('demand_supply_ratio') is not None]
-        bids = [r['best_bid_rate'] for r in records if r.get('best_bid_rate') is not None]
-        asks = [r['best_ask_rate'] for r in records if r.get('best_ask_rate') is not None]
-        prices = [r['last_price'] for r in records if r.get('last_price') is not None]
+        avg_rates = [r['avg_rate'] for r in records if r.get('avg_rate') is not None]
+        high_rates = [r['high_rate'] for r in records if r.get('high_rate') is not None]
+        low_rates = [r['low_rate'] for r in records if r.get('low_rate') is not None]
+
+        if not frrs:
+            print(f"=== {cur} LENDING DATA ANALYSIS ({len(records)} records) ===")
+            print("  * No FRR data available.")
+            print()
+            continue
         
         # 轉成 numpy 陣列
         frrs = np.array(frrs)
-        ibrrs = np.array(ibrrs)
-        eqs = np.array(eqs)
-        ratios = np.array(ratios)
-        bids = np.array(bids)
-        asks = np.array(asks)
-        prices = np.array(prices)
+        avg_rates = np.array(avg_rates)
+        high_rates = np.array(high_rates)
+        low_rates = np.array(low_rates)
         
         # 利率走勢變化分析 (時序是降序，所以前減後)
         deltas = []
@@ -71,12 +71,10 @@ def analyze():
         
         print(f"=== {cur} LENDING DATA ANALYSIS ({len(records)} records) ===")
         print(f"  * Mean FRR Annual Rate (APY): {np.mean(frrs) * 365 * 100:.3f}% (Range: {np.min(frrs)*365*100:.3f}% ~ {np.max(frrs)*365*100:.3f}%)")
-        print(f"  * Mean Best Bid APY: {np.mean(bids) * 365 * 100:.3f}%")
-        print(f"  * Mean Best Ask APY: {np.mean(asks) * 365 * 100:.3f}%")
-        print(f"  * Mean Equilibrium Rate APY: {np.mean(eqs) * 365 * 100:.3f}%")
-        print(f"  * Mean Calculated Optimal Rate (IBRR APY): {np.mean(ibrrs) * 365 * 100:.3f}%")
-        print(f"  * Mean Last Price APY: {np.mean(prices) * 365 * 100:.3f}%")
-        print(f"  * Mean Demand/Supply Ratio: {np.mean(ratios):.4f}")
+        if len(avg_rates):
+            print(f"  * Mean Market Rate APY: {np.mean(avg_rates) * 365 * 100:.3f}%")
+        if len(high_rates) and len(low_rates):
+            print(f"  * Market Rate Range APY: {np.min(low_rates) * 365 * 100:.3f}% ~ {np.max(high_rates) * 365 * 100:.3f}%")
         print(f"  * FRR Rate Trend: Rising {rising_count} times | Falling {falling_count} times | Stable {stable_count} times")
         print()
 

@@ -210,7 +210,7 @@ async function shutdownAll() {
 }
 
 // ============== 全域公開行情收集器 (SaaS 優化) ==============
-// 只有一份全域定時器，向資料庫寫入公開市場歷史利率與 IBRR 快照，避免多用戶集體收集造成的寫入浪費
+// 只有一份全域定時器，向資料庫寫入公開市場歷史利率，避免多用戶集體收集造成的寫入浪費
 
 function startGlobalRateCollector() {
     if (globalRateCollectorTimer) return;
@@ -274,26 +274,6 @@ async function collectGlobalRateData() {
                 walletBalance: 0,
             });
 
-            // 2. 儲存 IBRR 即時最佳預估與 ML 特徵快照
-            await db.saveIBRRSnapshot({
-                currency,
-                ibrr: optimalResult.diagnostics?.ibrrRate || marketData.frr,
-                equilibriumRate: optimalResult.diagnostics?.equilibriumRate || marketData.frr,
-                frr: marketData.frr,
-                frrTrend: optimalResult.diagnostics?.frrTrend || 'stable',
-                riskLevel: 5,
-                demandSupplyRatio: optimalResult.diagnostics?.demandSupplyRatio || 1,
-                totalDemand: optimalResult.diagnostics?.totalBidVolume || 0,
-                totalSupply: optimalResult.diagnostics?.totalAskVolume || 0,
-                mlDirection: 'stable',
-                mlConfidence: 1.0,
-                wallDetected: optimalResult.diagnostics?.wallDetected || false,
-                wallRate: optimalResult.diagnostics?.wallRate || 0,
-                bestBidRate: optimalResult.diagnostics?.bestBid || 0,
-                bestAskRate: optimalResult.diagnostics?.bestAsk || 0,
-                lastPrice: marketData.lastPrice || marketData.frr,
-                method: optimalResult.diagnostics?.method || 'ibrr_3d_hybrid',
-            });
         } catch (err) {
             logger.error('manager', `全域行情收集 ${currency} 失敗`, { error: err.message });
         }

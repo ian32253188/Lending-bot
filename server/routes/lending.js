@@ -411,7 +411,6 @@ router.post('/transfer', async (req, res) => {
 
         const result = await rest.transfer(from, to, currency, parsedAmount, credentials);
         logger.info('lending', `用戶 ${userId} 手動轉帳: ${parsedAmount} ${currency} (${from} → ${to})`);
-        await db.saveLog('info', 'lending', `手動轉帳 ${parsedAmount} ${currency} (${from} → ${to})`, null, userId);
         res.json({ message: '轉帳成功', result });
     } catch (err) {
         res.status(500).json({ error: err.message });

@@ -330,43 +330,7 @@ async function analyzeDatabase() {
     }
     console.log('└─────────────────────────────────────────');
 
-    // ---- 2d. IBRR 歷史分析 ----
-    console.log('\n┌─────────────────────────────────────────');
-    console.log('│ 🎯 IBRR 出清引擎校準分析');
-    console.log('├─────────────────────────────────────────');
-
-    for (const cur of ['USD', 'USDT']) {
-        const ibrrData = await db.getIBRRTrainingData(cur, 168);
-        if (!ibrrData || ibrrData.length < 5) {
-            console.log(`│ ${cur}: IBRR 歷史數據不足 (${ibrrData?.length || 0} 筆)`);
-            continue;
-        }
-
-        const ibrrRates = ibrrData.map(d => d.ibrr).filter(Boolean);
-        const eqRates = ibrrData.map(d => d.equilibrium_rate).filter(Boolean);
-        const frrRates = ibrrData.map(d => d.frr).filter(Boolean);
-        const wallCount = ibrrData.filter(d => d.wall_detected).length;
-        const mlDirections = ibrrData.map(d => d.ml_direction).filter(Boolean);
-
-        const avgIBRR = ibrrRates.reduce((s, v) => s + v, 0) / ibrrRates.length;
-        const avgFRR = frrRates.reduce((s, v) => s + v, 0) / frrRates.length;
-        const ibrrPremium = avgFRR > 0 ? ((avgIBRR - avgFRR) / avgFRR * 100).toFixed(2) : 'N/A';
-
-        console.log(`│ ${cur} IBRR 校準分析 (${ibrrData.length} 筆):`);
-        console.log(`│   平均 IBRR: ${(avgIBRR * 100).toFixed(4)}%/天 | 平均 FRR: ${(avgFRR * 100).toFixed(4)}%/天`);
-        console.log(`│   IBRR 相對 FRR 溢價: ${ibrrPremium}%`);
-        console.log(`│   阻力牆觸發次數: ${wallCount}/${ibrrData.length} (${(wallCount / ibrrData.length * 100).toFixed(1)}%)`);
-
-        // ML 預測方向統計
-        const dirCounts = {};
-        for (const d of mlDirections) { dirCounts[d] = (dirCounts[d] || 0) + 1; }
-        if (Object.keys(dirCounts).length > 0) {
-            console.log(`│   ML 預測方向統計: ${Object.entries(dirCounts).map(([k, v]) => `${k}(${v}次)`).join(', ')}`);
-        }
-    }
-    console.log('└─────────────────────────────────────────');
-
-    // ---- 2e. 掛單成交效率 ----
+    // ---- 2d. 掛單成交效率 ----
     console.log('\n┌─────────────────────────────────────────');
     console.log('│ ⚡ 掛單成交效率分析');
     console.log('├─────────────────────────────────────────');

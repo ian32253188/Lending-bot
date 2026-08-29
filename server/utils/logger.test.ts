@@ -7,15 +7,20 @@ vi.mock('../services/database', () => ({
 
 describe('Logger Utility JSON Format Tests', () => {
   const originalEnv = process.env.NODE_ENV;
+  const originalLogLevel = process.env.LOG_LEVEL;
 
   beforeEach(() => {
     // Reset NODE_ENV
     process.env.NODE_ENV = originalEnv;
+    process.env.LOG_LEVEL = originalLogLevel;
+    vi.resetModules();
+    vi.clearAllMocks();
     vi.restoreAllMocks();
   });
 
   afterEach(() => {
     process.env.NODE_ENV = originalEnv;
+    process.env.LOG_LEVEL = originalLogLevel;
   });
 
   it('should print structured JSON in production mode', () => {
@@ -53,5 +58,20 @@ describe('Logger Utility JSON Format Tests', () => {
     // Should NOT be JSON
     expect(() => JSON.parse(output)).toThrow();
     expect(output).toContain('[test-cat] Hello development');
+  });
+
+  it('should not persist debug messages to operation_logs', () => {
+    process.env.NODE_ENV = 'development';
+    process.env.LOG_LEVEL = 'debug';
+
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const database = require('../services/database');
+    const saveLogSpy = vi.spyOn(database, 'saveLog');
+    const logger = require('./logger');
+
+    logger.debug('strategy', 'high-frequency diagnostic');
+
+    expect(consoleSpy).toHaveBeenCalled();
+    expect(saveLogSpy).not.toHaveBeenCalled();
   });
 });

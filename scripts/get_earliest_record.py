@@ -58,7 +58,6 @@ def main():
     env = load_env()
     
     tables = {
-        "ibrr_history": "recorded_at",
         "rate_history": "recorded_at",
         "funding_offers": "created_at",
         "funding_loans": "opened_at",

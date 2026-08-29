@@ -41,6 +41,7 @@ async function withRetry(fn, options = {}) {
             if (!canRetry) {
                 logger.warn('retry', `${label} 遇到不可重試錯誤，跳過重試`, {
                     error: err.message,
+                    dedupeKey: `${label}:non-retryable`,
                 });
                 break;
             }
@@ -49,6 +50,7 @@ async function withRetry(fn, options = {}) {
                 const delay = baseDelay * Math.pow(2, attempt - 1) + Math.random() * 500;
                 logger.warn('retry', `${label} 失敗 (第 ${attempt}/${maxRetries} 次)，${Math.round(delay)}ms 後重試`, {
                     error: err.message,
+                    dedupeKey: `${label}:retry`,
                 });
                 await new Promise((resolve) => setTimeout(resolve, delay));
             }

@@ -93,7 +93,6 @@ class LendingBot {
         }, initialDelay);
 
         logger.info('engine', `✅ 用戶 ${this.userId} 的放貸機器人啟動完成 (交錯延遲: ${initialDelay.toFixed(0)}ms)`);
-        db.saveLog('info', 'engine', '放貸機器人啟動成功', null, this.userId);
     }
 
     /**
@@ -136,14 +135,12 @@ class LendingBot {
         }
 
         logger.info('engine', `✅ 用戶 ${this.userId} 的放貸機器人已停止`);
-        db.saveLog('info', 'engine', '放貸機器人已停止', null, this.userId);
     }
 
     pause(reason = '手動暫停') {
         this.paused = true;
         this.pauseReason = reason;
         logger.info('engine', `⏸️ 放貸已暫停: ${reason}`, this.userId);
-        db.saveLog('info', 'engine', `放貸已暫停: ${reason}`, null, this.userId);
         db.saveUserSettings(this.userId, { status: 'paused', pause_reason: reason }).catch(err => {
             logger.error('engine', '儲存暫停狀態失敗', { error: err.message, userId: this.userId });
         });
@@ -153,7 +150,6 @@ class LendingBot {
         this.paused = false;
         this.pauseReason = '';
         logger.info('engine', '▶️ 放貸已恢復', this.userId);
-        db.saveLog('info', 'engine', '放貸已恢復', null, this.userId);
         db.saveUserSettings(this.userId, { status: 'running', pause_reason: '' }).catch(err => {
             logger.error('engine', '儲存恢復狀態失敗', { error: err.message, userId: this.userId });
         });
@@ -339,15 +335,6 @@ class LendingBot {
         if (!optimalResult.shouldOffer) {
             logger.debug('engine', `${currency}: 不掛單 - ${optimalResult.reason}`, this.userId);
             return;
-        }
-
-        // 記錄掛單日誌
-        if (optimalResult.diagnostics) {
-            db.saveLog('debug', 'strategy-decision',
-                `${currency}: ${optimalResult.reason}`,
-                optimalResult.diagnostics,
-                this.userId
-            );
         }
 
         // 進行掛單執行（加入微幅隨機延遲平滑流量）

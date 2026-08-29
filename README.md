@@ -96,7 +96,7 @@ graph LR
 | 設計點 | 做法 | 理由 |
 |--------|------|------|
 | **公有/私有 WS 分離** | 1 個共享公開 WS + 每用戶 1 個私有 WS | 公開行情不需重複訂閱，私有帳戶事件必須隔離 |
-| **全域行情收集器** | 單一定時器寫入 `rate_history` / `ibrr_history` | 避免 N 位用戶重複寫入相同的市場快照 |
+| **全域行情收集器** | 單一定時器寫入 `rate_history` | 避免 N 位用戶重複寫入相同的市場快照 |
 | **LendingBot 生命週期** | `manager.js` Map 管理 | 啟動/停止/恢復/關閉 統一入口，容器重啟自動恢復 |
 
 ---
@@ -220,18 +220,11 @@ erDiagram
         text note "全域共享 - 無 user_id"
     }
 
-    ibrr_history {
-        int id PK
-        varchar currency
-        decimal ibrr
-        decimal equilibrium_rate
-        text note "全域共享 - AI 訓練用"
-    }
 ```
 
 **設計原則**：
 - **Per-User 表** (有 `user_id`)：`funding_offers`、`funding_loans`、`earnings`、`operation_logs`、`user_bot_settings` — 全部啟用 RLS
-- **全域共享表** (無 `user_id`)：`rate_history`、`ibrr_history`、`order_book_snapshots`、`bot_settings` — 市場行情數據全用戶共享
+- **全域共享表** (無 `user_id`)：`rate_history`、`order_book_snapshots`、`bot_settings` — 市場行情數據全用戶共享
 
 ---
 
@@ -334,10 +327,14 @@ docker compose -f docker-compose.prod.yml up -d
 
 ```bash
 # 將 supabase/migrations/ 下的 SQL 檔按順序執行：
-# 001_initial.sql          — 基礎表結構
-# 002_orderbook_snapshots.sql — 訂單簿快照表
-# 003_ibrr_history.sql     — IBRR AI 訓練歷史表
-# 004_multi_tenant_saas.sql — 多租戶 RLS + user_bot_settings
+# 001_initial.sql                  — 基礎表結構
+# 002_orderbook_snapshots.sql      — 訂單簿快照表
+# 003_ibrr_history.sql             — 舊版 IBRR 歷史表（已由 008 移除）
+# 004_multi_tenant_saas.sql        — 多租戶 RLS + user_bot_settings
+# 005_add_compounding_transfer.sql — 複利與轉帳設定
+# 006_telegram_single_bot_multi_user.sql — Telegram 多使用者路由
+# 007_add_pause_reason.sql         — 策略暫停原因
+# 008_drop_ibrr_history.sql        — 移除不再使用的 IBRR 歷史表
 ```
 
 ---
@@ -430,8 +427,12 @@ Lending-bot-master/
 ├── supabase/migrations/
 │   ├── 001_initial.sql             # 基礎表結構
 │   ├── 002_orderbook_snapshots.sql # 訂單簿快照
-│   ├── 003_ibrr_history.sql        # IBRR 歷史 (AI 訓練用)
-│   └── 004_multi_tenant_saas.sql   # 多租戶 RLS + 用戶設定表
+│   ├── 003_ibrr_history.sql        # 舊版 IBRR 歷史表定義（保留 migration 歷史）
+│   ├── 004_multi_tenant_saas.sql   # 多租戶 RLS + 用戶設定表
+│   ├── 005_add_compounding_transfer.sql
+│   ├── 006_telegram_single_bot_multi_user.sql
+│   ├── 007_add_pause_reason.sql
+│   └── 008_drop_ibrr_history.sql   # 移除不再使用的 IBRR 歷史表
 ├── Dockerfile                      # Multi-stage Node.js 建置
 ├── .env.example                    # 環境變數範本
 └── package.json

@@ -188,7 +188,7 @@ class StrategyEngine {
         // 繞過大阻力牆，搶先在莊家巨牆前 2% 利率插隊成交
         if (wallInfo.hasWall && wallInfo.wallRate !== undefined && ibrr < wallInfo.wallRate) {
             ibrr = wallInfo.wallRate * 0.98;
-            logger.info('strategy', `🧱 IBRR 觸發阻力牆繞道：原出清點=${(equilibriumRate * 100).toFixed(4)}% -> 避讓掛單點=${(ibrr * 100).toFixed(4)}%`);
+            logger.debug('strategy', `🧱 IBRR 觸發阻力牆繞道：原出清點=${(equilibriumRate * 100).toFixed(4)}% -> 避讓掛單點=${(ibrr * 100).toFixed(4)}%`);
         }
         if (currency) {
             if (!this.ibrrHistory[currency])
@@ -211,7 +211,7 @@ class StrategyEngine {
             equilibriumFound,
             method: 'ibrr_3d_hybrid',
         };
-        logger.info('strategy', `🎯 IBRR ${currency} (3D Hybrid): ${(ibrr * 100).toFixed(4)}%/天 ` +
+        logger.debug('strategy', `🎯 IBRR ${currency} (3D Hybrid): ${(ibrr * 100).toFixed(4)}%/天 ` +
             `(均衡=${(equilibriumRate * 100).toFixed(4)}%, FRR=${(frr * 100).toFixed(4)}%, ` +
             `真實供需比=${result.demandSupplyRatio.toFixed(2)})`);
         return result;
