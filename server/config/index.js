@@ -27,6 +27,14 @@ const config = {
         chatId: process.env.TELEGRAM_CHAT_ID,
     },
 
+    // 每日摘要使用的 USD/TWD 公開匯率。主來源每日更新，程式會快取避免頻繁呼叫。
+    exchangeRate: {
+        primaryUrl: process.env.EXCHANGE_RATE_URL || 'https://open.er-api.com/v6/latest/USD',
+        fallbackUrl: process.env.EXCHANGE_RATE_FALLBACK_URL || 'https://api.frankfurter.dev/v2/rate/USD/TWD',
+        cacheTtlMs: parseInt(process.env.EXCHANGE_RATE_CACHE_TTL_MS, 10) || 24 * 60 * 60 * 1000,
+        timeoutMs: parseInt(process.env.EXCHANGE_RATE_TIMEOUT_MS, 10) || 5000,
+    },
+
     lending: {
         currencies: ['USD', 'USDT'],
         minOfferAmount: 150,

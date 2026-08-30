@@ -5,6 +5,7 @@ const cron = require('node-cron');
 const { buildFundingMarketSummary } = require('./market-summary');
 const { RATE_STRATEGY_LABELS, PERIOD_DAYS, normalizeStrategyConfig } = require('./strategy-config');
 const { normalizeTelegramChatId } = require('./telegram-routing');
+const { getUsdToTwdRate, convertToTwd } = require('./exchange-rate');
 
 // ============== 多租戶 Telegram Bot 註冊表 ==============
 // One polling process handles all users. Routes are keyed by userId and each
@@ -257,6 +258,16 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, m
     const status = engine.getDetailedStatus();
     const now = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
 
+    let exchangeQuote = null;
+    try {
+        exchangeQuote = await getUsdToTwdRate();
+    } catch (err) {
+        logger.warn('telegram', '取得 USD/TWD 匯率失敗，摘要將標示暫不可用', {
+            error: err.message,
+            userId,
+        });
+    }
+
     // 為了防範伺服器時區差異，採用亞洲/台北時區 (UTC+8) 作為結算基準
     const taipeiOffset = 8 * 60 * 60 * 1000;
     const nowTaipei = new Date(Date.now() + taipeiOffset);
@@ -264,26 +275,37 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, m
     todayStart.setTime(todayStart.getTime() - taipeiOffset);
 
     const yesterdayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
+    const monthStart = new Date(Date.UTC(nowTaipei.getUTCFullYear(), nowTaipei.getUTCMonth(), 1));
+    monthStart.setTime(monthStart.getTime() - taipeiOffset);
 
-    const [todayEarnings, yesterdayEarnings, allEarnings] = await Promise.all([
+    const [todayEarnings, yesterdayEarnings, monthEarnings, allEarnings] = await Promise.all([
         db.getEarnings(null, todayStart.toISOString(), null, userId),
         db.getEarnings(null, yesterdayStart.toISOString(), todayStart.toISOString(), userId),
+        db.getEarnings(null, monthStart.toISOString(), null, userId),
         db.getEarnings(null, null, null, userId),
     ]);
 
-    function sumAmount(rows) {
-        return rows.reduce((s, r) => s + (r.amount || 0), 0);
+    function sumTwdAmount(rows) {
+        if (!rows.length) return 0;
+        let total = 0;
+        for (const row of rows) {
+            const converted = convertToTwd(row.amount, row.currency, exchangeQuote);
+            if (converted === null) return null;
+            total += converted;
+        }
+        return total;
     }
 
-    const todayTotal = sumAmount(todayEarnings);
-    const yesterdayTotal = sumAmount(yesterdayEarnings);
-    const allTimeTotal = sumAmount(allEarnings);
+    const todayTotal = sumTwdAmount(todayEarnings);
+    const yesterdayTotal = sumTwdAmount(yesterdayEarnings);
+    const monthTotal = sumTwdAmount(monthEarnings);
+    const allTimeTotal = sumTwdAmount(allEarnings);
 
     let changeText = '';
-    if (yesterdayTotal > 0) {
+    if (yesterdayTotal !== null && yesterdayTotal > 0 && todayTotal !== null) {
         const pct = ((todayTotal - yesterdayTotal) / yesterdayTotal * 100).toFixed(1);
         changeText = pct > 0 ? ` (+${pct}% 📈)` : ` (${pct}% 📉)`;
-    } else if (todayTotal > 0) {
+    } else if (todayTotal !== null && todayTotal > 0) {
         changeText = ' (🚀)';
     }
 
@@ -294,15 +316,19 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, m
     msg += formatFundingMarketSection(marketSummary);
 
     // 2. 收益回報統計
-    msg += `💰 <b>量化收益回報 (已扣稅)</b>\n`;
-    msg += `  ├─ 今日收益: <b>$${todayTotal.toFixed(4)} USD</b>${changeText}\n`;
-    msg += `  ├─ 昨日收益: <b>$${yesterdayTotal.toFixed(4)} USD</b>\n`;
-    msg += `  └─ 累計收益: <b>$${allTimeTotal.toFixed(4)} USD</b>\n\n`;
+    msg += `💰 <b>量化收益回報（TWD，已扣稅）</b>\n`;
+    msg += `  ├─ 換算匯率: <code>${formatExchangeRate(exchangeQuote)}</code>${formatExchangeRateSource(exchangeQuote)}\n`;
+    msg += `  ├─ 今日收益: <b>${formatTwdAmount(todayTotal, 4)}</b>${changeText}\n`;
+    msg += `  ├─ 昨日收益: <b>${formatTwdAmount(yesterdayTotal, 4)}</b>\n`;
+    msg += `  ├─ 本月收益: <b>${formatTwdAmount(monthTotal, 4)}</b>\n`;
+    msg += `  └─ 累計收益: <b>${formatTwdAmount(allTimeTotal, 4)}</b>\n\n`;
 
     // 3. 各幣種錢包與放貸水位
     msg += `💳 <b>資產與放貸水位</b>\n`;
     for (const cur of Object.keys(status.wallets)) {
         const wallet = status.wallets[cur] || { balance: 0, available: 0 };
+        const walletBalance = Number(wallet.balance);
+        const availableBalance = Number(wallet.available);
         const offersCount = Array.isArray(status.activeOffers[cur]) ? status.activeOffers[cur].length : (status.activeOffers[cur] || 0);
         const creditsCount = Array.isArray(status.activeCredits[cur]) ? status.activeCredits[cur].length : (status.activeCredits[cur] || 0);
         const offersAmount = Array.isArray(status.activeOffers[cur])
@@ -311,12 +337,13 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, m
         const creditsAmount = Array.isArray(status.activeCredits[cur])
             ? status.activeCredits[cur].reduce((sum, credit) => sum + (Number(credit.amount) || 0), 0)
             : 0;
-        const lendingAmount = Math.max(0, (Number(wallet.balance) || 0) - (Number(wallet.available) || 0));
+        const lendingAmount = Math.max(0, (Number.isFinite(walletBalance) ? walletBalance : 0) - (Number.isFinite(availableBalance) ? availableBalance : 0));
+        const walletTwd = convertToTwd(walletBalance, cur, exchangeQuote);
         msg += `  <b>${cur} 資產</b>:\n`;
-        msg += `  ├─ 錢包總額: $${wallet.balance.toFixed(2)}\n`;
-        msg += `  ├─ 可用餘額: $${wallet.available.toFixed(2)}\n`;
-        msg += `  ├─ 已投入放貸: $${lendingAmount.toFixed(2)}\n`;
-        msg += `  └─ 進行中: 掛單 ${offersCount} 筆 ($${offersAmount.toFixed(2)}) | 貸款中 ${creditsCount} 筆 ($${creditsAmount.toFixed(2)})\n`;
+        msg += `  ├─ 錢包總額: ${formatFixedMoney(walletBalance)}（約 ${formatTwdAmount(walletTwd, 2)}）\n`;
+        msg += `  ├─ 可用餘額: ${formatFixedMoney(availableBalance)}\n`;
+        msg += `  ├─ 已投入放貸: ${formatFixedMoney(lendingAmount)}\n`;
+        msg += `  └─ 進行中: 掛單 ${offersCount} 筆 (${formatFixedMoney(offersAmount)}) | 貸款中 ${creditsCount} 筆 (${formatFixedMoney(creditsAmount)})\n`;
     }
 
     return msg;
@@ -331,6 +358,47 @@ function formatPercent(value) {
 function formatAmount(value) {
     const amount = Number(value);
     return Number.isFinite(amount) ? `$${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—';
+}
+
+function formatFixedMoney(value) {
+    const amount = Number(value);
+    return Number.isFinite(amount)
+        ? `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        : '$—';
+}
+
+function formatTwdAmount(value, fractionDigits = 2) {
+    const amount = Number(value);
+    return Number.isFinite(amount)
+        ? `NT$${amount.toLocaleString('zh-TW', { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits })}`
+        : 'NT$—';
+}
+
+function formatExchangeRate(quote) {
+    if (!quote || !Number.isFinite(Number(quote.rate))) return '暫時無法取得';
+
+    const rate = Number(quote.rate).toLocaleString('zh-TW', {
+        minimumFractionDigits: 3,
+        maximumFractionDigits: 5,
+    });
+    const quoteDate = quote.quoteDate
+        ? new Intl.DateTimeFormat('zh-TW', {
+            timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit',
+        }).format(new Date(quote.quoteDate))
+        : '';
+    const staleLabel = quote.stale ? '，沿用上次成功值' : '';
+    const dateLabel = quoteDate ? `，資料日 ${quoteDate}` : '';
+    return `1 USD ≈ NT$${rate}${dateLabel}${staleLabel}`;
+}
+
+function formatExchangeRateSource(quote) {
+    if (quote?.source === 'ExchangeRate-API') {
+        return `（來源：<a href="https://www.exchangerate-api.com">ExchangeRate-API</a>）`;
+    }
+    if (quote?.source === 'Frankfurter') {
+        return `（來源：<a href="https://frankfurter.dev/">Frankfurter</a>）`;
+    }
+    return '';
 }
 
 function formatFundingMarketSection(summary) {
