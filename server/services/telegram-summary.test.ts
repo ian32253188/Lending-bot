@@ -52,7 +52,12 @@ describe('Telegram daily summary currency display', () => {
       getDetailedStatus: () => ({
         wallets: { USD: { balance: '6048.57', available: '5000' } },
         activeOffers: { USD: [{ amount: '500' }] },
-        activeCredits: { USD: [{ amount: '548.57' }] },
+        activeCredits: {
+          USD: [
+            { amount: '548.57', period: 2, openedAt: '2026-08-28T04:00:00.000Z' },
+            { amount: '100', period: 30, openedAt: '2026-08-01T04:00:00.000Z' },
+          ],
+        },
       }),
     };
 
@@ -66,6 +71,7 @@ describe('Telegram daily summary currency display', () => {
     );
 
     expect(message).toContain('錢包總額: $6,048.57（約 NT$190,529.96）');
+    expect(message).toContain('貸款中 2 筆 ($548.57(8/30)、$100.00(8/31))');
     expect(message).toContain('量化收益回報（TWD，已扣稅）');
     expect(message).toContain('來源：<a href="https://www.exchangerate-api.com">ExchangeRate-API</a>');
     expect(message).toContain('今日收益: <b>NT$99.6944</b>');
@@ -73,5 +79,26 @@ describe('Telegram daily summary currency display', () => {
     expect(message).toContain('本月收益: <b>NT$315.0000</b>');
     expect(message).toContain('累計收益: <b>NT$4,039.8687</b>');
     expect(message).not.toContain('今日收益: <b>$');
+  });
+
+  it('keeps the loan amount readable when repayment fields are unavailable', async () => {
+    const engine = {
+      getDetailedStatus: () => ({
+        wallets: { USD: { balance: 100, available: 0 } },
+        activeOffers: { USD: [] },
+        activeCredits: { USD: [{ amount: '-25' }] },
+      }),
+    };
+
+    const message = await buildUserSummaryMessage(
+      'user-a',
+      engine,
+      {},
+      { getMarketData: () => null },
+      { getEarnings },
+      null,
+    );
+
+    expect(message).toContain('貸款中 1 筆 ($25.00)');
   });
 });

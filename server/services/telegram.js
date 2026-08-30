@@ -327,23 +327,28 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, m
     msg += `💳 <b>資產與放貸水位</b>\n`;
     for (const cur of Object.keys(status.wallets)) {
         const wallet = status.wallets[cur] || { balance: 0, available: 0 };
+        const activeOffers = Array.isArray(status.activeOffers[cur]) ? status.activeOffers[cur] : [];
+        const activeCredits = Array.isArray(status.activeCredits[cur]) ? status.activeCredits[cur] : [];
         const walletBalance = Number(wallet.balance);
         const availableBalance = Number(wallet.available);
-        const offersCount = Array.isArray(status.activeOffers[cur]) ? status.activeOffers[cur].length : (status.activeOffers[cur] || 0);
-        const creditsCount = Array.isArray(status.activeCredits[cur]) ? status.activeCredits[cur].length : (status.activeCredits[cur] || 0);
-        const offersAmount = Array.isArray(status.activeOffers[cur])
-            ? status.activeOffers[cur].reduce((sum, offer) => sum + (Number(offer.amount) || 0), 0)
+        const offersCount = Array.isArray(status.activeOffers[cur]) ? activeOffers.length : (status.activeOffers[cur] || 0);
+        const creditsCount = Array.isArray(status.activeCredits[cur]) ? activeCredits.length : (status.activeCredits[cur] || 0);
+        const offersAmount = activeOffers.length > 0
+            ? activeOffers.reduce((sum, offer) => sum + (Number(offer.amount) || 0), 0)
             : 0;
-        const creditsAmount = Array.isArray(status.activeCredits[cur])
-            ? status.activeCredits[cur].reduce((sum, credit) => sum + (Number(credit.amount) || 0), 0)
+        const creditsAmount = activeCredits.length > 0
+            ? activeCredits.reduce((sum, credit) => sum + Math.abs(Number(credit.amount) || 0), 0)
             : 0;
+        const creditDetails = activeCredits.length > 0
+            ? activeCredits.map(formatActiveCredit).join('、')
+            : formatFixedMoney(creditsAmount);
         const lendingAmount = Math.max(0, (Number.isFinite(walletBalance) ? walletBalance : 0) - (Number.isFinite(availableBalance) ? availableBalance : 0));
         const walletTwd = convertToTwd(walletBalance, cur, exchangeQuote);
         msg += `  <b>${cur} 資產</b>:\n`;
         msg += `  ├─ 錢包總額: ${formatFixedMoney(walletBalance)}（約 ${formatTwdAmount(walletTwd, 2)}）\n`;
         msg += `  ├─ 可用餘額: ${formatFixedMoney(availableBalance)}\n`;
         msg += `  ├─ 已投入放貸: ${formatFixedMoney(lendingAmount)}\n`;
-        msg += `  └─ 進行中: 掛單 ${offersCount} 筆 (${formatFixedMoney(offersAmount)}) | 貸款中 ${creditsCount} 筆 (${formatFixedMoney(creditsAmount)})\n`;
+        msg += `  └─ 進行中: 掛單 ${offersCount} 筆 (${formatFixedMoney(offersAmount)}) | 貸款中 ${creditsCount} 筆 (${creditDetails})\n`;
     }
 
     return msg;
@@ -365,6 +370,57 @@ function formatFixedMoney(value) {
     return Number.isFinite(amount)
         ? `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
         : '$—';
+}
+
+const DAY_IN_MILLISECONDS = 24 * 60 * 60 * 1000;
+
+function toValidDate(value) {
+    if (value instanceof Date) {
+        return Number.isFinite(value.getTime()) ? value : null;
+    }
+
+    if (typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value))) {
+        const timestamp = Number(value);
+        const date = new Date(timestamp);
+        return Number.isFinite(date.getTime()) ? date : null;
+    }
+
+    if (!value) return null;
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) ? date : null;
+}
+
+/**
+ * Bitfinex 的 PERIOD 是天數，MTS_OPENING 是放貸實際開放時間。
+ * 以開放時間加上期限計算下一個還款日；若資料不完整則回傳 null。
+ */
+function getCreditRepaymentDate(credit) {
+    const periodDays = Number(credit?.period);
+    if (!Number.isFinite(periodDays) || periodDays <= 0) return null;
+
+    const openedAt = toValidDate(credit?.openedAt) || toValidDate(credit?.createdAt);
+    if (!openedAt) return null;
+
+    return new Date(openedAt.getTime() + periodDays * DAY_IN_MILLISECONDS);
+}
+
+function formatMonthDay(date) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Taipei',
+        month: 'numeric',
+        day: 'numeric',
+    }).formatToParts(date);
+    const month = parts.find(part => part.type === 'month')?.value;
+    const day = parts.find(part => part.type === 'day')?.value;
+    return month && day ? `${month}/${day}` : null;
+}
+
+function formatActiveCredit(credit) {
+    const amount = Math.abs(Number(credit?.amount));
+    const amountText = formatFixedMoney(Number.isFinite(amount) ? amount : null);
+    const repaymentDate = getCreditRepaymentDate(credit);
+    const dateText = repaymentDate ? formatMonthDay(repaymentDate) : null;
+    return dateText ? `${amountText}(${dateText})` : amountText;
 }
 
 function formatTwdAmount(value, fractionDigits = 2) {
