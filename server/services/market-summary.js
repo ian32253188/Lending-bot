@@ -3,9 +3,47 @@ const rest = require('./bitfinex/rest');
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const CACHE_MS = 60 * 1000;
+const HISTORY_CACHE_MS = 5 * 60 * 1000;
 let cachedSummary = null;
 let cachedAt = 0;
 let cachePromise = null;
+let cachedHistory = null;
+let cachedHistoryAt = 0;
+let cachedHistoryDb = null;
+let historyPromise = null;
+
+function getCachedRateHistory(db, now = Date.now()) {
+    if (!db?.getRateHistory) return Promise.resolve([]);
+
+    if (
+        cachedHistory !== null &&
+        cachedHistoryDb === db &&
+        now - cachedHistoryAt < HISTORY_CACHE_MS
+    ) {
+        return Promise.resolve(cachedHistory);
+    }
+
+    if (historyPromise) return historyPromise;
+
+    historyPromise = Promise.resolve()
+        .then(() => db.getRateHistory('USD', 30 * 24, 'recorded_at,avg_rate,high_rate,low_rate'))
+        .then(history => {
+            cachedHistory = Array.isArray(history) ? history : [];
+            cachedHistoryAt = now;
+            cachedHistoryDb = db;
+            return cachedHistory;
+        })
+        .catch(error => {
+            // 若短暫讀取失敗，沿用上一份歷史資料，避免每個請求反覆打滿資料庫。
+            if (cachedHistory !== null) return cachedHistory;
+            throw error;
+        })
+        .finally(() => {
+            historyPromise = null;
+        });
+
+    return historyPromise;
+}
 
 function numberOrNull(value) {
     const number = Number(value);
@@ -146,7 +184,7 @@ function aggregateDailyRateHistory(history, now = Date.now(), days = 30) {
  * 取得每日摘要所需的 fUSD 公開市場資料。
  * 市場成交資料來自 Bitfinex public API；30 日統計使用本機已收集的 rate_history。
  */
-async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restClient = rest } = {}) {
+async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restClient = rest, historyData } = {}) {
     const marketData = publicWs?.getMarketData?.('USD') || {};
     const [tradesResult, historyResult] = await Promise.allSettled([
         restClient.getFundingTrades('USD', {
@@ -155,7 +193,11 @@ async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restC
             limit: 10000,
             sort: -1,
         }),
-        db?.getRateHistory ? db.getRateHistory('USD', 30 * 24) : Promise.resolve([]),
+        historyData !== undefined
+            ? Promise.resolve(historyData)
+            : db?.getRateHistory
+                ? db.getRateHistory('USD', 30 * 24, 'recorded_at,avg_rate,high_rate,low_rate')
+                : Promise.resolve([]),
     ]);
 
     const trades = (tradesResult.status === 'fulfilled' && Array.isArray(tradesResult.value))
@@ -215,10 +257,13 @@ async function getCachedFundingMarketSummary(options = {}) {
     }
     if (cachePromise) return cachePromise;
 
-    cachePromise = buildFundingMarketSummary(options)
+    cachePromise = buildFundingMarketSummary({
+        ...options,
+        historyData: getCachedRateHistory(options.db, now),
+    })
         .then(summary => {
             cachedSummary = summary;
-            cachedAt = Date.now();
+            cachedAt = now;
             return summary;
         })
         .finally(() => {

@@ -12,6 +12,8 @@ const activeRunners = new Map();
 const activeStarting = new Set(); // 并发启动保护
 let globalRateCollectorTimer = null;
 let globalHistoricalFRRTimer = null;
+let globalRateCollectionInFlight = false;
+const HISTORICAL_FRR_REFRESH_MS = 6 * 60 * 60 * 1000;
 
 /**
  * 啟動特定使用者的放貸機器人
@@ -225,10 +227,10 @@ function startGlobalRateCollector() {
     // 啟動 10 秒後先收集一次
     setTimeout(() => collectGlobalRateData(), 10000);
 
-    // 啟動歷史 FRR 均值更新器（每 30 分鐘更新一次）
+    // 啟動歷史 FRR 均值更新器（歷史值只供摘要顯示，6 小時更新一次）
     globalHistoricalFRRTimer = setInterval(() => {
         updateGlobalHistoricalFRR();
-    }, 30 * 60 * 1000);
+    }, HISTORICAL_FRR_REFRESH_MS);
     setTimeout(() => updateGlobalHistoricalFRR(), 15000);
 }
 
@@ -244,39 +246,59 @@ function stopGlobalRateCollector() {
 }
 
 async function collectGlobalRateData() {
-    const publicWs = getBitfinexPublicWS();
-    if (!publicWs.isConnected()) return;
+    if (globalRateCollectionInFlight) return;
+    globalRateCollectionInFlight = true;
 
-    const strategy = getStrategyEngine();
+    try {
+        const publicWs = getBitfinexPublicWS();
+        if (!publicWs.isConnected()) return;
 
-    for (const currency of ['USD', 'USDT']) {
-        try {
-            const marketData = publicWs.getMarketData(currency);
-            if (!marketData || !marketData.lastUpdate) continue;
+        const strategy = getStrategyEngine();
+        const snapshots = [];
 
-            // Note: We use a fixed nominal balance of $10,000 for global market metrics collection since this doesn't execute actual trades.
-            const available = 10000; 
-            const optimalResult = strategy.calculateOptimalRate(marketData, currency, available);
-            
-            // 1. 儲存公開市場歷史快照
-            await db.saveRateSnapshot({
-                currency,
-                frr: marketData.frr,
-                avgRate: marketData.lastPrice || marketData.frr,
-                highRate: marketData.high || marketData.frr,
-                lowRate: marketData.low || marketData.frr,
-                volume: marketData.volume || 0,
-                bidDepth: marketData.bids?.length || 0,
-                askDepth: marketData.asks?.length || 0,
-                demandSupplyRatio: optimalResult.diagnostics?.demandSupplyRatio || 1,
-                activeOffersCount: 0,
-                activeCreditsCount: 0,
-                walletBalance: 0,
-            });
+        for (const currency of ['USD', 'USDT']) {
+            try {
+                const marketData = publicWs.getMarketData(currency);
+                if (!marketData || !marketData.lastUpdate) continue;
 
-        } catch (err) {
-            logger.error('manager', `全域行情收集 ${currency} 失敗`, { error: err.message });
+                // Note: We use a fixed nominal balance of $10,000 for global market metrics collection since this doesn't execute actual trades.
+                const available = 10000;
+                const optimalResult = strategy.calculateOptimalRate(marketData, currency, available);
+
+                snapshots.push({
+                    currency,
+                    frr: marketData.frr,
+                    avgRate: marketData.lastPrice || marketData.frr,
+                    highRate: marketData.high || marketData.frr,
+                    lowRate: marketData.low || marketData.frr,
+                    volume: marketData.volume || 0,
+                    bidDepth: marketData.bids?.length || 0,
+                    askDepth: marketData.asks?.length || 0,
+                    demandSupplyRatio: optimalResult.diagnostics?.demandSupplyRatio || 1,
+                    activeOffersCount: 0,
+                    activeCreditsCount: 0,
+                    walletBalance: 0,
+                });
+            } catch (err) {
+                logger.error('manager', `全域行情收集 ${currency} 失敗`, { error: err.message });
+            }
         }
+
+        if (snapshots.length === 0) return;
+
+        // 同一個收集週期一次提交兩個幣種，減少交易提交與 WAL fsync 次數。
+        try {
+            if (typeof db.saveRateSnapshots === 'function') {
+                await db.saveRateSnapshots(snapshots);
+            } else {
+                // 與舊版 repository 相容，避免滾動部署期間收集器中斷。
+                await Promise.all(snapshots.map(snapshot => db.saveRateSnapshot(snapshot)));
+            }
+        } catch (err) {
+            logger.error('manager', '批次儲存全域行情快照失敗', { error: err.message });
+        }
+    } finally {
+        globalRateCollectionInFlight = false;
     }
 }
 

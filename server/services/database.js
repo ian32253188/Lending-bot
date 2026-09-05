@@ -2,6 +2,8 @@ const { createClient } = require('@supabase/supabase-js');
 const config = require('../config');
 
 let supabase = null;
+const averageFRRCache = new Map();
+const AVERAGE_FRR_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 function getSupabase() {
     if (!supabase) {
@@ -178,29 +180,43 @@ async function deleteEarnings(currency, userId = null) {
 
 // ============== 利率歷史 (全域共享) ==============
 
-async function saveRateSnapshot(snapshot) {
+function toRateSnapshotRow(snapshot, recordedAt) {
+    return {
+        currency: snapshot.currency,
+        frr: snapshot.frr,
+        avg_rate: snapshot.avgRate,
+        high_rate: snapshot.highRate,
+        low_rate: snapshot.lowRate,
+        volume: snapshot.volume,
+        bid_depth: snapshot.bidDepth,
+        ask_depth: snapshot.askDepth,
+        demand_supply_ratio: snapshot.demandSupplyRatio,
+        active_offers_count: snapshot.activeOffersCount,
+        active_credits_count: snapshot.activeCreditsCount,
+        wallet_balance: snapshot.walletBalance,
+        recorded_at: snapshot.recordedAt || recordedAt,
+    };
+}
+
+/**
+ * 批次寫入公開市場快照，讓同一個收集週期只產生一次資料庫交易。
+ * 不使用 .select()，因為呼叫端不需要把剛寫入的資料再讀回來。
+ */
+async function saveRateSnapshots(snapshots) {
     const db = getSupabase();
-    if (!db) return null;
-    const { data, error } = await db
+    if (!db || !Array.isArray(snapshots) || snapshots.length === 0) return null;
+
+    const recordedAt = new Date().toISOString();
+    const { error } = await db
         .from('rate_history')
-        .insert({
-            currency: snapshot.currency,
-            frr: snapshot.frr,
-            avg_rate: snapshot.avgRate,
-            high_rate: snapshot.highRate,
-            low_rate: snapshot.lowRate,
-            volume: snapshot.volume,
-            bid_depth: snapshot.bidDepth,
-            ask_depth: snapshot.askDepth,
-            demand_supply_ratio: snapshot.demandSupplyRatio,
-            active_offers_count: snapshot.activeOffersCount,
-            active_credits_count: snapshot.activeCreditsCount,
-            wallet_balance: snapshot.walletBalance,
-            recorded_at: new Date().toISOString(),
-        })
-        .select();
-    if (error) console.error('saveRateSnapshot error:', error);
-    return data;
+        .insert(snapshots.map(snapshot => toRateSnapshotRow(snapshot, recordedAt)));
+    if (error) console.error('saveRateSnapshots error:', error);
+    return !error;
+}
+
+// 相容既有單筆呼叫端；新的收集器應使用 saveRateSnapshots。
+async function saveRateSnapshot(snapshot) {
+    return saveRateSnapshots([snapshot]);
 }
 
 // ============== 訂單簿快照 (全域共享，AI 訓練用) ==============
@@ -413,6 +429,10 @@ async function getUsersToResume() {
 async function getAverageFRR(currency, hours = 168) {
     const db = getSupabase();
     if (!db) return null;
+    const cacheKey = `${currency}:${hours}`;
+    const cached = averageFRRCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+
     const fromDate = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
     const { data, error } = await db
         .from('rate_history')
@@ -426,7 +446,12 @@ async function getAverageFRR(currency, hours = 168) {
     }
     if (!data || data.length === 0) return null;
     const sum = data.reduce((s, r) => s + (r.frr || 0), 0);
-    return sum / data.length;
+    const value = sum / data.length;
+    averageFRRCache.set(cacheKey, {
+        value,
+        expiresAt: Date.now() + AVERAGE_FRR_CACHE_TTL_MS,
+    });
+    return value;
 }
 
 module.exports = {
@@ -434,7 +459,7 @@ module.exports = {
     saveOffer, closeOffer, getActiveOffers,
     saveLoan, closeLoan, getActiveLoans,
     saveEarning, getEarnings, deleteEarnings,
-    saveRateSnapshot, getRateHistory,
+    saveRateSnapshot, saveRateSnapshots, getRateHistory,
     saveOrderBookSnapshot,
     saveLog, getLogs,
     getSetting, saveSetting,

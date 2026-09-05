@@ -107,7 +107,8 @@ class StrategyEngine {
             this.historicalFRR[currency] = {};
         }
         this.historicalFRR[currency][type] = rate;
-        logger.info('strategy', `📊 更新 ${currency} 歷史平均 FRR (${type}): ${(rate * 100).toFixed(4)}%`);
+        // 這是週期性快取更新，不需要寫入 operation_logs；保留 debug 供需要時追蹤。
+        logger.debug('strategy', `📊 更新 ${currency} 歷史平均 FRR (${type}): ${(rate * 100).toFixed(4)}%`);
     }
     /**
      * 設定歷史 FRR 均值 (相容性保留)

@@ -53,7 +53,7 @@ router.get('/rate-history/:currency', async (req, res) => {
     try {
         const { currency } = req.params;
         const hours = parseInt(req.query.hours) || 24;
-        const data = await db.getRateHistory(currency, hours);
+        const data = await db.getRateHistory(currency, hours, 'recorded_at,frr');
         res.json(data);
     } catch (err) {
         res.status(500).json({ error: err.message });

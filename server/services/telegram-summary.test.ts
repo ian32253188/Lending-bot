@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getEarnings = vi.fn();
 const getUsdToTwdRate = vi.fn();
@@ -27,6 +27,8 @@ const { buildUserSummaryMessage } = require('./telegram');
 
 describe('Telegram daily summary currency display', () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-31T00:00:00.000Z'));
     vi.clearAllMocks();
     getUsdToTwdRate.mockResolvedValue({
       rate: 31.5,
@@ -45,6 +47,10 @@ describe('Telegram daily summary currency display', () => {
         { amount: 1, currency: 'USDT' },
       ];
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('shows wallet conversion in parentheses and reports earnings in TWD', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { aggregateDailyRateHistory, annualizedPercent, buildFundingMarketSummary, buildHourlyFundingMatches } from './market-summary';
+import { aggregateDailyRateHistory, annualizedPercent, buildFundingMarketSummary, buildHourlyFundingMatches, getCachedFundingMarketSummary } from './market-summary';
 
 describe('fUSD market summary helpers', () => {
   it('converts Bitfinex daily funding rates to annualized percentages', () => {
@@ -38,14 +38,15 @@ describe('fUSD market summary helpers', () => {
 
   it('builds the dashboard metrics from public trades and local 30-day history', async () => {
     const now = Date.parse('2026-08-28T08:00:00Z');
+    const getRateHistory = vi.fn().mockResolvedValue([
+      { recorded_at: '2026-08-27T00:00:00Z', avg_rate: 0.0002, high_rate: 0.0004, low_rate: 0.0001 },
+      { recorded_at: '2026-08-28T00:00:00Z', avg_rate: 0.0003, high_rate: 0.0006, low_rate: 0.00015 },
+    ]);
     const summary = await buildFundingMarketSummary({
       now,
       publicWs: { getMarketData: () => ({ volume: 1500, high: 0.0005, low: 0.0003 }) },
       db: {
-        getRateHistory: vi.fn().mockResolvedValue([
-          { recorded_at: '2026-08-27T00:00:00Z', avg_rate: 0.0002, high_rate: 0.0004, low_rate: 0.0001 },
-          { recorded_at: '2026-08-28T00:00:00Z', avg_rate: 0.0003, high_rate: 0.0006, low_rate: 0.00015 },
-        ]),
+        getRateHistory,
       },
       restClient: {
         getFundingTrades: vi.fn().mockResolvedValue([
@@ -64,6 +65,25 @@ describe('fUSD market summary helpers', () => {
     expect(summary.hourlyMatches24).toHaveLength(24);
     expect(summary.hourlyMatches24[1].details).toHaveLength(2);
     expect(summary.hourlyMatches24[1].details[0].apy).toBeCloseTo(10.95, 5);
+    expect(getRateHistory).toHaveBeenCalledWith('USD', 30 * 24, 'recorded_at,avg_rate,high_rate,low_rate');
+  });
+
+  it('reuses 30-day history between one-minute dashboard refreshes', async () => {
+    const now = Date.parse('2026-08-28T08:00:00Z');
+    const db = { getRateHistory: vi.fn().mockResolvedValue([]) };
+    const restClient = { getFundingTrades: vi.fn().mockResolvedValue([]) };
+    const options = {
+      now,
+      force: true,
+      db,
+      restClient,
+      publicWs: { getMarketData: () => ({}) },
+    };
+
+    await getCachedFundingMarketSummary(options);
+    await getCachedFundingMarketSummary({ ...options, force: false, now: now + 60 * 1000 });
+
+    expect(db.getRateHistory).toHaveBeenCalledTimes(1);
   });
 
   it('keeps empty hours visible while preserving the 24-hour window', () => {

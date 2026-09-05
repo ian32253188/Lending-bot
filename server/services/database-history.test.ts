@@ -43,6 +43,7 @@ describe('rate_history repository', () => {
       return Promise.resolve({ data, error: null });
     });
     query.select.mockReturnValue(query);
+    query.insert.mockResolvedValue({ error: null });
   });
 
   it('walks Supabase pages so a 30-day five-minute history is not truncated', async () => {
@@ -55,10 +56,6 @@ describe('rate_history repository', () => {
   });
 
   it('maps a rate snapshot to the rate_history schema', async () => {
-    const inserted = [{ id: 1 }];
-    query.insert.mockReturnValue(query);
-    query.select.mockResolvedValue({ data: inserted, error: null });
-
     const result = await db.saveRateSnapshot({
       currency: 'USD',
       frr: 0.0003,
@@ -74,8 +71,8 @@ describe('rate_history repository', () => {
       walletBalance: 5000,
     });
 
-    expect(result).toBe(inserted);
-    expect(query.insert).toHaveBeenCalledWith(expect.objectContaining({
+    expect(result).toBe(true);
+    expect(query.insert).toHaveBeenCalledWith([expect.objectContaining({
       currency: 'USD',
       frr: 0.0003,
       avg_rate: 0.0004,
@@ -83,6 +80,21 @@ describe('rate_history repository', () => {
       low_rate: 0.0002,
       demand_supply_ratio: 0.66,
       wallet_balance: 5000,
-    }));
+    })]);
+    expect(query.select).not.toHaveBeenCalled();
+  });
+
+  it('writes both currency snapshots in one insert', async () => {
+    const result = await db.saveRateSnapshots([
+      { currency: 'USD', frr: 0.0003 },
+      { currency: 'USDT', frr: 0.0002 },
+    ]);
+
+    expect(result).toBe(true);
+    expect(query.insert).toHaveBeenCalledTimes(1);
+    expect(query.insert.mock.calls[0][0]).toEqual([
+      expect.objectContaining({ currency: 'USD', frr: 0.0003 }),
+      expect.objectContaining({ currency: 'USDT', frr: 0.0002 }),
+    ]);
   });
 });

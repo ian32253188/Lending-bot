@@ -103,7 +103,7 @@ describe('Dashboard routes', () => {
 
   it('passes a 30-day window to the rate history repository', async () => {
     await request(app).get('/api/dashboard/rate-history/USD?hours=720').expect(200);
-    expect(mocks.getRateHistory).toHaveBeenCalledWith('USD', 720);
+    expect(mocks.getRateHistory).toHaveBeenCalledWith('USD', 720, 'recorded_at,frr');
   });
 
   it('filters logs in memory and caps the returned result', async () => {
