@@ -13,8 +13,6 @@ let cachedHistory = null;
 let cachedHistoryAt = 0;
 let cachedHistoryDb = null;
 let historyPromise = null;
-let fundingTradesRequestQueue = Promise.resolve();
-let lastFundingTradesRequestAt = 0;
 
 function getCachedRateHistory(db, now = Date.now()) {
     if (!db?.getRateHistory) return Promise.resolve([]);
@@ -81,25 +79,23 @@ function dedupePublicFundingTrades(rows) {
     return [...uniqueRows.values()];
 }
 
-function requestFundingTrades(restClient, start, end) {
-    const request = fundingTradesRequestQueue.then(async () => {
-        const delay = FUNDING_TRADES_REQUEST_INTERVAL_MS - (Date.now() - lastFundingTradesRequestAt);
+async function requestFundingTrades(restClient, start, end, requestState) {
+    if (requestState.requestCount > 0) {
+        const delay = FUNDING_TRADES_REQUEST_INTERVAL_MS - (Date.now() - requestState.lastRequestAt);
         if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
-        lastFundingTradesRequestAt = Date.now();
-        return restClient.getFundingTrades('USD', {
-            start,
-            end,
-            limit: PUBLIC_FUNDING_TRADES_LIMIT,
-            sort: -1,
-        });
+    }
+    requestState.requestCount += 1;
+    requestState.lastRequestAt = Date.now();
+    return restClient.getFundingTrades('USD', {
+        start,
+        end,
+        limit: PUBLIC_FUNDING_TRADES_LIMIT,
+        sort: -1,
     });
-    // Keep the queue usable after a failed request; return the original rejection to its caller.
-    fundingTradesRequestQueue = request.catch(() => {});
-    return request;
 }
 
-async function fetchFundingTradesRange(restClient, start, end) {
-    const rows = await requestFundingTrades(restClient, start, end);
+async function fetchFundingTradesRange(restClient, start, end, requestState = { requestCount: 0, lastRequestAt: 0 }) {
+    const rows = await requestFundingTrades(restClient, start, end, requestState);
     if (!Array.isArray(rows)) return [];
 
     // A full response may be capped at 10,000 rows, so split the time range
@@ -116,8 +112,8 @@ async function fetchFundingTradesRange(restClient, start, end) {
 
     // Bitfinex start/end bounds are inclusive. Split at integer millisecond
     // boundaries so the two requests cover the full range without a gap.
-    const olderRows = await fetchFundingTradesRange(restClient, start, midpoint);
-    const newerRows = await fetchFundingTradesRange(restClient, midpoint + 1, end);
+    const olderRows = await fetchFundingTradesRange(restClient, start, midpoint, requestState);
+    const newerRows = await fetchFundingTradesRange(restClient, midpoint + 1, end, requestState);
     return dedupePublicFundingTrades([...olderRows, ...newerRows]);
 }
 
