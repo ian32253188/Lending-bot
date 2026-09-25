@@ -4,6 +4,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const CACHE_MS = 60 * 1000;
 const HISTORY_CACHE_MS = 5 * 60 * 1000;
+const PUBLIC_FUNDING_TRADES_LIMIT = 10000;
+const FUNDING_TRADES_REQUEST_INTERVAL_MS = 4100;
 let cachedSummary = null;
 let cachedAt = 0;
 let cachePromise = null;
@@ -11,6 +13,8 @@ let cachedHistory = null;
 let cachedHistoryAt = 0;
 let cachedHistoryDb = null;
 let historyPromise = null;
+let fundingTradesRequestQueue = Promise.resolve();
+let lastFundingTradesRequestAt = 0;
 
 function getCachedRateHistory(db, now = Date.now()) {
     if (!db?.getRateHistory) return Promise.resolve([]);
@@ -63,6 +67,58 @@ function parsePublicFundingTrade(row) {
     const period = numberOrNull(row[4]);
     if (timestamp === null || amount === null || rate === null || period === null) return null;
     return { id: row[0], timestamp, amount: Math.abs(amount), rate, period };
+}
+
+function dedupePublicFundingTrades(rows) {
+    const uniqueRows = new Map();
+    for (const row of rows) {
+        if (!Array.isArray(row) || row.length < 5) continue;
+        const key = row[0] !== null && row[0] !== undefined
+            ? `id:${row[0]}`
+            : `trade:${row[1]}:${row[2]}:${row[3]}:${row[4]}`;
+        if (!uniqueRows.has(key)) uniqueRows.set(key, row);
+    }
+    return [...uniqueRows.values()];
+}
+
+function requestFundingTrades(restClient, start, end) {
+    const request = fundingTradesRequestQueue.then(async () => {
+        const delay = FUNDING_TRADES_REQUEST_INTERVAL_MS - (Date.now() - lastFundingTradesRequestAt);
+        if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+        lastFundingTradesRequestAt = Date.now();
+        return restClient.getFundingTrades('USD', {
+            start,
+            end,
+            limit: PUBLIC_FUNDING_TRADES_LIMIT,
+            sort: -1,
+        });
+    });
+    // Keep the queue usable after a failed request; return the original rejection to its caller.
+    fundingTradesRequestQueue = request.catch(() => {});
+    return request;
+}
+
+async function fetchFundingTradesRange(restClient, start, end) {
+    const rows = await requestFundingTrades(restClient, start, end);
+    if (!Array.isArray(rows)) return [];
+
+    // A full response may be capped at 10,000 rows, so split the time range
+    // until every returned slice is known to fit below the endpoint limit.
+    if (rows.length < PUBLIC_FUNDING_TRADES_LIMIT) return rows;
+    if (start >= end) {
+        throw new Error(`Bitfinex returned ${PUBLIC_FUNDING_TRADES_LIMIT} funding trades for a 1 ms range; the range cannot be split further.`);
+    }
+
+    const midpoint = Math.floor(start + (end - start) / 2);
+    if (midpoint < start || midpoint >= end) {
+        throw new Error('Unable to split a capped Bitfinex funding trade range further.');
+    }
+
+    // Bitfinex start/end bounds are inclusive. Split at integer millisecond
+    // boundaries so the two requests cover the full range without a gap.
+    const olderRows = await fetchFundingTradesRange(restClient, start, midpoint);
+    const newerRows = await fetchFundingTradesRange(restClient, midpoint + 1, end);
+    return dedupePublicFundingTrades([...olderRows, ...newerRows]);
 }
 
 function buildHourlyFundingMatches(trades, now = Date.now(), limit = 6, includeEmpty = false) {
@@ -187,12 +243,7 @@ function aggregateDailyRateHistory(history, now = Date.now(), days = 30) {
 async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restClient = rest, historyData } = {}) {
     const marketData = publicWs?.getMarketData?.('USD') || {};
     const [tradesResult, historyResult] = await Promise.allSettled([
-        restClient.getFundingTrades('USD', {
-            start: now - DAY_MS,
-            end: now,
-            limit: 10000,
-            sort: -1,
-        }),
+        fetchFundingTradesRange(restClient, now - DAY_MS, now),
         historyData !== undefined
             ? Promise.resolve(historyData)
             : db?.getRateHistory
