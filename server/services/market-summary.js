@@ -7,6 +7,7 @@ const HISTORY_CACHE_MS = 60 * 60 * 1000; // 1 小時快取
 const PUBLIC_FUNDING_TRADES_LIMIT = 10000;
 const FUNDING_TRADES_REQUEST_INTERVAL_MS = 4100;
 const FUNDING_TRADES_COLLECT_INTERVAL_MS = 60 * 1000;
+const FUNDING_TRADES_STALE_AFTER_MS = 5 * 60 * 1000;
 let cachedSummary = null;
 let cachedAt = 0;
 let cachePromise = null;
@@ -151,6 +152,54 @@ async function refreshFundingTrades({ db, restClient = rest, now = Date.now() } 
     const trades = rows.map(parseFundingTrade).filter(Boolean);
     const stored = await db.upsertFundingTrades(trades, 'USD');
     return { fetched: trades.length, stored, skipped: false };
+}
+
+function mergeFundingTrades(...groups) {
+    const byId = new Map();
+    for (const group of groups) {
+        for (const trade of group) {
+            const parsed = parseFundingTrade(trade);
+            if (parsed) byId.set(String(parsed.id), parsed);
+        }
+    }
+    return [...byId.values()].sort((a, b) => b.timestamp - a.timestamp);
+}
+
+/**
+ * 讀取近 24 小時公開成交明細。
+ * Oracle PostgreSQL 是正常路徑；若 collector 暫停、資料表剛建立或最後寫入
+ * 已超過 5 分鐘，API 會用 Bitfinex 公開端點自我修復，避免畫面只有空的小時桶。
+ */
+async function loadRecentFundingTrades({ db, restClient = rest, now = Date.now() } = {}) {
+    const from = new Date(now - DAY_MS);
+    const to = new Date(now);
+    let stored = [];
+    let latestTimestamp = null;
+
+    if (db?.getFundingTrades) {
+        stored = await db.getFundingTrades('USD', from, to);
+        if (db.getLatestFundingTradeTimestamp) {
+            latestTimestamp = await db.getLatestFundingTradeTimestamp('USD');
+        }
+    }
+
+    const needsRepair = !stored.length
+        || !Number.isFinite(Number(latestTimestamp))
+        || Number(latestTimestamp) < now - FUNDING_TRADES_STALE_AFTER_MS;
+    if (!needsRepair) return stored;
+
+    try {
+        const rows = await fetchFundingTradesRange(restClient, now - DAY_MS, now);
+        const fresh = rows.map(parseFundingTrade).filter(Boolean);
+        if (fresh.length && db?.upsertFundingTrades) {
+            await db.upsertFundingTrades(fresh, 'USD');
+        }
+        return mergeFundingTrades(stored, fresh);
+    } catch (error) {
+        // Collector/API repair must not take down the dashboard; retain any Oracle data.
+        console.error('Funding trade self-heal error:', error.message);
+        return stored;
+    }
 }
 
 /**
@@ -377,9 +426,11 @@ async function getCachedFundingMarketSummary(options = {}) {
 
     const tradeDataPromise = options.tradeData !== undefined
         ? Promise.resolve(options.tradeData)
-        : options.db?.getFundingTrades
-            ? options.db.getFundingTrades('USD', new Date(now - DAY_MS), new Date(now))
-            : Promise.resolve(undefined);
+        : loadRecentFundingTrades({
+            db: options.db,
+            restClient: options.restClient,
+            now,
+        });
 
     cachePromise = Promise.all([
         tradeDataPromise.catch(() => undefined),
@@ -407,6 +458,7 @@ module.exports = {
     buildHourlyFundingMatches,
     buildFundingMarketSummary,
     getCachedFundingMarketSummary,
+    loadRecentFundingTrades,
     refreshFundingTrades,
     startFundingTradeCollector,
     stopFundingTradeCollector,

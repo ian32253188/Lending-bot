@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { aggregateDailyRateHistory, annualizedPercent, buildFundingMarketSummary, buildHourlyFundingMatches, getCachedFundingMarketSummary } from './market-summary';
+import { aggregateDailyRateHistory, annualizedPercent, buildFundingMarketSummary, buildHourlyFundingMatches, getCachedFundingMarketSummary, loadRecentFundingTrades } from './market-summary';
 
 describe('fUSD market summary helpers', () => {
   it('converts Bitfinex daily funding rates to annualized percentages', () => {
@@ -110,6 +110,29 @@ describe('fUSD market summary helpers', () => {
     expect(restClient.getFundingTrades).not.toHaveBeenCalled();
     expect(summary.hourlyMatches24).toHaveLength(24);
     expect(summary.hourlyMatches24[1].details).toHaveLength(1);
+  });
+
+  it('self-heals an empty or stale Oracle trade table from the public feed', async () => {
+    const now = Date.parse('2026-08-28T08:00:00Z');
+    const getFundingTrades = vi.fn().mockResolvedValue([]);
+    const getLatestFundingTradeTimestamp = vi.fn().mockResolvedValue(null);
+    const upsertFundingTrades = vi.fn().mockResolvedValue(2);
+    const restClient = {
+      getFundingTrades: vi.fn().mockResolvedValue([
+        [11, now - 2 * 60 * 1000, -150, 0.0003, 2],
+        [12, now - 1 * 60 * 1000, 250, 0.0004, 10],
+      ]),
+    };
+
+    const trades = await loadRecentFundingTrades({
+      db: { getFundingTrades, getLatestFundingTradeTimestamp, upsertFundingTrades },
+      restClient,
+      now,
+    });
+
+    expect(trades).toHaveLength(2);
+    expect(trades[0].amount).toBe(250);
+    expect(upsertFundingTrades).toHaveBeenCalledWith(expect.any(Array), 'USD');
   });
 
   it('keeps empty hours visible while preserving the 24-hour window', () => {
