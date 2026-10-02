@@ -71,6 +71,7 @@ app.get('/metrics', async (req, res) => {
 app.get('/api/health', (req, res) => {
     const { getActiveEngineCount } = require('./services/engine/manager');
     const { getTelegramRoutingStats } = require('./services/telegram');
+    const { getFundingTradeBackfillStatus } = require('./services/market-summary');
     const publicWs = getBitfinexPublicWS();
     const memory = process.memoryUsage();
     res.json({
@@ -81,6 +82,9 @@ app.get('/api/health', (req, res) => {
         telegram: typeof getTelegramRoutingStats === 'function'
             ? getTelegramRoutingStats()
             : { sharedBotActive: false, registeredUsers: 0 },
+        fundingTradeBackfill: typeof getFundingTradeBackfillStatus === 'function'
+            ? getFundingTradeBackfillStatus()
+            : { state: 'unknown' },
         memory: {
             rssBytes: memory.rss,
             heapUsedBytes: memory.heapUsed,

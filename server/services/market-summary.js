@@ -18,6 +18,14 @@ let historyPromise = null;
 let fundingTradeCollectorTimer = null;
 let fundingTradeCollectorPromise = null;
 let fundingTradeBackfillPromise = null;
+let fundingTradeBackfillStatus = {
+    state: 'idle',
+    fetched: 0,
+    stored: 0,
+    startedAt: null,
+    finishedAt: null,
+    error: null,
+};
 
 function getCachedRateHistory(db, now = Date.now()) {
     if (!db?.getRateHistory) return Promise.resolve([]);
@@ -212,14 +220,43 @@ async function backfillFundingTrades({ db, restClient = rest, now = Date.now() }
 
 function startFundingTradeBackfill(db, restClient = rest) {
     if (fundingTradeBackfillPromise || !db?.upsertFundingTrades) return;
+    fundingTradeBackfillStatus = {
+        state: 'running',
+        fetched: 0,
+        stored: 0,
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        error: null,
+    };
     fundingTradeBackfillPromise = backfillFundingTrades({ db, restClient })
+        .then(result => {
+            fundingTradeBackfillStatus = {
+                ...fundingTradeBackfillStatus,
+                state: result.error ? 'error' : 'completed',
+                fetched: result.fetched || 0,
+                stored: result.stored || 0,
+                finishedAt: new Date().toISOString(),
+                error: result.error || null,
+            };
+            return result;
+        })
         .catch(error => {
+            fundingTradeBackfillStatus = {
+                ...fundingTradeBackfillStatus,
+                state: 'error',
+                finishedAt: new Date().toISOString(),
+                error: error.message,
+            };
             console.error('Funding trade backfill error:', error.message);
             return { fetched: 0, stored: 0, error: error.message };
         })
         .finally(() => {
             fundingTradeBackfillPromise = null;
         });
+}
+
+function getFundingTradeBackfillStatus() {
+    return { ...fundingTradeBackfillStatus };
 }
 
 function mergeFundingTrades(...groups) {
@@ -532,6 +569,7 @@ module.exports = {
     loadRecentFundingTrades,
     refreshFundingTrades,
     backfillFundingTrades,
+    getFundingTradeBackfillStatus,
     startFundingTradeCollector,
     startFundingTradeBackfill,
     stopFundingTradeCollector,
