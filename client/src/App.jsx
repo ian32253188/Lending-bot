@@ -1,70 +1,62 @@
-import { useState, useEffect } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { useState, useEffect, useCallback } from 'react';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import { useWebSocket } from './hooks/useWebSocket';
 
 export default function App() {
-    const [supabase, setSupabase] = useState(null);
     const [token, setToken] = useState(localStorage.getItem('token'));
     const [authenticated, setAuthenticated] = useState(false);
     const [user, setUser] = useState(null);
     const [loading, setLoading] = useState(true);
     const { status, connected, refresh: refreshStatus } = useWebSocket(authenticated ? token : null);
 
-    // 1. 初始化 Supabase Client 與監聽 Session 變更
-    useEffect(() => {
-        fetch('/api/auth/config')
-            .then((res) => res.json())
-            .then((data) => {
-                const client = createClient(data.supabaseUrl, data.supabaseAnonKey);
-                setSupabase(client);
-
-                // 訂閱 Auth 狀態改變 (e.g. Google OAuth 登入成功重導向)
-                client.auth.onAuthStateChange((event, session) => {
-                    if (session) {
-                        const jwtToken = session.access_token;
-                        localStorage.setItem('token', jwtToken);
-                        setToken(jwtToken);
-                        setAuthenticated(true);
-                        setUser(session.user);
-                    } else {
-                        handleLogoutInternal();
-                    }
-                    setLoading(false);
-                });
-
-                // 嘗試取得當前 Session
-                client.auth.getSession().then(({ data: { session } }) => {
-                    if (session) {
-                        const jwtToken = session.access_token;
-                        localStorage.setItem('token', jwtToken);
-                        setToken(jwtToken);
-                        setAuthenticated(true);
-                        setUser(session.user);
-                    }
-                    setLoading(false);
-                });
-            })
-            .catch((err) => {
-                console.error('無法從伺服器取得 Supabase 設定：', err);
-                setLoading(false);
-            });
-    }, []);
-
-    const handleLogoutInternal = () => {
+    const handleLogout = useCallback(() => {
         localStorage.removeItem('token');
         setToken(null);
         setAuthenticated(false);
         setUser(null);
+    }, []);
+
+    const handleLoginSuccess = (newToken, newUser) => {
+        localStorage.setItem('token', newToken);
+        setToken(newToken);
+        setUser(newUser);
+        setAuthenticated(true);
     };
 
-    const handleLogout = async () => {
-        handleLogoutInternal();
-        if (supabase) {
-            await supabase.auth.signOut();
+    // 初始化檢查 Token 有效性
+    useEffect(() => {
+        const savedToken = localStorage.getItem('token');
+        if (!savedToken) {
+            setLoading(false);
+            return;
         }
-    };
+
+        fetch('/api/auth/verify', {
+            headers: {
+                Authorization: `Bearer ${savedToken}`,
+            },
+        })
+            .then((res) => {
+                if (!res.ok) throw new Error('Token 驗證失敗');
+                return res.json();
+            })
+            .then((data) => {
+                if (data.valid && data.user) {
+                    setToken(savedToken);
+                    setUser(data.user);
+                    setAuthenticated(true);
+                } else {
+                    handleLogout();
+                }
+            })
+            .catch(() => {
+                handleLogout();
+            })
+            .finally(() => {
+                setLoading(false);
+            });
+    }, [handleLogout]);
 
     if (loading) {
         return (
@@ -84,7 +76,7 @@ export default function App() {
     }
 
     if (!authenticated) {
-        return <Login supabase={supabase} />;
+        return <Login onLoginSuccess={handleLoginSuccess} />;
     }
 
     return (

@@ -1,30 +1,41 @@
 import { useState } from 'react';
 
-export default function Login({ supabase }) {
+export default function Login({ onLoginSuccess }) {
+    const [password, setPassword] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
 
-    const handleGoogleLogin = async () => {
+    const handleSubmit = async (e) => {
+        e.preventDefault();
         setError('');
+        if (!password) {
+            setError('請輸入管理員密碼');
+            return;
+        }
+
         setLoading(true);
         try {
-            if (!supabase) {
-                setError('資料庫連接未準備就緒');
-                setLoading(false);
-                return;
-            }
-            const { error: err } = await supabase.auth.signInWithOAuth({
-                provider: 'google',
-                options: {
-                    redirectTo: window.location.origin
-                }
+            const res = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password }),
             });
-            if (err) {
-                setError(err.message);
-                setLoading(false);
+
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.error || '登入失敗，請確認密碼是否正確');
+            }
+
+            if (data.token) {
+                if (onLoginSuccess) {
+                    onLoginSuccess(data.token, data.user);
+                }
+            } else {
+                throw new Error('伺服器未回傳有效 Token');
             }
         } catch (err) {
-            setError('第三方登入失敗：' + err.message);
+            setError(err.message);
+        } finally {
             setLoading(false);
         }
     };
@@ -32,47 +43,100 @@ export default function Login({ supabase }) {
     return (
         <div className="login-page">
             <div className="login-card">
-                <h1 style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-                    ⚡ Lending Bot
-                </h1>
-                <p className="subtitle">Bitfinex 自動放貸平台 (SaaS)</p>
+                <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+                    <div style={{ fontSize: '2.5rem', marginBottom: '8px' }}>⚡</div>
+                    <h1 style={{ margin: 0, fontSize: '1.6rem', fontWeight: '700', letterSpacing: '-0.5px' }}>
+                        Lending Bot
+                    </h1>
+                    <p className="subtitle" style={{ margin: '6px 0 0 0', color: 'var(--text-secondary, #8b949e)', fontSize: '0.9rem' }}>
+                        Bitfinex 自動放貸平台 (Oracle 自託管)
+                    </p>
+                </div>
 
-                {error && <div className="login-error">{error}</div>}
+                {error && (
+                    <div className="login-error" style={{
+                        padding: '10px 14px',
+                        background: 'rgba(239, 68, 68, 0.15)',
+                        border: '1px solid rgba(239, 68, 68, 0.4)',
+                        borderRadius: '8px',
+                        color: '#f87171',
+                        fontSize: '0.85rem',
+                        marginBottom: '18px',
+                        textAlign: 'center'
+                    }}>
+                        {error}
+                    </div>
+                )}
 
-                <div style={{ marginTop: 20, marginBottom: 20 }}>
-                    <button 
-                        type="button" 
-                        className="btn btn-primary" 
-                        onClick={handleGoogleLogin} 
+                <form onSubmit={handleSubmit}>
+                    <div style={{ marginBottom: '18px' }}>
+                        <label
+                            htmlFor="admin-password"
+                            style={{
+                                display: 'block',
+                                marginBottom: '8px',
+                                fontSize: '0.85rem',
+                                color: 'var(--text-secondary, #c9d1d9)',
+                                fontWeight: '500'
+                            }}
+                        >
+                            管理員密碼
+                        </label>
+                        <input
+                            id="admin-password"
+                            type="password"
+                            placeholder="請輸入系統管理員密碼"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            disabled={loading}
+                            autoFocus
+                            style={{
+                                width: '100%',
+                                boxSizing: 'border-box',
+                                padding: '12px 14px',
+                                borderRadius: '8px',
+                                border: '1px solid var(--border-color, #30363d)',
+                                background: 'rgba(13, 17, 23, 0.8)',
+                                color: '#f0f6fc',
+                                fontSize: '0.95rem',
+                                outline: 'none',
+                                transition: 'border-color 0.2s, box-shadow 0.2s',
+                            }}
+                        />
+                    </div>
+
+                    <button
+                        type="submit"
                         disabled={loading}
+                        className="btn btn-primary"
                         style={{
+                            width: '100%',
+                            padding: '12px',
+                            borderRadius: '8px',
+                            border: 'none',
+                            background: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+                            color: '#ffffff',
+                            fontWeight: '600',
+                            fontSize: '0.95rem',
+                            cursor: loading ? 'not-allowed' : 'pointer',
+                            opacity: loading ? 0.7 : 1,
+                            transition: 'all 0.2s ease',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
-                            gap: '10px',
-                            background: '#4285F4',
-                            border: 'none',
-                            color: 'white',
-                            fontWeight: 'bold',
-                            padding: '12px',
-                            borderRadius: '6px',
-                            cursor: 'pointer',
-                            width: '100%'
+                            gap: '8px',
+                            boxShadow: '0 4px 12px rgba(37, 99, 235, 0.3)'
                         }}
                     >
-                        <svg width="18" height="18" viewBox="0 0 18 18" style={{ fill: 'white' }}>
-                            <path d="M17.64 9.2c0-.63-.06-1.25-.16-1.84H9v3.47h4.84c-.21 1.12-.84 2.07-1.79 2.7v2.24h2.9c1.69-1.55 2.69-3.84 2.69-6.57z"/>
-                            <path d="M9 18c2.43 0 4.47-.8 5.96-2.23l-2.9-2.24c-.8.54-1.84.87-3.06.87-2.35 0-4.34-1.58-5.05-3.71H.92v2.3C2.4 16 5.45 18 9 18z"/>
-                            <path d="M3.95 10.7a5.4 5.4 0 0 1 0-3.4V5H.92a9 9 0 0 0 0 8l3.03-2.3z"/>
-                            <path d="M9 3.58c1.32 0 2.5.45 3.44 1.35L15 2.4C13.46.98 11.42 0 9 0 5.45 0 2.4 2 1.05 4.97l3.03 2.33C4.66 5.17 6.65 3.58 9 3.58z"/>
-                        </svg>
-                        使用 Google 帳號登入
+                        {loading ? '驗證中...' : '登入儀表板'}
                     </button>
+                </form>
+
+                <div style={{ marginTop: '24px', textAlign: 'center', borderTop: '1px solid var(--border-color, #21262d)', paddingTop: '16px' }}>
+                    <p style={{ fontSize: '0.75rem', color: '#6e7681', margin: 0 }}>
+                        資料庫直連 Oracle VM 本機 PostgreSQL，無雲端配額限制
+                    </p>
                 </div>
-                
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', textAlign: 'center', marginTop: 10 }}>
-                    SaaS 版本支援多帳號獨立運行與 RLS 資料隔離
-                </p>
             </div>
         </div>
     );

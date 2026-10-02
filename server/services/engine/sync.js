@@ -23,21 +23,11 @@ async function syncUserEarnings(userId, force = false) {
             }
         }
 
-        const supabase = db.getSupabase();
-        if (!supabase) return;
-
         // 取得該用戶的 API 憑證與設定
-        const { data: settingsList, error } = await supabase
-            .from('user_bot_settings')
-            .select('*')
-            .eq('user_id', userId)
-            .limit(1);
-
-        if (error || !settingsList || settingsList.length === 0) {
+        const settings = await db.getUserSettings(userId);
+        if (!settings) {
             return;
         }
-
-        const settings = settingsList[0];
         if (!settings.bitfinex_api_key || !settings.bitfinex_api_secret) {
             return;
         }

@@ -1,19 +1,136 @@
+const { Pool } = require('pg');
 const { createClient } = require('@supabase/supabase-js');
 const config = require('../config');
 
+let pool = null;
 let supabase = null;
 const averageFRRCache = new Map();
 const AVERAGE_FRR_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
+// 1 小時記憶體快取：大幅消除頻繁查詢 rate_history 所造成的 Disk IO 消耗
+const rateHistoryCache = new Map();
+const RATE_HISTORY_CACHE_TTL_MS = 60 * 60 * 1000;
+let fundingTradesSchemaPromise = null;
+
+/**
+ * 判斷是否配置了原生 PostgreSQL
+ */
+function isPostgresConfigured() {
+    if (process.env.NODE_ENV === 'test' && !process.env.RUN_DB_INTEGRATION_TESTS) {
+        return false;
+    }
+    if (config.database?.url) return true;
+    if (config.database?.host && config.database?.password) return true;
+    return false;
+}
+
+/**
+ * 取得 PostgreSQL 連線池 (Singleton)
+ */
+function getPool() {
+    if (!pool && isPostgresConfigured()) {
+        const poolConfig = config.database.url
+            ? { connectionString: config.database.url }
+            : {
+                host: config.database.host,
+                port: config.database.port,
+                user: config.database.user,
+                password: config.database.password,
+                database: config.database.database,
+            };
+
+        pool = new Pool({
+            ...poolConfig,
+            max: 20, // 最大連線數
+            idleTimeoutMillis: 30000,
+            connectionTimeoutMillis: 5000,
+        });
+
+        pool.on('error', (err) => {
+            console.error('❌ PostgreSQL Pool 連線發生非預期錯誤:', err.message);
+        });
+    }
+    return pool;
+}
+
+/**
+ * 取得 Supabase Client (相容舊有配置或單元測試 Mock)
+ */
 function getSupabase() {
     if (!supabase) {
         if (!config.supabase.url || !config.supabase.key) {
-            console.error('❌ Supabase 設定缺失，資料庫功能將無法使用');
             return null;
         }
         supabase = createClient(config.supabase.url, config.supabase.key);
     }
     return supabase;
+}
+
+/**
+ * 通用資料庫查詢輔助函式
+ */
+async function query(text, params) {
+    const p = getPool();
+    if (!p) return null;
+    return p.query(text, params);
+}
+
+/**
+ * 確保 OCI 本機 PostgreSQL 具備公開撮合資料表。
+ * 這個初始化是冪等的，讓既有 volume 升級時不需要清除資料重建。
+ */
+async function ensureFundingTradesTable() {
+    if (!isPostgresConfigured()) return false;
+    if (fundingTradesSchemaPromise) return fundingTradesSchemaPromise;
+
+    fundingTradesSchemaPromise = query(`
+        CREATE TABLE IF NOT EXISTS funding_trades (
+            id BIGSERIAL PRIMARY KEY,
+            currency VARCHAR(10) NOT NULL,
+            trade_id BIGINT NOT NULL,
+            executed_at TIMESTAMPTZ NOT NULL,
+            amount NUMERIC(20, 8) NOT NULL,
+            rate NUMERIC(20, 12) NOT NULL,
+            period INTEGER NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (currency, trade_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_funding_trades_currency_time
+            ON funding_trades (currency, executed_at DESC);
+    `).then(() => true).catch(error => {
+        fundingTradesSchemaPromise = null;
+        console.error('ensureFundingTradesTable error:', error);
+        return false;
+    });
+
+    return fundingTradesSchemaPromise;
+}
+
+/**
+ * 降採樣輔助函式：若查詢時長超過 24 小時，每小時只取 1 筆快照點，
+ * 避免向前端發送數千筆微小數據，大幅減輕渲染與頻寬負擔。
+ */
+function downsampleRateHistory(rows, hours) {
+    if (!Array.isArray(rows) || rows.length <= 1 || hours <= 24) {
+        return rows;
+    }
+    if (!rows.some(r => r && r.recorded_at)) {
+        return rows;
+    }
+    const sampled = [];
+    let lastHourKey = null;
+    for (const r of rows) {
+        if (!r || !r.recorded_at) continue;
+        const hourKey = String(r.recorded_at).slice(0, 13);
+        if (hourKey !== lastHourKey) {
+            sampled.push(r);
+            lastHourKey = hourKey;
+        }
+    }
+    if (rows.length > 0 && sampled[sampled.length - 1] !== rows[rows.length - 1]) {
+        sampled.push(rows[rows.length - 1]);
+    }
+    return sampled;
 }
 
 // ============== userId 防護 ==============
@@ -22,7 +139,7 @@ function requireUserId(funcName, userId) {
     if (!userId) {
         console.warn(`⚠️ [${funcName}] 呼叫時未傳入 userId — 租戶隔離可能失效！`);
         if (process.env.NODE_ENV === 'test') {
-            return true; // 測試環境允許為 null 寫入以避免外鍵約束衝突
+            return true;
         }
         return false;
     }
@@ -31,9 +148,41 @@ function requireUserId(funcName, userId) {
 
 // ============== 放貸掛單 ==============
 
-
 async function saveOffer(offer, userId = null) {
     if (!requireUserId('saveOffer', userId)) return null;
+
+    if (isPostgresConfigured()) {
+        try {
+            const sql = `
+                INSERT INTO funding_offers (offer_id, currency, amount, rate, period, status, user_id, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                ON CONFLICT (offer_id) DO UPDATE SET
+                    currency = EXCLUDED.currency,
+                    amount = EXCLUDED.amount,
+                    rate = EXCLUDED.rate,
+                    period = EXCLUDED.period,
+                    status = EXCLUDED.status,
+                    updated_at = NOW()
+                RETURNING *;
+            `;
+            const params = [
+                offer.id,
+                offer.currency,
+                offer.amount,
+                offer.rate,
+                offer.period,
+                offer.status || 'active',
+                userId,
+                offer.createdAt || new Date().toISOString()
+            ];
+            const res = await query(sql, params);
+            return res.rows;
+        } catch (err) {
+            console.error('saveOffer (pg) error:', err);
+            return null;
+        }
+    }
+
     const db = getSupabase();
     if (!db) return null;
     const { data, error } = await db
@@ -55,28 +204,71 @@ async function saveOffer(offer, userId = null) {
 
 async function closeOffer(offerId, userId = null) {
     if (!requireUserId('closeOffer', userId)) return null;
+
+    if (isPostgresConfigured()) {
+        try {
+            let sql = `
+                UPDATE funding_offers
+                SET status = 'closed', closed_at = NOW(), updated_at = NOW()
+                WHERE offer_id = $1
+            `;
+            const params = [offerId];
+            if (userId) {
+                sql += ` AND user_id = $2`;
+                params.push(userId);
+            }
+            sql += ` RETURNING *;`;
+            const res = await query(sql, params);
+            return res.rows;
+        } catch (err) {
+            console.error('closeOffer (pg) error:', err);
+            return null;
+        }
+    }
+
     const db = getSupabase();
     if (!db) return null;
-    let query = db.from('funding_offers').update({ 
+    let q = db.from('funding_offers').update({
         status: 'closed', 
         closed_at: new Date().toISOString(), 
         updated_at: new Date().toISOString() 
     }).eq('offer_id', offerId);
     
-    if (userId) query = query.eq('user_id', userId);
+    if (userId) q = q.eq('user_id', userId);
     
-    const { data, error } = await query.select();
+    const { data, error } = await q.select();
     if (error) console.error('closeOffer error:', error);
     return data;
 }
 
 async function getActiveOffers(currency, userId = null) {
+    if (isPostgresConfigured()) {
+        try {
+            let sql = `SELECT * FROM funding_offers WHERE status = 'active'`;
+            const params = [];
+            if (currency) {
+                params.push(currency);
+                sql += ` AND currency = $${params.length}`;
+            }
+            if (userId) {
+                params.push(userId);
+                sql += ` AND user_id = $${params.length}`;
+            }
+            sql += ` ORDER BY created_at DESC;`;
+            const res = await query(sql, params);
+            return res.rows || [];
+        } catch (err) {
+            console.error('getActiveOffers (pg) error:', err);
+            return [];
+        }
+    }
+
     const db = getSupabase();
     if (!db) return [];
-    let query = db.from('funding_offers').select('*').eq('status', 'active');
-    if (currency) query = query.eq('currency', currency);
-    if (userId) query = query.eq('user_id', userId);
-    const { data, error } = await query.order('created_at', { ascending: false });
+    let q = db.from('funding_offers').select('*').eq('status', 'active');
+    if (currency) q = q.eq('currency', currency);
+    if (userId) q = q.eq('user_id', userId);
+    const { data, error } = await q.order('created_at', { ascending: false });
     if (error) console.error('getActiveOffers error:', error);
     return data || [];
 }
@@ -85,6 +277,38 @@ async function getActiveOffers(currency, userId = null) {
 
 async function saveLoan(loan, userId = null) {
     if (!requireUserId('saveLoan', userId)) return null;
+
+    if (isPostgresConfigured()) {
+        try {
+            const sql = `
+                INSERT INTO funding_loans (loan_id, currency, amount, rate, period, opened_at, status, user_id, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                ON CONFLICT (loan_id) DO UPDATE SET
+                    currency = EXCLUDED.currency,
+                    amount = EXCLUDED.amount,
+                    rate = EXCLUDED.rate,
+                    period = EXCLUDED.period,
+                    status = EXCLUDED.status
+                RETURNING *;
+            `;
+            const params = [
+                loan.id,
+                loan.currency,
+                loan.amount,
+                loan.rate,
+                loan.period,
+                loan.openedAt || new Date().toISOString(),
+                loan.status || 'active',
+                userId
+            ];
+            const res = await query(sql, params);
+            return res.rows;
+        } catch (err) {
+            console.error('saveLoan (pg) error:', err);
+            return null;
+        }
+    }
+
     const db = getSupabase();
     if (!db) return null;
     const { data, error } = await db
@@ -106,28 +330,71 @@ async function saveLoan(loan, userId = null) {
 
 async function closeLoan(loanId, interestEarned, userId = null) {
     if (!requireUserId('closeLoan', userId)) return null;
+
+    if (isPostgresConfigured()) {
+        try {
+            let sql = `
+                UPDATE funding_loans
+                SET status = 'closed', closed_at = NOW(), interest_earned = $2
+                WHERE loan_id = $1
+            `;
+            const params = [loanId, interestEarned || 0];
+            if (userId) {
+                sql += ` AND user_id = $3`;
+                params.push(userId);
+            }
+            sql += ` RETURNING *;`;
+            const res = await query(sql, params);
+            return res.rows;
+        } catch (err) {
+            console.error('closeLoan (pg) error:', err);
+            return null;
+        }
+    }
+
     const db = getSupabase();
     if (!db) return null;
-    let query = db.from('funding_loans').update({
+    let q = db.from('funding_loans').update({
         status: 'closed',
         closed_at: new Date().toISOString(),
         interest_earned: interestEarned || 0,
     }).eq('loan_id', loanId);
     
-    if (userId) query = query.eq('user_id', userId);
+    if (userId) q = q.eq('user_id', userId);
     
-    const { data, error } = await query.select();
+    const { data, error } = await q.select();
     if (error) console.error('closeLoan error:', error);
     return data;
 }
 
 async function getActiveLoans(currency, userId = null) {
+    if (isPostgresConfigured()) {
+        try {
+            let sql = `SELECT * FROM funding_loans WHERE status = 'active'`;
+            const params = [];
+            if (currency) {
+                params.push(currency);
+                sql += ` AND currency = $${params.length}`;
+            }
+            if (userId) {
+                params.push(userId);
+                sql += ` AND user_id = $${params.length}`;
+            }
+            sql += ` ORDER BY opened_at DESC;`;
+            const res = await query(sql, params);
+            return res.rows || [];
+        } catch (err) {
+            console.error('getActiveLoans (pg) error:', err);
+            return [];
+        }
+    }
+
     const db = getSupabase();
     if (!db) return [];
-    let query = db.from('funding_loans').select('*').eq('status', 'active');
-    if (currency) query = query.eq('currency', currency);
-    if (userId) query = query.eq('user_id', userId);
-    const { data, error } = await query.order('opened_at', { ascending: false });
+    let q = db.from('funding_loans').select('*').eq('status', 'active');
+    if (currency) q = q.eq('currency', currency);
+    if (userId) q = q.eq('user_id', userId);
+    const { data, error } = await q.order('opened_at', { ascending: false });
     if (error) console.error('getActiveLoans error:', error);
     return data || [];
 }
@@ -136,6 +403,30 @@ async function getActiveLoans(currency, userId = null) {
 
 async function saveEarning(earning, userId = null) {
     if (!requireUserId('saveEarning', userId)) return null;
+
+    if (isPostgresConfigured()) {
+        try {
+            const sql = `
+                INSERT INTO earnings (currency, amount, rate, period, earned_at, user_id)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING *;
+            `;
+            const params = [
+                earning.currency,
+                earning.amount,
+                earning.rate,
+                earning.period,
+                earning.earnedAt || new Date().toISOString(),
+                userId
+            ];
+            const res = await query(sql, params);
+            return res.rows;
+        } catch (err) {
+            console.error('saveEarning (pg) error:', err);
+            return null;
+        }
+    }
+
     const db = getSupabase();
     if (!db) return null;
     const { data, error } = await db
@@ -154,26 +445,72 @@ async function saveEarning(earning, userId = null) {
 }
 
 async function getEarnings(currency, fromDate, toDate, userId = null) {
+    if (isPostgresConfigured()) {
+        try {
+            let sql = `SELECT * FROM earnings WHERE 1=1`;
+            const params = [];
+            if (currency) {
+                params.push(currency);
+                sql += ` AND currency = $${params.length}`;
+            }
+            if (fromDate) {
+                params.push(fromDate);
+                sql += ` AND earned_at >= $${params.length}`;
+            }
+            if (toDate) {
+                params.push(toDate);
+                sql += ` AND earned_at <= $${params.length}`;
+            }
+            if (userId) {
+                params.push(userId);
+                sql += ` AND user_id = $${params.length}`;
+            }
+            sql += ` ORDER BY earned_at DESC;`;
+            const res = await query(sql, params);
+            return res.rows || [];
+        } catch (err) {
+            console.error('getEarnings (pg) error:', err);
+            return [];
+        }
+    }
+
     const db = getSupabase();
     if (!db) return [];
-    let query = db.from('earnings').select('*');
-    if (currency) query = query.eq('currency', currency);
-    if (fromDate) query = query.gte('earned_at', fromDate);
-    if (toDate) query = query.lte('earned_at', toDate);
-    if (userId) query = query.eq('user_id', userId);
-    const { data, error } = await query.order('earned_at', { ascending: false });
+    let q = db.from('earnings').select('*');
+    if (currency) q = q.eq('currency', currency);
+    if (fromDate) q = q.gte('earned_at', fromDate);
+    if (toDate) q = q.lte('earned_at', toDate);
+    if (userId) q = q.eq('user_id', userId);
+    const { data, error } = await q.order('earned_at', { ascending: false });
     if (error) console.error('getEarnings error:', error);
     return data || [];
 }
 
 async function deleteEarnings(currency, userId = null) {
     if (!requireUserId('deleteEarnings', userId)) return false;
+
+    if (isPostgresConfigured()) {
+        try {
+            let sql = `DELETE FROM earnings WHERE user_id = $1`;
+            const params = [userId];
+            if (currency) {
+                sql += ` AND currency = $2`;
+                params.push(currency);
+            }
+            await query(sql, params);
+            return true;
+        } catch (err) {
+            console.error('deleteEarnings (pg) error:', err);
+            return false;
+        }
+    }
+
     const db = getSupabase();
     if (!db) return false;
-    let query = db.from('earnings').delete().eq('user_id', userId);
-    if (currency) query = query.eq('currency', currency);
-    else query = query.neq('id', 0); // Hack to delete all if no currency
-    const { error } = await query;
+    let q = db.from('earnings').delete().eq('user_id', userId);
+    if (currency) q = q.eq('currency', currency);
+    else q = q.neq('id', 0);
+    const { error } = await q;
     if (error) console.error('deleteEarnings error:', error);
     return !error;
 }
@@ -198,30 +535,225 @@ function toRateSnapshotRow(snapshot, recordedAt) {
     };
 }
 
-/**
- * 批次寫入公開市場快照，讓同一個收集週期只產生一次資料庫交易。
- * 不使用 .select()，因為呼叫端不需要把剛寫入的資料再讀回來。
- */
 async function saveRateSnapshots(snapshots) {
-    const db = getSupabase();
-    if (!db || !Array.isArray(snapshots) || snapshots.length === 0) return null;
-
+    if (!Array.isArray(snapshots) || snapshots.length === 0) return null;
     const recordedAt = new Date().toISOString();
-    const { error } = await db
-        .from('rate_history')
-        .insert(snapshots.map(snapshot => toRateSnapshotRow(snapshot, recordedAt)));
-    if (error) console.error('saveRateSnapshots error:', error);
+    const rows = snapshots.map(snapshot => toRateSnapshotRow(snapshot, recordedAt));
+
+    if (isPostgresConfigured()) {
+        try {
+            const p = getPool();
+            const client = await p.connect();
+            try {
+                await client.query('BEGIN');
+                const insertText = `
+                    INSERT INTO rate_history (
+                        currency, frr, avg_rate, high_rate, low_rate, volume,
+                        bid_depth, ask_depth, demand_supply_ratio,
+                        active_offers_count, active_credits_count, wallet_balance, recorded_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                `;
+                for (const row of rows) {
+                    await client.query(insertText, [
+                        row.currency, row.frr, row.avg_rate, row.high_rate, row.low_rate, row.volume,
+                        row.bid_depth, row.ask_depth, row.demand_supply_ratio,
+                        row.active_offers_count, row.active_credits_count, row.wallet_balance, row.recorded_at
+                    ]);
+                }
+                await client.query('COMMIT');
+            } catch (err) {
+                await client.query('ROLLBACK');
+                throw err;
+            } finally {
+                client.release();
+            }
+
+            // 更新記憶體快取
+            for (const row of rows) {
+                for (const [key, entry] of rateHistoryCache.entries()) {
+                    if (key.startsWith(`${row.currency}:`)) {
+                        entry.data.push(row);
+                    }
+                }
+            }
+            return true;
+        } catch (err) {
+            console.error('saveRateSnapshots (pg) error:', err);
+            return false;
+        }
+    }
+
+    const db = getSupabase();
+    if (!db) return null;
+    const { error } = await db.from('rate_history').insert(rows);
+    if (error) {
+        console.error('saveRateSnapshots error:', error);
+    } else {
+        for (const row of rows) {
+            for (const [key, entry] of rateHistoryCache.entries()) {
+                if (key.startsWith(`${row.currency}:`)) {
+                    entry.data.push(row);
+                }
+            }
+        }
+    }
     return !error;
 }
 
-// 相容既有單筆呼叫端；新的收集器應使用 saveRateSnapshots。
 async function saveRateSnapshot(snapshot) {
     return saveRateSnapshots([snapshot]);
 }
 
-// ============== 訂單簿快照 (全域共享，AI 訓練用) ==============
+// ============== 公開 Funding 撮合紀錄 (OCI PostgreSQL) ==============
+
+function normalizeFundingTrade(trade, currency = 'USD') {
+    if (!trade) return null;
+    const id = Number(trade.id ?? trade.trade_id);
+    const timestamp = Number(trade.timestamp ?? trade.executed_at);
+    const amount = Math.abs(Number(trade.amount));
+    const rate = Number(trade.rate);
+    const period = Number(trade.period);
+    if (!Number.isSafeInteger(id) || !Number.isFinite(timestamp) || !Number.isFinite(amount)
+        || !Number.isFinite(rate) || !Number.isInteger(period)) return null;
+    return { currency, id, timestamp, amount, rate, period };
+}
+
+async function upsertFundingTrades(trades, currency = 'USD') {
+    if (!Array.isArray(trades) || trades.length === 0) return 0;
+    if (!isPostgresConfigured() || !(await ensureFundingTradesTable())) return 0;
+
+    const rows = trades.map(trade => normalizeFundingTrade(trade, currency)).filter(Boolean);
+    if (rows.length === 0) return 0;
+
+    try {
+        const sql = `
+            INSERT INTO funding_trades (currency, trade_id, executed_at, amount, rate, period)
+            SELECT $1,
+                   item.trade_id,
+                   to_timestamp(item.timestamp_ms / 1000.0),
+                   item.amount,
+                   item.rate,
+                   item.period
+            FROM jsonb_to_recordset($2::jsonb) AS item(
+                trade_id BIGINT,
+                timestamp_ms BIGINT,
+                amount NUMERIC,
+                rate NUMERIC,
+                period INTEGER
+            )
+            ON CONFLICT (currency, trade_id) DO UPDATE SET
+                executed_at = EXCLUDED.executed_at,
+                amount = EXCLUDED.amount,
+                rate = EXCLUDED.rate,
+                period = EXCLUDED.period;
+        `;
+        await query(sql, [currency, JSON.stringify(rows.map(row => ({
+            trade_id: row.id,
+            timestamp_ms: row.timestamp,
+            amount: row.amount,
+            rate: row.rate,
+            period: row.period,
+        })))]);
+        return rows.length;
+    } catch (err) {
+        console.error('upsertFundingTrades (pg) error:', err);
+        return 0;
+    }
+}
+
+async function getFundingTrades(currency = 'USD', from = null, to = null) {
+    if (!isPostgresConfigured() || !(await ensureFundingTradesTable())) return [];
+    const params = [currency];
+    let sql = `
+        SELECT trade_id, EXTRACT(EPOCH FROM executed_at) * 1000 AS timestamp,
+               amount, rate, period
+        FROM funding_trades
+        WHERE currency = $1
+    `;
+    if (from) {
+        params.push(from instanceof Date ? from.toISOString() : from);
+        sql += ` AND executed_at >= $${params.length}`;
+    }
+    if (to) {
+        params.push(to instanceof Date ? to.toISOString() : to);
+        sql += ` AND executed_at <= $${params.length}`;
+    }
+    sql += ' ORDER BY executed_at DESC, trade_id DESC;';
+
+    try {
+        const result = await query(sql, params);
+        return (result?.rows || []).map(row => ({
+            id: Number(row.trade_id),
+            timestamp: Number(row.timestamp),
+            amount: Number(row.amount),
+            rate: Number(row.rate),
+            period: Number(row.period),
+        }));
+    } catch (err) {
+        console.error('getFundingTrades (pg) error:', err);
+        return [];
+    }
+}
+
+async function getLatestFundingTradeTimestamp(currency = 'USD') {
+    if (!isPostgresConfigured() || !(await ensureFundingTradesTable())) return null;
+    try {
+        const result = await query(`
+            SELECT EXTRACT(EPOCH FROM MAX(executed_at)) * 1000 AS timestamp
+            FROM funding_trades
+            WHERE currency = $1;
+        `, [currency]);
+        const timestamp = Number(result?.rows?.[0]?.timestamp);
+        return Number.isFinite(timestamp) ? timestamp : null;
+    } catch (err) {
+        console.error('getLatestFundingTradeTimestamp (pg) error:', err);
+        return null;
+    }
+}
+
+async function deleteOldFundingTrades(cutoffDate) {
+    if (!isPostgresConfigured() || !(await ensureFundingTradesTable())) return 0;
+    try {
+        const result = await query('DELETE FROM funding_trades WHERE executed_at < $1;', [cutoffDate]);
+        return result?.rowCount || 0;
+    } catch (err) {
+        console.error('deleteOldFundingTrades (pg) error:', err);
+        return 0;
+    }
+}
+
+// ============== 訂單簿快照 ==============
 
 async function saveOrderBookSnapshot(snapshot) {
+    if (isPostgresConfigured()) {
+        try {
+            const sql = `
+                INSERT INTO order_book_snapshots (
+                    currency, frr, bids, asks, bid_total, ask_total,
+                    spread, best_bid_rate, best_ask_rate, demand_supply_ratio, recorded_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+                RETURNING *;
+            `;
+            const params = [
+                snapshot.currency,
+                snapshot.frr,
+                JSON.stringify(snapshot.bids || []),
+                JSON.stringify(snapshot.asks || []),
+                snapshot.bidTotal,
+                snapshot.askTotal,
+                snapshot.spread,
+                snapshot.bestBidRate,
+                snapshot.bestAskRate,
+                snapshot.demandSupplyRatio
+            ];
+            const res = await query(sql, params);
+            return res.rows;
+        } catch (err) {
+            console.error('saveOrderBookSnapshot (pg) error:', err);
+            return null;
+        }
+    }
+
     const db = getSupabase();
     if (!db) return null;
     const { data, error } = await db
@@ -244,43 +776,112 @@ async function saveOrderBookSnapshot(snapshot) {
     return data;
 }
 
-async function getRateHistory(currency, hours = 24) {
+async function getRateHistory(currency, hours = 24, select = '*') {
+    const cacheKey = `${currency}:${select}`;
+    const now = Date.now();
+    let cached = rateHistoryCache.get(cacheKey);
+
+    if (process.env.NODE_ENV !== 'test' && cached && now < cached.expiresAt) {
+        const fromTimestamp = now - hours * 60 * 60 * 1000;
+        const filtered = cached.data.filter(r => !r?.recorded_at || new Date(r.recorded_at).getTime() >= fromTimestamp);
+        return downsampleRateHistory(filtered, hours);
+    }
+
+    if (isPostgresConfigured()) {
+        try {
+            const fetchHours = Math.max(hours, 168);
+            const fromDate = new Date(now - fetchHours * 60 * 60 * 1000).toISOString();
+            const col = select === '*' ? '*' : select;
+            const sql = `
+                SELECT ${col} FROM rate_history
+                WHERE currency = $1 AND recorded_at >= $2
+                ORDER BY recorded_at ASC;
+            `;
+            const res = await query(sql, [currency, fromDate]);
+            const rows = res.rows || [];
+
+            if (rows.length > 0 && process.env.NODE_ENV !== 'test') {
+                rateHistoryCache.set(cacheKey, {
+                    data: rows,
+                    expiresAt: now + RATE_HISTORY_CACHE_TTL_MS,
+                });
+            } else if (cached && process.env.NODE_ENV !== 'test') {
+                return downsampleRateHistory(cached.data, hours);
+            }
+
+            const fromTimestamp = now - hours * 60 * 60 * 1000;
+            const filtered = rows.filter(r => !r?.recorded_at || new Date(r.recorded_at).getTime() >= fromTimestamp);
+            return downsampleRateHistory(filtered, hours);
+        } catch (err) {
+            console.error('getRateHistory (pg) error:', err);
+            return cached?.data ? downsampleRateHistory(cached.data, hours) : [];
+        }
+    }
+
     const db = getSupabase();
-    if (!db) return [];
-    const fromDate = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+    if (!db) return cached?.data ? downsampleRateHistory(cached.data, hours) : [];
+
+    const fetchHours = Math.max(hours, 168);
+    const fromDate = new Date(now - fetchHours * 60 * 60 * 1000).toISOString();
     const pageSize = 1000;
     const rows = [];
 
-    // Supabase Data API limits one response to max_rows (1000 in this project).
-    // Walk through result pages so a 30-day window is not truncated to the
-    // oldest few days of five-minute snapshots.
-    for (let page = 0; ; page += 1) {
-        const { data, error } = await db
-            .from('rate_history')
-            .select('*')
-            .eq('currency', currency)
-            .gte('recorded_at', fromDate)
-            .order('recorded_at', { ascending: true })
-            .range(page * pageSize, (page + 1) * pageSize - 1);
+    try {
+        for (let page = 0; ; page += 1) {
+            const { data, error } = await db
+                .from('rate_history')
+                .select(select)
+                .eq('currency', currency)
+                .gte('recorded_at', fromDate)
+                .order('recorded_at', { ascending: true })
+                .range(page * pageSize, (page + 1) * pageSize - 1);
 
-        if (error) {
-            console.error('getRateHistory error:', error);
-            return rows;
+            if (error) {
+                console.error('getRateHistory error:', error);
+                break;
+            }
+
+            rows.push(...(data || []));
+            if (!data || data.length < pageSize) break;
         }
-
-        rows.push(...(data || []));
-        if (!data || data.length < pageSize) break;
+    } catch (err) {
+        console.error('getRateHistory fetch exception:', err);
     }
 
-    return rows;
+    if (rows.length > 0 && process.env.NODE_ENV !== 'test') {
+        rateHistoryCache.set(cacheKey, {
+            data: rows,
+            expiresAt: now + RATE_HISTORY_CACHE_TTL_MS,
+        });
+    } else if (cached && process.env.NODE_ENV !== 'test') {
+        return downsampleRateHistory(cached.data, hours);
+    }
+
+    const fromTimestamp = now - hours * 60 * 60 * 1000;
+    const filtered = rows.filter(r => !r?.recorded_at || new Date(r.recorded_at).getTime() >= fromTimestamp);
+    return downsampleRateHistory(filtered, hours);
 }
 
 // ============== 操作日誌 ==============
 
 async function saveLog(level, category, message, metadata = null, userId = null) {
-    // debug 只存在於應用程式輸出，不應繞過 logger 寫入資料庫。
     if (level === 'debug') return null;
     requireUserId('saveLog', userId);
+
+    if (isPostgresConfigured()) {
+        try {
+            const sql = `
+                INSERT INTO operation_logs (level, category, message, metadata, user_id, created_at)
+                VALUES ($1, $2, $3, $4, $5, NOW());
+            `;
+            await query(sql, [level, category, message, metadata ? JSON.stringify(metadata) : null, userId]);
+            return;
+        } catch (err) {
+            console.error('saveLog (pg) error:', err);
+            return;
+        }
+    }
+
     const db = getSupabase();
     if (!db) return null;
     const { error } = await db
@@ -290,12 +891,34 @@ async function saveLog(level, category, message, metadata = null, userId = null)
 }
 
 async function getLogs(limit = 100, category = null, userId = null) {
+    if (isPostgresConfigured()) {
+        try {
+            let sql = `SELECT * FROM operation_logs WHERE 1=1`;
+            const params = [];
+            if (category) {
+                params.push(category);
+                sql += ` AND category = $${params.length}`;
+            }
+            if (userId) {
+                params.push(userId);
+                sql += ` AND user_id = $${params.length}`;
+            }
+            params.push(limit);
+            sql += ` ORDER BY created_at DESC LIMIT $${params.length};`;
+            const res = await query(sql, params);
+            return res.rows || [];
+        } catch (err) {
+            console.error('getLogs (pg) error:', err);
+            return [];
+        }
+    }
+
     const db = getSupabase();
     if (!db) return [];
-    let query = db.from('operation_logs').select('*');
-    if (category) query = query.eq('category', category);
-    if (userId) query = query.eq('user_id', userId);
-    const { data, error } = await query
+    let q = db.from('operation_logs').select('*');
+    if (category) q = q.eq('category', category);
+    if (userId) q = q.eq('user_id', userId);
+    const { data, error } = await q
         .order('created_at', { ascending: false })
         .limit(limit);
     if (error) console.error('getLogs error:', error);
@@ -305,6 +928,16 @@ async function getLogs(limit = 100, category = null, userId = null) {
 // ============== 全域系統設定 ==============
 
 async function getSetting(key) {
+    if (isPostgresConfigured()) {
+        try {
+            const res = await query(`SELECT value FROM bot_settings WHERE key = $1;`, [key]);
+            return res.rows[0]?.value || null;
+        } catch (err) {
+            console.error('getSetting (pg) error:', err);
+            return null;
+        }
+    }
+
     const db = getSupabase();
     if (!db) return null;
     const { data, error } = await db
@@ -317,6 +950,22 @@ async function getSetting(key) {
 }
 
 async function saveSetting(key, value) {
+    if (isPostgresConfigured()) {
+        try {
+            const sql = `
+                INSERT INTO bot_settings (key, value, updated_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+                RETURNING *;
+            `;
+            const res = await query(sql, [key, JSON.stringify(value)]);
+            return res.rows;
+        } catch (err) {
+            console.error('saveSetting (pg) error:', err);
+            return null;
+        }
+    }
+
     const db = getSupabase();
     if (!db) return null;
     const { data, error } = await db
@@ -327,9 +976,19 @@ async function saveSetting(key, value) {
     return data;
 }
 
-// ============== 用戶專屬設定 (SaaS 擴充) ==============
+// ============== 用戶專屬設定 ==============
 
 async function getUserSettings(userId) {
+    if (isPostgresConfigured()) {
+        try {
+            const res = await query(`SELECT * FROM user_bot_settings WHERE user_id = $1;`, [userId]);
+            return res.rows[0] || null;
+        } catch (err) {
+            console.error('getUserSettings (pg) error:', err);
+            return null;
+        }
+    }
+
     const db = getSupabase();
     if (!db) return null;
     const { data, error } = await db
@@ -343,20 +1002,45 @@ async function getUserSettings(userId) {
 
 async function saveUserSettings(userId, settings) {
     if (!requireUserId('saveUserSettings', userId)) return null;
-    const db = getSupabase();
-    if (!db) return null;
+
     const normalizedSettings = { ...settings };
     if (Object.prototype.hasOwnProperty.call(normalizedSettings, 'telegram_chat_id')) {
         const { normalizeTelegramChatId } = require('./telegram-routing');
         normalizedSettings.telegram_chat_id = normalizeTelegramChatId(normalizedSettings.telegram_chat_id);
     }
+
+    if (isPostgresConfigured()) {
+        try {
+            const keys = Object.keys(normalizedSettings);
+            const cols = ['user_id', ...keys, 'updated_at'];
+            const valPlaceholders = cols.map((_, i) => `$${i + 1}`).join(', ');
+            const updateClauses = keys.map(k => `${k} = EXCLUDED.${k}`).concat('updated_at = NOW()').join(', ');
+
+            const sql = `
+                INSERT INTO user_bot_settings (${cols.join(', ')})
+                VALUES (${valPlaceholders})
+                ON CONFLICT (user_id) DO UPDATE SET
+                    ${updateClauses}
+                RETURNING *;
+            `;
+            const params = [userId, ...Object.values(normalizedSettings), new Date().toISOString()];
+            const res = await query(sql, params);
+            return res.rows[0];
+        } catch (err) {
+            console.error('saveUserSettings (pg) error:', err);
+            throw err;
+        }
+    }
+
+    const db = getSupabase();
+    if (!db) return null;
     const { data, error } = await db
         .from('user_bot_settings')
         .upsert({
             user_id: userId,
             ...normalizedSettings,
             updated_at: new Date().toISOString()
-    }, { onConflict: 'user_id' })
+        }, { onConflict: 'user_id' })
         .select();
     if (error) {
         console.error('saveUserSettings error:', error);
@@ -366,12 +1050,22 @@ async function saveUserSettings(userId, settings) {
 }
 
 async function getUserSettingsByTelegramChatId(chatId) {
-    const db = getSupabase();
-    if (!db) return null;
     const { normalizeTelegramChatId } = require('./telegram-routing');
     const normalizedChatId = normalizeTelegramChatId(chatId);
     if (!normalizedChatId) return null;
 
+    if (isPostgresConfigured()) {
+        try {
+            const res = await query(`SELECT * FROM user_bot_settings WHERE telegram_chat_id = $1 LIMIT 1;`, [normalizedChatId]);
+            return res.rows[0] || null;
+        } catch (err) {
+            console.error('getUserSettingsByTelegramChatId (pg) error:', err);
+            return null;
+        }
+    }
+
+    const db = getSupabase();
+    if (!db) return null;
     const { data, error } = await db
         .from('user_bot_settings')
         .select('*')
@@ -385,6 +1079,16 @@ async function getUserSettingsByTelegramChatId(chatId) {
 }
 
 async function getActiveUsers() {
+    if (isPostgresConfigured()) {
+        try {
+            const res = await query(`SELECT user_id FROM user_bot_settings WHERE status = 'running';`);
+            return res.rows.map(x => x.user_id);
+        } catch (err) {
+            console.error('getActiveUsers (pg) error:', err);
+            return [];
+        }
+    }
+
     const db = getSupabase();
     if (!db) return [];
     const { data, error } = await db
@@ -399,6 +1103,16 @@ async function getActiveUsers() {
 }
 
 async function getUsersToResume() {
+    if (isPostgresConfigured()) {
+        try {
+            const res = await query(`SELECT user_id, status, pause_reason FROM user_bot_settings WHERE status IN ('running', 'paused');`);
+            return res.rows || [];
+        } catch (err) {
+            console.error('getUsersToResume (pg) error:', err);
+            return [];
+        }
+    }
+
     const db = getSupabase();
     if (!db) return [];
     let { data, error } = await db
@@ -406,11 +1120,7 @@ async function getUsersToResume() {
         .select('user_id, status, pause_reason')
         .in('status', ['running', 'paused']);
 
-    // Keep running users recoverable during a rolling deployment where the
-    // application may be newer than the database migration. Paused reasons
-    // become available once migration 007 is applied.
     if (error && /pause_reason|column .* does not exist/i.test(error.message || '')) {
-        console.warn('getUsersToResume: pause_reason 欄位尚未存在，先以狀態恢復運行帳戶');
         ({ data, error } = await db
             .from('user_bot_settings')
             .select('user_id, status')
@@ -424,42 +1134,81 @@ async function getUsersToResume() {
     return data || [];
 }
 
-// ============== FRR 歷史均值 (全域共享) ==============
+// ============== FRR 歷史均值 ==============
 
 async function getAverageFRR(currency, hours = 168) {
-    const db = getSupabase();
-    if (!db) return null;
     const cacheKey = `${currency}:${hours}`;
     const cached = averageFRRCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) return cached.value;
 
-    const fromDate = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-    const { data, error } = await db
-        .from('rate_history')
-        .select('frr')
-        .eq('currency', currency)
-        .gte('recorded_at', fromDate)
-        .not('frr', 'is', null);
-    if (error) {
-        console.error('getAverageFRR error:', error);
-        return null;
+    if (isPostgresConfigured()) {
+        try {
+            const res = await query(`SELECT get_average_frr($1, $2) AS avg_frr;`, [currency, hours]);
+            const val = res.rows[0]?.avg_frr;
+            if (val !== null && val !== undefined) {
+                const num = parseFloat(val);
+                if (!isNaN(num)) {
+                    averageFRRCache.set(cacheKey, {
+                        value: num,
+                        expiresAt: Date.now() + AVERAGE_FRR_CACHE_TTL_MS,
+                    });
+                    return num;
+                }
+            }
+        } catch (err) {
+            // fallback to in-memory calculation
+        }
+    } else {
+        const db = getSupabase();
+        if (db) {
+            try {
+                const { data, error } = await db.rpc('get_average_frr', {
+                    p_currency: currency,
+                    p_hours: hours,
+                });
+                if (!error && data !== null && data !== undefined) {
+                    const num = parseFloat(data);
+                    if (!isNaN(num)) {
+                        averageFRRCache.set(cacheKey, {
+                            value: num,
+                            expiresAt: Date.now() + AVERAGE_FRR_CACHE_TTL_MS,
+                        });
+                        return num;
+                    }
+                }
+            } catch (rpcErr) {}
+        }
     }
-    if (!data || data.length === 0) return null;
-    const sum = data.reduce((s, r) => s + (r.frr || 0), 0);
-    const value = sum / data.length;
-    averageFRRCache.set(cacheKey, {
-        value,
-        expiresAt: Date.now() + AVERAGE_FRR_CACHE_TTL_MS,
-    });
-    return value;
+
+    try {
+        const history = await getRateHistory(currency, hours, 'frr,recorded_at');
+        const frrs = history.map(r => r.frr).filter(v => v !== null && v !== undefined);
+        if (frrs.length > 0) {
+            const value = frrs.reduce((s, r) => s + r, 0) / frrs.length;
+            averageFRRCache.set(cacheKey, {
+                value,
+                expiresAt: Date.now() + AVERAGE_FRR_CACHE_TTL_MS,
+            });
+            return value;
+        }
+    } catch (fallbackErr) {
+        console.error('getAverageFRR fallback error:', fallbackErr);
+    }
+
+    return null;
 }
 
 module.exports = {
+    getPool,
     getSupabase,
+    query,
+    isPostgresConfigured,
     saveOffer, closeOffer, getActiveOffers,
     saveLoan, closeLoan, getActiveLoans,
     saveEarning, getEarnings, deleteEarnings,
     saveRateSnapshot, saveRateSnapshots, getRateHistory,
+    ensureFundingTradesTable, upsertFundingTrades, getFundingTrades,
+    getLatestFundingTradeTimestamp, deleteOldFundingTrades,
     saveOrderBookSnapshot,
     saveLog, getLogs,
     getSetting, saveSetting,

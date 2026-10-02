@@ -1,18 +1,56 @@
 const express = require('express');
+const jwt = require('jsonwebtoken');
+const config = require('../config');
 const { getSupabase } = require('../services/database');
 
 const router = express.Router();
 
-// 取得 Supabase 設定
+// 本地管理員固定帳號 ID（與資料庫 01_init.sql 保持一致）
+const ADMIN_USER = {
+    id: '00000000-0000-0000-0000-000000000001',
+    email: 'admin@lending-bot.local',
+    role: 'admin',
+};
+
+// 取得認證配置
 router.get('/config', (req, res) => {
-    const config = require('../config');
     res.json({
-        supabaseUrl: config.supabase.url,
-        supabaseAnonKey: config.supabase.anonKey,
+        authMode: 'local',
+        supabaseUrl: config.supabase?.url || '',
+        supabaseAnonKey: config.supabase?.anonKey || '',
     });
 });
 
-// 驗證 Token
+// 本地管理員密碼登入
+router.post('/login', (req, res) => {
+    try {
+        const { password } = req.body;
+        if (!password) {
+            return res.status(400).json({ error: '請輸入密碼' });
+        }
+
+        const adminPassword = config.admin?.password || 'admin';
+        if (password !== adminPassword) {
+            return res.status(401).json({ error: '密碼錯誤' });
+        }
+
+        const token = jwt.sign(
+            ADMIN_USER,
+            config.jwt.secret,
+            { expiresIn: config.jwt.expiresIn || '24h' }
+        );
+
+        res.json({
+            token,
+            user: ADMIN_USER,
+            expiresIn: config.jwt.expiresIn || '24h'
+        });
+    } catch (err) {
+        res.status(500).json({ error: '登入失敗', details: err.message });
+    }
+});
+
+// 驗證 Token (優先本地 JWT 驗證)
 router.get('/verify', async (req, res) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -20,28 +58,45 @@ router.get('/verify', async (req, res) => {
     }
 
     const token = authHeader.split(' ')[1];
-    const supabase = getSupabase();
-    if (!supabase) {
-        return res.status(500).json({ error: '資料庫模組未初始化', valid: false });
+
+    // 1. 優先嘗試本地原生 JWT 驗證
+    try {
+        const decoded = jwt.verify(token, config.jwt.secret);
+        if (decoded && decoded.id) {
+            return res.json({
+                valid: true,
+                user: {
+                    id: decoded.id,
+                    email: decoded.email,
+                    role: decoded.role || 'user',
+                    created_at: decoded.created_at
+                }
+            });
+        }
+    } catch (jwtErr) {
+        // 本地驗證未通過，若非過期錯誤且有 Supabase 則嘗試 fallback
     }
 
-    try {
-        const { data: { user }, error } = await supabase.auth.getUser(token);
-        if (error || !user) {
-            return res.status(401).json({ valid: false });
-        }
-        res.json({ 
-            valid: true, 
-            user: {
-                id: user.id,
-                email: user.email,
-                role: user.role,
-                created_at: user.created_at
+    // 2. 備用：若有 Supabase，嘗試驗證 Supabase JWT (相容舊 Session)
+    const supabase = getSupabase();
+    if (supabase) {
+        try {
+            const { data: { user }, error } = await supabase.auth.getUser(token);
+            if (!error && user) {
+                return res.json({
+                    valid: true,
+                    user: {
+                        id: user.id,
+                        email: user.email,
+                        role: user.role,
+                        created_at: user.created_at
+                    }
+                });
             }
-        });
-    } catch {
-        res.status(401).json({ valid: false });
+        } catch {}
     }
+
+    return res.status(401).json({ valid: false });
 });
 
 module.exports = router;

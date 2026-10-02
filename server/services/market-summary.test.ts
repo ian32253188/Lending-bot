@@ -86,6 +86,32 @@ describe('fUSD market summary helpers', () => {
     expect(db.getRateHistory).toHaveBeenCalledTimes(1);
   });
 
+  it('uses OCI PostgreSQL funding trades instead of querying Supabase or Bitfinex per dashboard request', async () => {
+    const now = Date.parse('2026-08-28T08:00:00Z');
+    const getFundingTrades = vi.fn().mockResolvedValue([
+      { id: 10, timestamp: now - 5 * 60 * 1000, amount: 800, rate: 0.0003, period: 2 },
+    ]);
+    const restClient = { getFundingTrades: vi.fn() };
+    const summary = await buildFundingMarketSummary({
+      now,
+      publicWs: { getMarketData: () => ({}) },
+      db: {
+        getFundingTrades,
+        getRateHistory: vi.fn().mockResolvedValue([]),
+      },
+      restClient,
+    });
+
+    expect(getFundingTrades).toHaveBeenCalledWith(
+      'USD',
+      new Date(now - 24 * 60 * 60 * 1000),
+      new Date(now),
+    );
+    expect(restClient.getFundingTrades).not.toHaveBeenCalled();
+    expect(summary.hourlyMatches24).toHaveLength(24);
+    expect(summary.hourlyMatches24[1].details).toHaveLength(1);
+  });
+
   it('keeps empty hours visible while preserving the 24-hour window', () => {
     const now = Date.parse('2026-08-28T08:00:00Z');
     const rows = buildHourlyFundingMatches([

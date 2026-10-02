@@ -145,7 +145,7 @@ setup_env() {
     fi
   fi
 
-  echo -e "\n${YELLOW}請注意：您必須填入 Bitfinex API 金鑰、Supabase 資訊，以及用於 SSL 證書申請的域名和 Email 才能運作！${NC}"
+  echo -e "\n${YELLOW}請注意：系統已全面改用 Oracle VM 本機 PostgreSQL 資料庫，無雲端磁碟 IO 限制。請確認 .env 內的 Bitfinex API 金鑰與管理員密碼 (ADMIN_PASSWORD) 正確！${NC}"
   read -p "您是否要現在編輯 .env 檔案？ (y/n): " EDIT_NOW
   if [ "$EDIT_NOW" = "y" ] || [ "$EDIT_NOW" = "Y" ]; then
     if command -v nano &> /dev/null; then

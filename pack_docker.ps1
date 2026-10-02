@@ -28,10 +28,11 @@ Write-Host "File path: " -NoNewline
 Write-Host (Resolve-Path "lending-bot.tar") -ForegroundColor Yellow
 Write-Host "File size: " -NoNewline
 Write-Host ("{0:N2} MB" -f $fileSize) -ForegroundColor Yellow
-Write-Host ""
 Write-Host "Next, please upload 'lending-bot.tar' and the 'deploy' folder to your server." -ForegroundColor Green
 Write-Host "Run the following commands on the server to load and start:" -ForegroundColor Green
 Write-Host "  1. Load image: sudo docker load -i lending-bot.tar" -ForegroundColor White
 Write-Host "  2. Go to deploy folder: cd deploy" -ForegroundColor White
 Write-Host "  3. Start services: sudo docker compose -f docker-compose.prod.yml up -d" -ForegroundColor White
+Write-Host "  4. (Optional) Migrate historical data from Supabase to local PostgreSQL:" -ForegroundColor Yellow
+Write-Host "     sudo docker exec -it bitfinex-lending-bot node scripts/migrate_from_supabase_to_pg.js" -ForegroundColor Gray
 Write-Host ""

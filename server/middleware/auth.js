@@ -1,3 +1,5 @@
+const jwt = require('jsonwebtoken');
+const config = require('../config');
 const { getSupabase } = require('../services/database');
 
 const tokenCache = new Map(); // token -> { user, expiresAt }
@@ -30,28 +32,43 @@ async function authMiddleware(req, res, next) {
         return next();
     }
 
-    const supabase = getSupabase();
-    if (!supabase) {
-        return res.status(500).json({ error: '資料庫模組未初始化' });
-    }
-
+    // 1. 原生 JWT 驗證
     try {
-        const { data: { user }, error } = await supabase.auth.getUser(token);
-        if (error || !user) {
-            return res.status(401).json({ error: 'Token 無效或已過期' });
+        const decoded = jwt.verify(token, config.jwt.secret);
+        if (decoded && decoded.id) {
+            const user = {
+                id: decoded.id,
+                email: decoded.email,
+                role: decoded.role || 'user',
+            };
+            tokenCache.set(token, {
+                user,
+                expiresAt: now + CACHE_TTL_MS
+            });
+            req.user = user;
+            return next();
         }
-
-        // 寫入快取
-        tokenCache.set(token, {
-            user,
-            expiresAt: now + CACHE_TTL_MS
-        });
-
-        req.user = user;
-        next();
-    } catch (err) {
-        return res.status(401).json({ error: '認證失敗', details: err.message });
+    } catch (jwtErr) {
+        // 本地驗證失敗，繼續嘗試 Supabase (若有)
     }
+
+    // 2. 備用：若有 Supabase，嘗試驗證舊 Supabase Token
+    const supabase = getSupabase();
+    if (supabase) {
+        try {
+            const { data: { user }, error } = await supabase.auth.getUser(token);
+            if (!error && user) {
+                tokenCache.set(token, {
+                    user,
+                    expiresAt: now + CACHE_TTL_MS
+                });
+                req.user = user;
+                return next();
+            }
+        } catch (err) {}
+    }
+
+    return res.status(401).json({ error: 'Token 無效或已過期' });
 }
 
 module.exports = authMiddleware;

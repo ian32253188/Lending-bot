@@ -12,7 +12,8 @@
     "build": "tsc -p server && npm run client:install && npm run client:build",
     "test": "vitest run && npm --prefix client test",
     "test:watch": "vitest",
-    "analyze:reoffer": "node server/analyze_reoffer.js"
+    "analyze:reoffer": "node server/analyze_reoffer.js",
+    "cleanup:db": "node server/scripts/cleanup_db.js"
   },
   "keywords": [
     "bitfinex",
@@ -30,6 +31,7 @@
     "jsonwebtoken": "^9.0.3",
     "node-cron": "^4.2.1",
     "node-telegram-bot-api": "^0.67.0",
+    "pg": "^8.23.0",
     "prom-client": "^15.1.2",
     "ws": "^8.19.0"
   },
@@ -38,6 +40,7 @@
     "@types/node": "^20.12.12",
     "@types/node-cron": "^3.0.11",
     "@types/node-telegram-bot-api": "^0.61.10",
+    "@types/pg": "^8.23.1",
     "@types/supertest": "^6.0.2",
     "@types/ws": "^8.5.10",
     "supertest": "^7.0.0",

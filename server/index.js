@@ -116,22 +116,20 @@ wss.on('connection', (ws, req) => {
                     return;
                 }
 
-                const { getSupabase } = require('./services/database');
+                const jwt = require('jsonwebtoken');
                 const { getBot } = require('./services/engine/manager');
-                const supabase = getSupabase();
-                if (!supabase) {
-                    ws.send(JSON.stringify({ type: 'auth', status: 'error', message: '資料庫模組未初始化' }));
-                    return;
-                }
+                let verifiedUser = null;
 
-                supabase.auth.getUser(msg.token).then(({ data: { user }, error }) => {
-                    if (error || !user) {
-                        ws.send(JSON.stringify({ type: 'auth', status: 'error', message: 'Token 無效或已過期' }));
-                        return;
+                try {
+                    const decoded = jwt.verify(msg.token, config.jwt.secret);
+                    if (decoded && decoded.id) {
+                        verifiedUser = decoded;
                     }
+                } catch (jwtErr) {}
 
+                const handleAuthSuccess = (userObj) => {
                     authenticated = true;
-                    userId = user.id;
+                    userId = userObj.id;
                     ws.send(JSON.stringify({ type: 'auth', status: 'ok' }));
 
                     // 開始定期推送該用戶的狀態
@@ -150,9 +148,30 @@ wss.on('connection', (ws, req) => {
                             }
                         }
                     }, 2000); // 每 2 秒推送
-                }).catch(err => {
-                    ws.send(JSON.stringify({ type: 'auth', status: 'error', message: err.message }));
-                });
+                };
+
+                if (verifiedUser) {
+                    handleAuthSuccess(verifiedUser);
+                    return;
+                }
+
+                // 備用：若有 Supabase，嘗試驗證 Supabase Token
+                const { getSupabase } = require('./services/database');
+                const supabase = getSupabase();
+                if (supabase) {
+                    supabase.auth.getUser(msg.token).then(({ data: { user }, error }) => {
+                        if (error || !user) {
+                            ws.send(JSON.stringify({ type: 'auth', status: 'error', message: 'Token 無效或已過期' }));
+                            return;
+                        }
+                        handleAuthSuccess(user);
+                    }).catch(err => {
+                        ws.send(JSON.stringify({ type: 'auth', status: 'error', message: err.message }));
+                    });
+                    return;
+                }
+
+                ws.send(JSON.stringify({ type: 'auth', status: 'error', message: 'Token 無效或已過期' }));
                 return;
             }
 
@@ -206,6 +225,8 @@ async function startup() {
     // 啟動自動恢復程序
     const { autoResumeAll } = require('./services/engine/manager');
     const { startDailyCleanup } = require('./services/analysis/cleanup');
+    const { startFundingTradeCollector } = require('./services/market-summary');
+    const db = require('./services/database');
 
     try {
         await autoResumeAll();
@@ -217,6 +238,12 @@ async function startup() {
         startDailyCleanup();
     } catch (err) {
         logger.error('server', '啟動每日日誌清理排程失敗', { error: err.message });
+    }
+
+    try {
+        startFundingTradeCollector(db);
+    } catch (err) {
+        logger.error('server', '啟動公開撮合資料收集器失敗', { error: err.message });
     }
 
     // 啟動 HTTP 伺服器
@@ -231,8 +258,10 @@ process.on('SIGTERM', async () => {
     logger.info('server', '收到 SIGTERM，正在優雅關閉所有放貸機器人...');
     const { shutdownAll } = require('./services/engine/manager');
     const { stopDailyCleanup } = require('./services/analysis/cleanup');
+    const { stopFundingTradeCollector } = require('./services/market-summary');
     try {
         stopDailyCleanup();
+        stopFundingTradeCollector();
     } catch (err) {}
     await shutdownAll();
     server.close(() => process.exit(0));
@@ -242,8 +271,10 @@ process.on('SIGINT', async () => {
     logger.info('server', '收到 SIGINT，正在優雅關閉所有放貸機器人...');
     const { shutdownAll } = require('./services/engine/manager');
     const { stopDailyCleanup } = require('./services/analysis/cleanup');
+    const { stopFundingTradeCollector } = require('./services/market-summary');
     try {
         stopDailyCleanup();
+        stopFundingTradeCollector();
     } catch (err) {}
     await shutdownAll();
     server.close(() => process.exit(0));

@@ -11,6 +11,19 @@ const config = {
         restUrl: 'https://api.bitfinex.com/v2',
     },
 
+    database: {
+        url: process.env.DATABASE_URL,
+        host: process.env.PGHOST || process.env.POSTGRES_HOST || 'localhost',
+        port: parseInt(process.env.PGPORT || process.env.POSTGRES_PORT, 10) || 5432,
+        user: process.env.PGUSER || process.env.POSTGRES_USER || 'postgres',
+        password: process.env.PGPASSWORD || process.env.POSTGRES_PASSWORD || '',
+        database: process.env.PGDATABASE || process.env.POSTGRES_DB || 'lending_bot',
+    },
+
+    admin: {
+        password: process.env.ADMIN_PASSWORD || 'admin',
+    },
+
     supabase: {
         url: process.env.SUPABASE_URL,
         key: process.env.SUPABASE_KEY,
@@ -18,7 +31,7 @@ const config = {
     },
 
     jwt: {
-        secret: process.env.JWT_SECRET,
+        secret: process.env.JWT_SECRET || 'lending_bot_default_jwt_secret_change_me_32chars',
         expiresIn: '24h',
     },
 
@@ -72,13 +85,6 @@ const config = {
 
 // 驗證必要設定
 function validateConfig() {
-    // SaaS 模式：Bitfinex API 金鑰已改為 per-user (存於 DB)，不再從 .env 必要載入
-    const required = [
-        'supabase.url',
-        'supabase.key',
-        'supabase.anonKey',
-    ];
-
     // JWT Secret 缺失是安全漏洞，必須強制停止（測試環境除外）
     if (!config.jwt.secret) {
         console.error('❌ 致命錯誤：JWT_SECRET 環境變數未設定！請在 .env 中設定一個強隨機字串。');
@@ -87,18 +93,12 @@ function validateConfig() {
         }
     }
 
-    const missing = required.filter((key) => {
-        const keys = key.split('.');
-        let val = config;
-        for (const k of keys) {
-            val = val?.[k];
-        }
-        return !val;
-    });
+    const hasPostgres = Boolean(config.database.url || (config.database.host && config.database.user));
+    const hasSupabase = Boolean(config.supabase.url && config.supabase.key);
 
-    if (missing.length > 0) {
-        console.warn(`⚠️ 缺少必要設定: ${missing.join(', ')}`);
-        console.warn('請確認 .env 檔案已正確設定');
+    if (!hasPostgres && !hasSupabase) {
+        console.warn('⚠️ 缺少資料庫連線設定 (未提供 DATABASE_URL 或 SUPABASE_URL)');
+        console.warn('請確認 .env 檔案已正確設定本機 PostgreSQL 或資料庫連線');
     }
 }
 

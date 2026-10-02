@@ -3,9 +3,10 @@ const rest = require('./bitfinex/rest');
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const CACHE_MS = 60 * 1000;
-const HISTORY_CACHE_MS = 5 * 60 * 1000;
+const HISTORY_CACHE_MS = 60 * 60 * 1000; // 1 小時快取
 const PUBLIC_FUNDING_TRADES_LIMIT = 10000;
 const FUNDING_TRADES_REQUEST_INTERVAL_MS = 4100;
+const FUNDING_TRADES_COLLECT_INTERVAL_MS = 60 * 1000;
 let cachedSummary = null;
 let cachedAt = 0;
 let cachePromise = null;
@@ -13,6 +14,8 @@ let cachedHistory = null;
 let cachedHistoryAt = 0;
 let cachedHistoryDb = null;
 let historyPromise = null;
+let fundingTradeCollectorTimer = null;
+let fundingTradeCollectorPromise = null;
 
 function getCachedRateHistory(db, now = Date.now()) {
     if (!db?.getRateHistory) return Promise.resolve([]);
@@ -28,7 +31,7 @@ function getCachedRateHistory(db, now = Date.now()) {
     if (historyPromise) return historyPromise;
 
     historyPromise = Promise.resolve()
-        .then(() => db.getRateHistory('USD', 30 * 24, 'recorded_at,avg_rate,high_rate,low_rate'))
+        .then(() => db.getRateHistory('USD', 7 * 24, 'recorded_at,avg_rate,high_rate,low_rate'))
         .then(history => {
             cachedHistory = Array.isArray(history) ? history : [];
             cachedHistoryAt = now;
@@ -65,6 +68,18 @@ function parsePublicFundingTrade(row) {
     const period = numberOrNull(row[4]);
     if (timestamp === null || amount === null || rate === null || period === null) return null;
     return { id: row[0], timestamp, amount: Math.abs(amount), rate, period };
+}
+
+function parseFundingTrade(row) {
+    if (Array.isArray(row)) return parsePublicFundingTrade(row);
+    if (!row || typeof row !== 'object') return null;
+    const id = numberOrNull(row.id ?? row.trade_id);
+    const timestamp = numberOrNull(row.timestamp ?? row.executed_at);
+    const amount = numberOrNull(row.amount);
+    const rate = numberOrNull(row.rate);
+    const period = numberOrNull(row.period);
+    if (id === null || timestamp === null || amount === null || rate === null || period === null) return null;
+    return { id, timestamp, amount: Math.abs(amount), rate, period };
 }
 
 function dedupePublicFundingTrades(rows) {
@@ -115,6 +130,57 @@ async function fetchFundingTradesRange(restClient, start, end, requestState = { 
     const olderRows = await fetchFundingTradesRange(restClient, start, midpoint, requestState);
     const newerRows = await fetchFundingTradesRange(restClient, midpoint + 1, end, requestState);
     return dedupePublicFundingTrades([...olderRows, ...newerRows]);
+}
+
+/**
+ * 將 Bitfinex 公開撮合資料增量寫入 OCI VM 的 PostgreSQL。
+ * 首次執行補齊近 24 小時，之後只抓取最後一筆之後的新成交。
+ */
+async function refreshFundingTrades({ db, restClient = rest, now = Date.now() } = {}) {
+    if (!db?.upsertFundingTrades || !db?.getLatestFundingTradeTimestamp) {
+        return { fetched: 0, stored: 0, skipped: true };
+    }
+
+    const latestTimestamp = await db.getLatestFundingTradeTimestamp('USD');
+    const start = latestTimestamp === null
+        ? now - DAY_MS
+        : Math.max(latestTimestamp + 1, now - DAY_MS);
+    if (start > now) return { fetched: 0, stored: 0, skipped: false };
+
+    const rows = await fetchFundingTradesRange(restClient, start, now);
+    const trades = rows.map(parseFundingTrade).filter(Boolean);
+    const stored = await db.upsertFundingTrades(trades, 'USD');
+    return { fetched: trades.length, stored, skipped: false };
+}
+
+/**
+ * 啟動公開撮合資料收集器。資料寫入失敗只記錄，不阻斷 API 或放貸引擎。
+ */
+function startFundingTradeCollector(db, restClient = rest) {
+    if (fundingTradeCollectorTimer || !db?.upsertFundingTrades) return;
+
+    const collect = async () => {
+        if (fundingTradeCollectorPromise) return fundingTradeCollectorPromise;
+        fundingTradeCollectorPromise = refreshFundingTrades({ db, restClient })
+            .catch(error => {
+                console.error('Funding trade collector error:', error.message);
+                return { fetched: 0, stored: 0, error: error.message };
+            })
+            .finally(() => {
+                fundingTradeCollectorPromise = null;
+            });
+        return fundingTradeCollectorPromise;
+    };
+
+    void collect();
+    fundingTradeCollectorTimer = setInterval(() => { void collect(); }, FUNDING_TRADES_COLLECT_INTERVAL_MS);
+}
+
+function stopFundingTradeCollector() {
+    if (fundingTradeCollectorTimer) {
+        clearInterval(fundingTradeCollectorTimer);
+        fundingTradeCollectorTimer = null;
+    }
 }
 
 function buildHourlyFundingMatches(trades, now = Date.now(), limit = 6, includeEmpty = false) {
@@ -234,12 +300,17 @@ function aggregateDailyRateHistory(history, now = Date.now(), days = 30) {
 
 /**
  * 取得每日摘要所需的 fUSD 公開市場資料。
- * 市場成交資料來自 Bitfinex public API；30 日統計使用本機已收集的 rate_history。
+ * 市場成交資料優先來自 OCI VM 本機 PostgreSQL；沒有本機資料庫時才直接查 Bitfinex。
+ * 30 日統計使用本機已收集的 rate_history。
  */
-async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restClient = rest, historyData } = {}) {
+async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restClient = rest, historyData, tradeData } = {}) {
     const marketData = publicWs?.getMarketData?.('USD') || {};
     const [tradesResult, historyResult] = await Promise.allSettled([
-        fetchFundingTradesRange(restClient, now - DAY_MS, now),
+        tradeData !== undefined
+            ? Promise.resolve(tradeData)
+            : db?.getFundingTrades
+                ? db.getFundingTrades('USD', new Date(now - DAY_MS), new Date(now))
+                : fetchFundingTradesRange(restClient, now - DAY_MS, now),
         historyData !== undefined
             ? Promise.resolve(historyData)
             : db?.getRateHistory
@@ -248,7 +319,7 @@ async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restC
     ]);
 
     const trades = (tradesResult.status === 'fulfilled' && Array.isArray(tradesResult.value))
-        ? tradesResult.value.map(parsePublicFundingTrade).filter(Boolean)
+        ? tradesResult.value.map(parseFundingTrade).filter(Boolean)
         : [];
     const rawHistory = (historyResult.status === 'fulfilled' && Array.isArray(historyResult.value))
         ? historyResult.value
@@ -304,10 +375,21 @@ async function getCachedFundingMarketSummary(options = {}) {
     }
     if (cachePromise) return cachePromise;
 
-    cachePromise = buildFundingMarketSummary({
+    const tradeDataPromise = options.tradeData !== undefined
+        ? Promise.resolve(options.tradeData)
+        : options.db?.getFundingTrades
+            ? options.db.getFundingTrades('USD', new Date(now - DAY_MS), new Date(now))
+            : Promise.resolve(undefined);
+
+    cachePromise = Promise.all([
+        tradeDataPromise.catch(() => undefined),
+        getCachedRateHistory(options.db, now).catch(() => []),
+    ])
+    .then(([tradeData, historyData]) => buildFundingMarketSummary({
         ...options,
-        historyData: getCachedRateHistory(options.db, now),
-    })
+        tradeData,
+        historyData,
+    }))
         .then(summary => {
             cachedSummary = summary;
             cachedAt = now;
@@ -325,4 +407,7 @@ module.exports = {
     buildHourlyFundingMatches,
     buildFundingMarketSummary,
     getCachedFundingMarketSummary,
+    refreshFundingTrades,
+    startFundingTradeCollector,
+    stopFundingTradeCollector,
 };
