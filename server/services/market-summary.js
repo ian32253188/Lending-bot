@@ -173,12 +173,22 @@ async function refreshFundingTrades({ db, restClient = rest, now = Date.now() } 
  * 可避免在 API 請求內等待整段歷史資料，也讓高成交量市場能逐步落地到 Oracle。
  */
 async function backfillFundingTrades({ db, restClient = rest, now = Date.now() } = {}) {
-    if (!db?.upsertFundingTrades || !db?.getOldestFundingTradeTimestamp) {
+    if (!db?.upsertFundingTrades) {
         return { fetched: 0, stored: 0, skipped: true };
     }
 
     const targetStart = now - DAY_MS;
-    const oldestTimestamp = await db.getOldestFundingTradeTimestamp('USD');
+    let oldestTimestamp = db.getOldestFundingTradeTimestamp
+        ? await db.getOldestFundingTradeTimestamp('USD')
+        : null;
+    if (!Number.isFinite(Number(oldestTimestamp)) && db.getFundingTrades) {
+        const stored = await db.getFundingTrades('USD', new Date(targetStart), new Date(now));
+        oldestTimestamp = stored.reduce((oldest, trade) => {
+            const timestamp = Number(trade?.timestamp ?? trade?.executed_at);
+            return Number.isFinite(timestamp) ? Math.min(oldest, timestamp) : oldest;
+        }, Infinity);
+        if (!Number.isFinite(oldestTimestamp)) oldestTimestamp = null;
+    }
     let end = Number.isFinite(Number(oldestTimestamp))
         ? Math.min(Number(oldestTimestamp) - 1, now)
         : now;
@@ -252,6 +262,7 @@ async function loadRecentFundingTrades({ db, restClient = rest, now = Date.now()
         if (fresh.length && db?.upsertFundingTrades) {
             await db.upsertFundingTrades(fresh, 'USD');
         }
+        startFundingTradeBackfill(db, restClient);
         return mergeFundingTrades(stored, fresh);
     } catch (error) {
         // Collector/API repair must not take down the dashboard; retain any Oracle data.
