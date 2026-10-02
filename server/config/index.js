@@ -13,10 +13,15 @@ const config = {
 
     database: {
         url: process.env.DATABASE_URL,
-        host: process.env.PGHOST || process.env.POSTGRES_HOST || 'localhost',
+        // Production runs beside the compose `postgres` service. Keep an
+        // explicit fallback so an older remote compose file cannot silently
+        // disable PostgreSQL-backed market storage.
+        host: process.env.PGHOST || process.env.POSTGRES_HOST
+            || (process.env.NODE_ENV === 'production' ? 'postgres' : 'localhost'),
         port: parseInt(process.env.PGPORT || process.env.POSTGRES_PORT, 10) || 5432,
         user: process.env.PGUSER || process.env.POSTGRES_USER || 'postgres',
-        password: process.env.PGPASSWORD || process.env.POSTGRES_PASSWORD || '',
+        password: process.env.PGPASSWORD || process.env.POSTGRES_PASSWORD
+            || (process.env.NODE_ENV === 'production' ? 'lending_bot_db_password' : ''),
         database: process.env.PGDATABASE || process.env.POSTGRES_DB || 'lending_bot',
     },
 
