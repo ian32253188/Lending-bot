@@ -738,6 +738,45 @@ async function deleteOldFundingTrades(cutoffDate) {
     }
 }
 
+async function getFundingTradeDiagnostics(currency = 'USD') {
+    const configured = isPostgresConfigured();
+    if (!configured) {
+        return { configured: false, tableReady: false, count: 0, oldestTimestamp: null, latestTimestamp: null };
+    }
+
+    const tableReady = await ensureFundingTradesTable();
+    if (!tableReady) {
+        return { configured: true, tableReady: false, count: 0, oldestTimestamp: null, latestTimestamp: null };
+    }
+
+    try {
+        const result = await query(`
+            SELECT COUNT(*)::bigint AS count,
+                   EXTRACT(EPOCH FROM MIN(executed_at)) * 1000 AS oldest_timestamp,
+                   EXTRACT(EPOCH FROM MAX(executed_at)) * 1000 AS latest_timestamp
+            FROM funding_trades
+            WHERE currency = $1;
+        `, [currency]);
+        const row = result?.rows?.[0] || {};
+        return {
+            configured: true,
+            tableReady: true,
+            count: Number(row.count || 0),
+            oldestTimestamp: Number.isFinite(Number(row.oldest_timestamp)) ? Number(row.oldest_timestamp) : null,
+            latestTimestamp: Number.isFinite(Number(row.latest_timestamp)) ? Number(row.latest_timestamp) : null,
+        };
+    } catch (error) {
+        return {
+            configured: true,
+            tableReady: true,
+            count: null,
+            oldestTimestamp: null,
+            latestTimestamp: null,
+            error: error.message,
+        };
+    }
+}
+
 // ============== 訂單簿快照 ==============
 
 async function saveOrderBookSnapshot(snapshot) {
@@ -1223,7 +1262,7 @@ module.exports = {
     saveLoan, closeLoan, getActiveLoans,
     saveEarning, getEarnings, deleteEarnings,
     saveRateSnapshot, saveRateSnapshots, getRateHistory,
-    ensureFundingTradesTable, upsertFundingTrades, getFundingTrades,
+    ensureFundingTradesTable, upsertFundingTrades, getFundingTrades, getFundingTradeDiagnostics,
     getLatestFundingTradeTimestamp, getOldestFundingTradeTimestamp, deleteOldFundingTrades,
     saveOrderBookSnapshot,
     saveLog, getLogs,

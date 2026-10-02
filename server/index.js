@@ -68,12 +68,16 @@ app.get('/metrics', async (req, res) => {
 });
 
 // 健康檢查（不需認證）
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
     const { getActiveEngineCount } = require('./services/engine/manager');
     const { getTelegramRoutingStats } = require('./services/telegram');
     const { getFundingTradeBackfillStatus } = require('./services/market-summary');
+    const db = require('./services/database');
     const publicWs = getBitfinexPublicWS();
     const memory = process.memoryUsage();
+    const fundingTrades = typeof db.getFundingTradeDiagnostics === 'function'
+        ? await db.getFundingTradeDiagnostics('USD')
+        : { configured: false, tableReady: false };
     res.json({
         status: 'ok',
         uptime: process.uptime(),
@@ -85,6 +89,7 @@ app.get('/api/health', (req, res) => {
         fundingTradeBackfill: typeof getFundingTradeBackfillStatus === 'function'
             ? getFundingTradeBackfillStatus()
             : { state: 'unknown' },
+        fundingTrades,
         memory: {
             rssBytes: memory.rss,
             heapUsedBytes: memory.heapUsed,
