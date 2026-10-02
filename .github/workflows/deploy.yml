@@ -58,6 +58,18 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
+      # 遠端目前是部署目錄而非 Git checkout，直接同步最新 compose，避免舊設定被沿用。
+      - name: Copy production compose to OCI VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.OCI_VM_IP }}
+          username: ${{ secrets.OCI_VM_USER }}
+          key: ${{ secrets.OCI_SSH_PRIVATE_KEY }}
+          source: "deploy/docker-compose.prod.yml"
+          target: "/home/${{ secrets.OCI_VM_USER }}/lending-bot/deploy"
+          strip_components: 1
+          overwrite: true
+
       # 透過 SSH 連線至 OCI VM 執行部署指令
       - name: SSH into OCI VM and Deploy
         uses: appleboy/ssh-action@v1.0.3
@@ -80,8 +92,10 @@ jobs:
             
             # 2. 拉取 GitHub 上的最新程式碼（取得新的 docker-compose.prod.yml）。
             # 不要吞掉 pull 失敗，否則可能用舊 compose 啟動而遺失 PostgreSQL network。
-            git fetch origin main
-            git merge --ff-only origin/main
+            if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+              git fetch origin main
+              git merge --ff-only origin/main
+            fi
             
             cd deploy
             
