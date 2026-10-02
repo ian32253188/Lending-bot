@@ -186,16 +186,18 @@ async function backfillFundingTrades({ db, restClient = rest, now = Date.now() }
     }
 
     const targetStart = now - DAY_MS;
-    let oldestTimestamp = db.getOldestFundingTradeTimestamp
-        ? await db.getOldestFundingTradeTimestamp('USD')
-        : null;
-    if (!Number.isFinite(Number(oldestTimestamp)) && db.getFundingTrades) {
+    let oldestTimestamp = null;
+    // 只能用近 24 小時窗口內的最早一筆；整張兩日保留表的 MIN 會誤判
+    // 已涵蓋目前窗口，導致中間缺口永遠不會被補抓。
+    if (db.getFundingTrades) {
         const stored = await db.getFundingTrades('USD', new Date(targetStart), new Date(now));
         oldestTimestamp = stored.reduce((oldest, trade) => {
             const timestamp = Number(trade?.timestamp ?? trade?.executed_at);
             return Number.isFinite(timestamp) ? Math.min(oldest, timestamp) : oldest;
         }, Infinity);
         if (!Number.isFinite(oldestTimestamp)) oldestTimestamp = null;
+    } else if (db.getOldestFundingTradeTimestamp) {
+        oldestTimestamp = await db.getOldestFundingTradeTimestamp('USD');
     }
     let end = Number.isFinite(Number(oldestTimestamp))
         ? Math.min(Number(oldestTimestamp) - 1, now)
