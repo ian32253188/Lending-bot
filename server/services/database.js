@@ -11,6 +11,7 @@ const AVERAGE_FRR_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const rateHistoryCache = new Map();
 const RATE_HISTORY_CACHE_TTL_MS = 60 * 60 * 1000;
 let fundingTradesSchemaPromise = null;
+let fundingTradesSchemaErrorCode = null;
 
 /**
  * 判斷是否配置了原生 PostgreSQL
@@ -97,8 +98,12 @@ async function ensureFundingTradesTable() {
         );
         CREATE INDEX IF NOT EXISTS idx_funding_trades_currency_time
             ON funding_trades (currency, executed_at DESC);
-    `).then(() => true).catch(error => {
+    `).then(() => {
+        fundingTradesSchemaErrorCode = null;
+        return true;
+    }).catch(error => {
         fundingTradesSchemaPromise = null;
+        fundingTradesSchemaErrorCode = error.code || 'UNKNOWN';
         console.error('ensureFundingTradesTable error:', error);
         return false;
     });
@@ -746,7 +751,14 @@ async function getFundingTradeDiagnostics(currency = 'USD') {
 
     const tableReady = await ensureFundingTradesTable();
     if (!tableReady) {
-        return { configured: true, tableReady: false, count: 0, oldestTimestamp: null, latestTimestamp: null };
+        return {
+            configured: true,
+            tableReady: false,
+            count: 0,
+            oldestTimestamp: null,
+            latestTimestamp: null,
+            errorCode: fundingTradesSchemaErrorCode,
+        };
     }
 
     try {
