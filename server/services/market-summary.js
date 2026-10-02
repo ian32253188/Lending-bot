@@ -186,38 +186,37 @@ async function backfillFundingTrades({ db, restClient = rest, now = Date.now() }
     }
 
     const targetStart = now - DAY_MS;
-    let oldestTimestamp = null;
-    // 只能用近 24 小時窗口內的最早一筆；整張兩日保留表的 MIN 會誤判
-    // 已涵蓋目前窗口，導致中間缺口永遠不會被補抓。
-    if (db.getFundingTrades) {
-        const stored = await db.getFundingTrades('USD', new Date(targetStart), new Date(now));
-        oldestTimestamp = stored.reduce((oldest, trade) => {
-            const timestamp = Number(trade?.timestamp ?? trade?.executed_at);
-            return Number.isFinite(timestamp) ? Math.min(oldest, timestamp) : oldest;
-        }, Infinity);
-        if (!Number.isFinite(oldestTimestamp)) oldestTimestamp = null;
-    } else if (db.getOldestFundingTradeTimestamp) {
-        oldestTimestamp = await db.getOldestFundingTradeTimestamp('USD');
+    const storedRows = db.getFundingTrades
+        ? await db.getFundingTrades('USD', new Date(targetStart), new Date(now))
+        : [];
+    const coveredHours = new Set(
+        storedRows
+            .map(trade => Number(trade?.timestamp ?? trade?.executed_at))
+            .filter(Number.isFinite)
+            .map(timestamp => Math.floor(timestamp / HOUR_MS) * HOUR_MS),
+    );
+    const firstHour = Math.floor(targetStart / HOUR_MS) * HOUR_MS;
+    const lastHour = Math.floor(now / HOUR_MS) * HOUR_MS;
+    const missingHours = [];
+    for (let hour = firstHour; hour <= lastHour; hour += HOUR_MS) {
+        if (!coveredHours.has(hour)) missingHours.push(hour);
     }
-    let end = Number.isFinite(Number(oldestTimestamp))
-        ? Math.min(Number(oldestTimestamp) - 1, now)
-        : now;
-    if (end <= targetStart) return { fetched: 0, stored: 0, skipped: false };
+    if (!missingHours.length) return { fetched: 0, stored: 0, skipped: false };
 
     const requestState = { requestCount: 0, lastRequestAt: 0 };
     let fetched = 0;
-    let stored = 0;
-    while (end > targetStart) {
-        const start = Math.max(targetStart, end - HOUR_MS + 1);
+    let storedCount = 0;
+    for (const hour of missingHours) {
+        const start = Math.max(targetStart, hour);
+        const end = Math.min(now, hour + HOUR_MS - 1);
         const rows = await fetchFundingTradesRange(restClient, start, end, requestState);
         const trades = rows.map(parseFundingTrade).filter(Boolean);
         if (trades.length) {
-            stored += await db.upsertFundingTrades(trades, 'USD');
+            storedCount += await db.upsertFundingTrades(trades, 'USD');
             fetched += trades.length;
         }
-        end = start - 1;
     }
-    return { fetched, stored, skipped: false };
+    return { fetched, stored: storedCount, skipped: false };
 }
 
 function startFundingTradeBackfill(db, restClient = rest) {
