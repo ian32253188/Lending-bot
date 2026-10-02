@@ -41,6 +41,11 @@ services:
       - ../.env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-lending_bot_db_password}@postgres:5432/${POSTGRES_DB:-lending_bot}
+      - PGHOST=postgres
+      - PGPORT=5432
+      - PGUSER=${POSTGRES_USER:-postgres}
+      - PGPASSWORD=${POSTGRES_PASSWORD:-lending_bot_db_password}
+      - PGDATABASE=${POSTGRES_DB:-lending_bot}
     logging:
       driver: "json-file"
       options:
