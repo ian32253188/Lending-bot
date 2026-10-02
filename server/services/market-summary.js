@@ -133,6 +133,19 @@ async function fetchFundingTradesRange(restClient, start, end, requestState = { 
     return dedupePublicFundingTrades([...olderRows, ...newerRows]);
 }
 
+// 儀表板需要先快速顯示最近成交；若切割完整 24 小時範圍，當市場成交量
+// 超過 Bitfinex 單次 10,000 筆上限時，會觸發多次限流等待，反而讓請求逾時。
+// 先取最新一頁即可恢復最近數小時的資料，之後由背景 collector 增量補齊。
+async function fetchRecentFundingTrades(restClient, start, end) {
+    const rows = await restClient.getFundingTrades('USD', {
+        start,
+        end,
+        limit: PUBLIC_FUNDING_TRADES_LIMIT,
+        sort: -1,
+    });
+    return Array.isArray(rows) ? rows : [];
+}
+
 /**
  * 將 Bitfinex 公開撮合資料增量寫入 OCI VM 的 PostgreSQL。
  * 首次執行補齊近 24 小時，之後只抓取最後一筆之後的新成交。
@@ -189,7 +202,7 @@ async function loadRecentFundingTrades({ db, restClient = rest, now = Date.now()
     if (!needsRepair) return stored;
 
     try {
-        const rows = await fetchFundingTradesRange(restClient, now - DAY_MS, now);
+        const rows = await fetchRecentFundingTrades(restClient, now - DAY_MS, now);
         const fresh = rows.map(parseFundingTrade).filter(Boolean);
         if (fresh.length && db?.upsertFundingTrades) {
             await db.upsertFundingTrades(fresh, 'USD');
