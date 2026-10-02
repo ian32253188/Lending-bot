@@ -17,6 +17,7 @@ let cachedHistoryDb = null;
 let historyPromise = null;
 let fundingTradeCollectorTimer = null;
 let fundingTradeCollectorPromise = null;
+let fundingTradeBackfillPromise = null;
 
 function getCachedRateHistory(db, now = Date.now()) {
     if (!db?.getRateHistory) return Promise.resolve([]);
@@ -159,10 +160,56 @@ async function refreshFundingTrades({ db, restClient = rest, now = Date.now() } 
         : Math.max(latestTimestamp + 1, now - DAY_MS);
     if (start > now) return { fetched: 0, stored: 0, skipped: false };
 
-    const rows = await fetchFundingTradesRange(restClient, start, now);
+    const rows = latestTimestamp === null
+        ? await fetchRecentFundingTrades(restClient)
+        : await fetchFundingTradesRange(restClient, start, now);
     const trades = rows.map(parseFundingTrade).filter(Boolean);
     const stored = await db.upsertFundingTrades(trades, 'USD');
     return { fetched: trades.length, stored, skipped: false };
+}
+
+/**
+ * 背景補齊近 24 小時較早的成交。Bitfinex 單次最多 10,000 筆，按小時分段
+ * 可避免在 API 請求內等待整段歷史資料，也讓高成交量市場能逐步落地到 Oracle。
+ */
+async function backfillFundingTrades({ db, restClient = rest, now = Date.now() } = {}) {
+    if (!db?.upsertFundingTrades || !db?.getOldestFundingTradeTimestamp) {
+        return { fetched: 0, stored: 0, skipped: true };
+    }
+
+    const targetStart = now - DAY_MS;
+    const oldestTimestamp = await db.getOldestFundingTradeTimestamp('USD');
+    let end = Number.isFinite(Number(oldestTimestamp))
+        ? Math.min(Number(oldestTimestamp) - 1, now)
+        : now;
+    if (end <= targetStart) return { fetched: 0, stored: 0, skipped: false };
+
+    const requestState = { requestCount: 0, lastRequestAt: 0 };
+    let fetched = 0;
+    let stored = 0;
+    while (end > targetStart) {
+        const start = Math.max(targetStart, end - HOUR_MS + 1);
+        const rows = await fetchFundingTradesRange(restClient, start, end, requestState);
+        const trades = rows.map(parseFundingTrade).filter(Boolean);
+        if (trades.length) {
+            stored += await db.upsertFundingTrades(trades, 'USD');
+            fetched += trades.length;
+        }
+        end = start - 1;
+    }
+    return { fetched, stored, skipped: false };
+}
+
+function startFundingTradeBackfill(db, restClient = rest) {
+    if (fundingTradeBackfillPromise || !db?.upsertFundingTrades) return;
+    fundingTradeBackfillPromise = backfillFundingTrades({ db, restClient })
+        .catch(error => {
+            console.error('Funding trade backfill error:', error.message);
+            return { fetched: 0, stored: 0, error: error.message };
+        })
+        .finally(() => {
+            fundingTradeBackfillPromise = null;
+        });
 }
 
 function mergeFundingTrades(...groups) {
@@ -233,6 +280,7 @@ function startFundingTradeCollector(db, restClient = rest) {
     };
 
     void collect();
+    startFundingTradeBackfill(db, restClient);
     fundingTradeCollectorTimer = setInterval(() => { void collect(); }, FUNDING_TRADES_COLLECT_INTERVAL_MS);
 }
 
@@ -471,6 +519,8 @@ module.exports = {
     getCachedFundingMarketSummary,
     loadRecentFundingTrades,
     refreshFundingTrades,
+    backfillFundingTrades,
     startFundingTradeCollector,
+    startFundingTradeBackfill,
     stopFundingTradeCollector,
 };

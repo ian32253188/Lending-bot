@@ -711,6 +711,22 @@ async function getLatestFundingTradeTimestamp(currency = 'USD') {
     }
 }
 
+async function getOldestFundingTradeTimestamp(currency = 'USD') {
+    if (!isPostgresConfigured() || !(await ensureFundingTradesTable())) return null;
+    try {
+        const result = await query(`
+            SELECT EXTRACT(EPOCH FROM MIN(executed_at)) * 1000 AS timestamp
+            FROM funding_trades
+            WHERE currency = $1;
+        `, [currency]);
+        const timestamp = Number(result?.rows?.[0]?.timestamp);
+        return Number.isFinite(timestamp) ? timestamp : null;
+    } catch (err) {
+        console.error('getOldestFundingTradeTimestamp (pg) error:', err);
+        return null;
+    }
+}
+
 async function deleteOldFundingTrades(cutoffDate) {
     if (!isPostgresConfigured() || !(await ensureFundingTradesTable())) return 0;
     try {
@@ -1208,7 +1224,7 @@ module.exports = {
     saveEarning, getEarnings, deleteEarnings,
     saveRateSnapshot, saveRateSnapshots, getRateHistory,
     ensureFundingTradesTable, upsertFundingTrades, getFundingTrades,
-    getLatestFundingTradeTimestamp, deleteOldFundingTrades,
+    getLatestFundingTradeTimestamp, getOldestFundingTradeTimestamp, deleteOldFundingTrades,
     saveOrderBookSnapshot,
     saveLog, getLogs,
     getSetting, saveSetting,
