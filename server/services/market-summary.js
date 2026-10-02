@@ -1,4 +1,5 @@
 const rest = require('./bitfinex/rest');
+const { withRetry } = require('../utils/retry');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -111,12 +112,20 @@ async function requestFundingTrades(restClient, start, end, requestState) {
     }
     requestState.requestCount += 1;
     requestState.lastRequestAt = Date.now();
-    return restClient.getFundingTrades('USD', {
-        start,
-        end,
-        limit: PUBLIC_FUNDING_TRADES_LIMIT,
-        sort: -1,
-    });
+    return withRetry(
+        () => restClient.getFundingTrades('USD', {
+            start,
+            end,
+            limit: PUBLIC_FUNDING_TRADES_LIMIT,
+            sort: -1,
+        }),
+        {
+            maxRetries: 4,
+            baseDelay: 5000,
+            label: 'Bitfinex funding trades history',
+            shouldRetry: error => /429|ratelimit/i.test(error?.message || ''),
+        },
+    );
 }
 
 async function fetchFundingTradesRange(restClient, start, end, requestState = { requestCount: 0, lastRequestAt: 0 }) {
@@ -146,10 +155,18 @@ async function fetchFundingTradesRange(restClient, start, end, requestState = { 
 // 超過 Bitfinex 單次 10,000 筆上限時，會觸發多次限流等待，反而讓請求逾時。
 // 先取最新一頁即可恢復最近數小時的資料，之後由背景 collector 增量補齊。
 async function fetchRecentFundingTrades(restClient) {
-    const rows = await restClient.getFundingTrades('USD', {
-        limit: PUBLIC_FUNDING_TRADES_LIMIT,
-        sort: -1,
-    });
+    const rows = await withRetry(
+        () => restClient.getFundingTrades('USD', {
+            limit: PUBLIC_FUNDING_TRADES_LIMIT,
+            sort: -1,
+        }),
+        {
+            maxRetries: 4,
+            baseDelay: 5000,
+            label: 'Bitfinex recent funding trades',
+            shouldRetry: error => /429|ratelimit/i.test(error?.message || ''),
+        },
+    );
     return Array.isArray(rows) ? rows : [];
 }
 
@@ -221,6 +238,12 @@ async function backfillFundingTrades({ db, restClient = rest, now = Date.now() }
 
 function startFundingTradeBackfill(db, restClient = rest) {
     if (fundingTradeBackfillPromise || !db?.upsertFundingTrades) return;
+    if (fundingTradeCollectorPromise) {
+        void fundingTradeCollectorPromise.finally(() => {
+            startFundingTradeBackfill(db, restClient);
+        });
+        return;
+    }
     fundingTradeBackfillStatus = {
         state: 'running',
         fetched: 0,
@@ -318,6 +341,7 @@ function startFundingTradeCollector(db, restClient = rest) {
 
     const collect = async () => {
         if (fundingTradeCollectorPromise) return fundingTradeCollectorPromise;
+        if (fundingTradeBackfillPromise) return fundingTradeBackfillPromise;
         fundingTradeCollectorPromise = refreshFundingTrades({ db, restClient })
             .catch(error => {
                 console.error('Funding trade collector error:', error.message);
