@@ -254,6 +254,8 @@ async function loadRecentFundingTrades({ db, restClient = rest, now = Date.now()
     const needsRepair = !stored.length
         || !Number.isFinite(Number(latestTimestamp))
         || Number(latestTimestamp) < now - FUNDING_TRADES_STALE_AFTER_MS;
+    // 即使最新一頁已存在，也要確保較早的 24 小時分段補抓任務有啟動。
+    startFundingTradeBackfill(db, restClient);
     if (!needsRepair) return stored;
 
     try {
@@ -262,7 +264,6 @@ async function loadRecentFundingTrades({ db, restClient = rest, now = Date.now()
         if (fresh.length && db?.upsertFundingTrades) {
             await db.upsertFundingTrades(fresh, 'USD');
         }
-        startFundingTradeBackfill(db, restClient);
         return mergeFundingTrades(stored, fresh);
     } catch (error) {
         // Collector/API repair must not take down the dashboard; retain any Oracle data.
