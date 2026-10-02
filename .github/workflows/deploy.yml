@@ -78,8 +78,10 @@ jobs:
               exit 1
             fi
             
-            # 2. 拉取 GitHub 上的最新程式碼（取得新的 docker-compose.prod.yml）
-            git pull || sudo git pull || true
+            # 2. 拉取 GitHub 上的最新程式碼（取得新的 docker-compose.prod.yml）。
+            # 不要吞掉 pull 失敗，否則可能用舊 compose 啟動而遺失 PostgreSQL network。
+            git fetch origin main
+            git merge --ff-only origin/main
             
             cd deploy
             
