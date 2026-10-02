@@ -157,7 +157,7 @@ export default function SettingsPanel({ token }) {
                             </div>
                         </div>
                         <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', marginTop: -6 }}>
-                            💡 請確保該 API 具備 Wallet Read、Margin Funding Write 權限，切勿勾選 Withdrawal 權限。金鑰將經 Supabase Vault 資料庫級對稱式加密安全保護。
+                            請確保該 API 具備 Wallet Read、Margin Funding Write 權限，切勿勾選 Withdrawal 權限。金鑰會在伺服器端加密後保存於 Oracle PostgreSQL，不會以明文回傳前端。
                         </p>
                     </div>
 
