@@ -12,7 +12,20 @@ const RANGES = [
 ];
 
 const CURRENCIES = ['USD', 'USDT'];
-const COLORS = { USD: '#7c6af5', USDT: '#26d0a3' };
+const COLORS = { USD: '#53d5c3', USDT: '#86a9d6' };
+
+async function readJsonResponse(response) {
+    const contentType = response.headers?.get?.('content-type') || '';
+    if (!response.text && response.json) return response.json();
+    if (contentType.includes('json') && response.json) return response.json();
+    const body = response.text ? await response.text() : '';
+    if (!body.trim()) return {};
+    try {
+        return JSON.parse(body);
+    } catch {
+        throw new Error(`利率歷史服務暫時無法使用（HTTP ${response.status || 'unknown'}）`);
+    }
+}
 
 function formatTime(dateStr, hours) {
     const d = new Date(dateStr);
@@ -44,6 +57,7 @@ export default function RateChart({ token }) {
     const [range, setRange] = useState(RANGES[1]);
     const [data, setData] = useState({ USD: [], USDT: [] });
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
     const [selectedCurrencies, setSelectedCurrencies] = useState(new Set(CURRENCIES));
 
     const fetchData = useCallback(async () => {
@@ -53,14 +67,20 @@ export default function RateChart({ token }) {
                 CURRENCIES.map(cur =>
                     fetch(`/api/dashboard/rate-history/${cur}?hours=${range.hours}`, {
                         headers: { Authorization: `Bearer ${token}` },
-                    }).then(r => r.json())
+                    }).then(async response => {
+                        const payload = await readJsonResponse(response);
+                        if (!response.ok) throw new Error(payload.error || `無法載入 ${cur} 歷史資料`);
+                        return payload;
+                    })
                 )
             );
             const newData = {};
             CURRENCIES.forEach((cur, i) => { newData[cur] = results[i] || []; });
             setData(newData);
+            setError('');
         } catch (err) {
             console.error('利率歷史載入失敗', err);
+            setError(err.message);
         } finally {
             setLoading(false);
         }
@@ -97,7 +117,7 @@ export default function RateChart({ token }) {
     return (
         <div className="panel">
             <div className="panel-header">
-                <h3>📈 FRR 利率走勢</h3>
+                <h3>FRR 利率走勢 <span className="section-code">MARKET HISTORY</span></h3>
                 <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
                     {CURRENCIES.map(cur => (
                         <button
@@ -122,6 +142,7 @@ export default function RateChart({ token }) {
                 </div>
             </div>
 
+            {error && <div className="market-error" role="alert"><strong>歷史資料同步失敗</strong><span>{error}</span><button type="button" className="btn btn-sm btn-outline" onClick={fetchData}>重新同步</button></div>}
             {loading ? (
                 <div className="loading-shimmer" style={{ height: 240, borderRadius: 8 }} />
             ) : chartData.length === 0 ? (

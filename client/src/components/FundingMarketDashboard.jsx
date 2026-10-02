@@ -3,6 +3,20 @@ import { useEffect, useMemo, useState } from 'react';
 const fmt = (value, digits = 2) => value == null ? '—' : `${Number(value).toFixed(digits)}%`;
 const fmtAmount = value => value == null ? '—' : Number(value).toLocaleString('en-US', { maximumFractionDigits: 2 });
 
+async function readJsonResponse(response) {
+    const contentType = response.headers?.get?.('content-type') || '';
+    if (!response.text && response.json) return response.json();
+    if (contentType.includes('json') && response.json) return response.json();
+
+    const body = response.text ? await response.text() : '';
+    if (!body.trim()) return {};
+    try {
+        return JSON.parse(body);
+    } catch {
+        throw new Error(`市場資料服務暫時無法使用（HTTP ${response.status || 'unknown'}）`);
+    }
+}
+
 function toPoints(summary) {
     const history = (summary?.history || []).filter(row => row.avgRate != null);
     if (history.length > 1) {
@@ -73,15 +87,17 @@ export default function FundingMarketDashboard({ token }) {
     const [summary, setSummary] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    const [lastUpdated, setLastUpdated] = useState(null);
     const [selectedHour, setSelectedHour] = useState(null);
     const [detailSort, setDetailSort] = useState({ key: 'amount', direction: 'desc' });
 
     const load = async () => {
         try {
             const response = await fetch('/api/dashboard/funding-market', { headers: { Authorization: `Bearer ${token}` } });
-            const data = await response.json();
+            const data = await readJsonResponse(response);
             if (!response.ok) throw new Error(data.error || '市場資料讀取失敗');
             setSummary(data);
+            setLastUpdated(new Date());
             setError('');
         } catch (err) {
             setError(err.message);
@@ -129,16 +145,20 @@ export default function FundingMarketDashboard({ token }) {
         return detailSort.direction === 'desc' ? '↓' : '↑';
     };
 
-    if (loading && !summary) return <div className="card market-dashboard">載入 fUSD 市場資料中…</div>;
+    if (loading && !summary) return <div className="card market-dashboard market-loading"><span className="status-pip loading-pip" /> 正在同步 USD 公開市場資料…</div>;
 
     return (
         <div className="card market-dashboard">
             <div className="market-header">
                 <div>
-                    <div className="market-title">🏦 USD 融資市場 <span className="market-live">● Live</span></div>
+                    <div className="market-kicker">PUBLIC MARKET / USD</div>
+                    <div className="market-title">USD 融資市場 <span className="market-live"><span className="status-pip" /> LIVE</span></div>
                     <div className="market-subtitle">24H 成交額 {summary?.volume24h == null ? '—' : `${fmtAmount(summary.volume24h)} USD`}</div>
                 </div>
-                <div className="market-top-rate">{fmt(summary?.high24hApy)}<small>近 24 小時最高借出利率</small></div>
+                <div className="market-header-meta">
+                    <div className="market-top-rate">{fmt(summary?.high24hApy)}<small>近 24 小時最高借出利率</small></div>
+                    <span className="market-updated">{lastUpdated ? `更新 ${lastUpdated.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}` : '等待同步'}</span>
+                </div>
             </div>
             <div className="market-metrics">
                 <div><strong>{fmt(summary?.currentApy)}</strong><span>目前成交均值</span></div>
@@ -148,12 +168,12 @@ export default function FundingMarketDashboard({ token }) {
             </div>
             <div className="market-body">
                 <div className="market-chart-column">
-                    <h3>⌁ 近 30 日利率走勢</h3>
+                    <h3>近 30 日利率走勢 <span className="section-code">RATE RANGE / APY</span></h3>
                     <MarketChart points={points} />
-                    <div className="market-note">灰色區間代表每日最低至最高成交利率，綠線為平均利率。</div>
+                    <div className="market-note">灰色區間為每日最低至最高成交利率，青線為成交均值。</div>
                 </div>
                 <div className="market-matches">
-                    <h3>◷ 過去每小時撮合</h3>
+                    <h3>過去每小時撮合 <span className="section-code">LAST 24H</span></h3>
                     <div className="market-table-head"><span>時間</span><span>成交利率</span><span>借量</span></div>
                     <div className="market-table-scroll">
                         {hourlyMatches.map(row => (
@@ -167,7 +187,12 @@ export default function FundingMarketDashboard({ token }) {
                     {!hourlyMatches.length && <div className="market-empty">目前沒有最近 24 小時成交紀錄</div>}
                 </div>
             </div>
-            {error && <div className="market-error">{error}</div>}
+            {error && (
+                <div className="market-error" role="alert">
+                    <div><strong>市場資料同步失敗</strong><span>{error}</span></div>
+                    <button type="button" className="btn btn-sm btn-outline" onClick={load}>重新同步</button>
+                </div>
+            )}
             {selectedHour && (
                 <div className="market-detail-backdrop" role="presentation" onClick={() => setSelectedHour(null)}>
                     <div className="market-detail-modal" role="dialog" aria-modal="true" aria-labelledby="market-detail-title" onClick={event => event.stopPropagation()}>
