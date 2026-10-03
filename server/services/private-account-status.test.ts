@@ -106,6 +106,22 @@ describe('read-only private Bitfinex account snapshot', () => {
     expect(mocks.logger.warn).toHaveBeenCalled();
   });
 
+  it('classifies a rejected Bitfinex signature without exposing response details', async () => {
+    mocks.getActiveFundingCredits.mockRejectedValue(new Error(
+      'Bitfinex API 錯誤 (500): ["error",10100,"apikey: digest invalid"]',
+    ));
+
+    const snapshot = await getReadOnlyAccountSnapshot('user-a');
+
+    expect(snapshot.accountDataErrorCode).toBe('BITFINEX_SIGNATURE_INVALID');
+    expect(snapshot.accountDataError).toMatch(/核對 API Key 與 Secret/);
+    expect(snapshot.accountDataError).not.toContain('digest invalid');
+    expect(mocks.logger.warn).toHaveBeenCalledWith('dashboard', expect.any(String), expect.objectContaining({
+      errorCode: 'BITFINEX_SIGNATURE_INVALID',
+      httpStatus: 500,
+    }));
+  });
+
   it('preserves the last successful snapshot when a refresh temporarily fails', async () => {
     const first = await getReadOnlyAccountSnapshot('user-a');
     mocks.getWallets.mockRejectedValue(new Error('temporary network failure'));

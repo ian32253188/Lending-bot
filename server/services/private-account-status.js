@@ -7,22 +7,72 @@ const rest = require('./bitfinex/rest');
 const ADMIN_USER_ID = '00000000-0000-0000-0000-000000000001';
 const SNAPSHOT_TTL_MS = 30 * 1000;
 const ERROR_CACHE_TTL_MS = 5 * 1000;
-const PRIVATE_READ_ERROR = 'Bitfinex 私有 API 讀取失敗；請確認 API 金鑰有效且具有讀取權限。';
 const snapshotCache = new Map();
 const inFlightSnapshots = new Map();
 
-function unavailableSnapshot(error) {
+function unavailableSnapshot(error, errorCode = null) {
     return {
         accountDataAvailable: false,
         accountDataSource: 'Bitfinex private REST API',
         accountDataUpdatedAt: null,
         accountDataError: error,
+        accountDataErrorCode: errorCode,
         wallets: {
             USD: { balance: null, available: null },
             USDT: { balance: null, available: null },
         },
         activeOffers: { USD: null, USDT: null },
         activeCredits: { USD: null, USDT: null },
+    };
+}
+
+function classifyPrivateApiError(error) {
+    const message = String(error?.message || error || '');
+    const responseMatch = message.match(/Bitfinex API 錯誤 \((\d{3})\):\s*([\s\S]*)/);
+    const status = responseMatch ? Number(responseMatch[1]) : null;
+    const responseBody = responseMatch?.[2] || '';
+    let bitfinexCode = null;
+    let bitfinexMessage = responseBody;
+    try {
+        const payload = JSON.parse(responseBody);
+        if (Array.isArray(payload) && payload[0] === 'error') {
+            bitfinexCode = Number(payload[1]);
+            bitfinexMessage = String(payload[2] || '');
+        }
+    } catch {}
+
+    if (bitfinexCode === 10100 || /digest invalid/i.test(bitfinexMessage)) {
+        return {
+            code: 'BITFINEX_SIGNATURE_INVALID',
+            status,
+            message: 'Bitfinex 拒絕 API 簽章；請核對 API Key 與 Secret 是否配對且仍有效。',
+        };
+    }
+    if (/permission|access denied|not authorized|invalid scope/i.test(bitfinexMessage)) {
+        return {
+            code: 'BITFINEX_READ_PERMISSION_DENIED',
+            status,
+            message: 'Bitfinex API 權限不足；需要 Wallet Read 與 Funding Read 權限。',
+        };
+    }
+    if (/ENOTFOUND|ECONN|ETIMEDOUT|timeout|fetch failed/i.test(message)) {
+        return {
+            code: 'BITFINEX_NETWORK_ERROR',
+            status,
+            message: '目前無法連線至 Bitfinex 私有 API，請稍後重試。',
+        };
+    }
+    if (status !== null) {
+        return {
+            code: `BITFINEX_HTTP_${status}`,
+            status,
+            message: `Bitfinex 私有 API 回應 HTTP ${status}；請確認金鑰與讀取權限。`,
+        };
+    }
+    return {
+        code: 'BITFINEX_PRIVATE_API_ERROR',
+        status: null,
+        message: 'Bitfinex 私有 API 讀取失敗；請確認 API 金鑰與讀取權限。',
     };
 }
 
@@ -52,7 +102,7 @@ async function fetchAccountSnapshot(userId) {
         const settings = await db.getUserSettings(userId);
         const credentials = resolveCredentials(settings, userId);
         if (!credentials) {
-            return unavailableSnapshot('尚未設定可讀取 Bitfinex 帳戶的 API 金鑰。');
+            return unavailableSnapshot('尚未設定可讀取 Bitfinex 帳戶的 API 金鑰。', 'BITFINEX_CREDENTIALS_MISSING');
         }
 
         const [rawWallets, currencyResults] = await Promise.all([
@@ -104,16 +154,20 @@ async function fetchAccountSnapshot(userId) {
             accountDataSource: 'Bitfinex private REST API',
             accountDataUpdatedAt: new Date().toISOString(),
             accountDataError: null,
+            accountDataErrorCode: null,
+            accountDataStale: false,
             wallets,
             activeOffers,
             activeCredits,
         };
     } catch (error) {
+        const diagnostic = classifyPrivateApiError(error);
         logger.warn('dashboard', '唯讀同步 Bitfinex 私有帳戶資料失敗', {
             userId,
-            error: error?.message || String(error),
+            errorCode: diagnostic.code,
+            httpStatus: diagnostic.status,
         });
-        return unavailableSnapshot(PRIVATE_READ_ERROR);
+        return unavailableSnapshot(diagnostic.message, diagnostic.code);
     }
 }
 
@@ -129,12 +183,13 @@ async function getReadOnlyAccountSnapshot(userId, now = Date.now()) {
     const previousSnapshot = cached?.snapshot;
     const request = fetchAccountSnapshot(userId).then(freshSnapshot => {
         const snapshot = !freshSnapshot.accountDataAvailable
-            && freshSnapshot.accountDataError === PRIVATE_READ_ERROR
+            && freshSnapshot.accountDataErrorCode !== 'BITFINEX_CREDENTIALS_MISSING'
             && previousSnapshot?.accountDataAvailable
             ? {
                 ...previousSnapshot,
                 accountDataStale: true,
                 accountDataError: freshSnapshot.accountDataError,
+                accountDataErrorCode: freshSnapshot.accountDataErrorCode,
             }
             : freshSnapshot;
         snapshotCache.set(userId, {

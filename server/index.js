@@ -218,6 +218,7 @@ wss.on('connection', (ws, req) => {
                                 accountDataAvailable: accountStatus.accountDataAvailable,
                                 accountDataUpdatedAt: accountStatus.accountDataUpdatedAt,
                                 accountDataError: accountStatus.accountDataError,
+                                accountDataErrorCode: accountStatus.accountDataErrorCode,
                             },
                         }));
                     }

@@ -157,7 +157,7 @@ export default function SettingsPanel({ token }) {
                             </div>
                         </div>
                         <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', marginTop: -6 }}>
-                            請確保該 API 具備 Wallet Read、Margin Funding Write 權限，切勿勾選 Withdrawal 權限。金鑰會在伺服器端加密後保存於 Oracle PostgreSQL，不會以明文回傳前端。
+                            僅查看錢包與放貸部位需要 Wallet Read、Funding Read；若要讓 Bot 建立或取消掛單，才需要 Margin Funding Write。請勿開啟 Withdrawal 權限。保存設定不會啟動已停止的策略；金鑰會在伺服器端加密保存於 Oracle PostgreSQL，不會以明文回傳前端。
                         </p>
                     </div>
 
