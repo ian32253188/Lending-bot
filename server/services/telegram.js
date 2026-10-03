@@ -469,18 +469,25 @@ function formatFundingMarketSection(summary) {
     msg += `  ├─ 30 日最高: ${formatPercent(summary.high30dApy)}\n`;
     msg += `  ├─ 30 日最低: ${formatPercent(summary.low30dApy)}\n`;
 
-    const hourly = Array.isArray(summary.hourlyMatches) ? summary.hourlyMatches : [];
+    const hasFullHourlyWindow = Array.isArray(summary.hourlyMatches24) && summary.hourlyMatches24.length > 0;
+    const hourly = hasFullHourlyWindow
+        ? summary.hourlyMatches24
+        : Array.isArray(summary.hourlyMatches) ? summary.hourlyMatches : [];
     if (hourly.length === 0) {
         msg += `  └─ 近 24H 撮合: 暫無資料\n\n`;
         return msg;
     }
 
-    msg += `  └─ 近幾小時撮合:\n`;
+    msg += hasFullHourlyWindow ? `  └─ 近 24 小時逐時撮合:\n` : `  └─ 近期有成交時段:\n`;
     for (const row of hourly) {
         const time = new Date(row.timestamp).toLocaleTimeString('zh-TW', {
             timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false,
         });
-        msg += `      ${time} ${formatPercent(row.minApy)}–${formatPercent(row.maxApy)} | ${formatAmount(row.amount)}\n`;
+        const trades = Number.isFinite(Number(row.count)) ? `${Number(row.count)} 筆` : '筆數未知';
+        const range = Number(row.count) === 0
+            ? '無成交'
+            : `${formatPercent(row.minApy)}–${formatPercent(row.maxApy)}`;
+        msg += `      ${time} ${range} | ${formatAmount(row.amount)} | ${trades}\n`;
     }
     msg += `\n`;
     return msg;
@@ -499,13 +506,49 @@ async function buildGlobalSummaryMessage(strategy, publicWs, db, marketSummary =
     for (const cur of ['USD', 'USDT']) {
         const md = publicWs.getMarketData(cur);
         if (!md) continue;
-        const currentFRR = md.frr ? `${(md.frr * 100).toFixed(4)}%/天` : '—';
-        const avg7d = strategy.historicalFRR[cur]?.['7d'] ? `${(strategy.historicalFRR[cur]['7d'] * 100).toFixed(4)}%` : '—';
+        const currentFRR = md.frr !== null && md.frr !== undefined && Number.isFinite(Number(md.frr))
+            ? `${(Number(md.frr) * 100).toFixed(4)}%/天`
+            : '—';
+        let average7dRate = null;
+        try {
+            average7dRate = await db.getAverageFRR(cur, 168);
+        } catch (error) {
+            logger.warn('telegram', `讀取 ${cur} 近 7 日 FRR 平均失敗`, { error: error.message });
+        }
+        if (average7dRate == null) average7dRate = strategy.historicalFRR?.[cur]?.['7d'];
+        const avg7d = average7dRate !== null && average7dRate !== undefined && Number.isFinite(Number(average7dRate))
+            ? `${(Number(average7dRate) * 100).toFixed(4)}%/天`
+            : '—';
         msg += `📊 <b>${cur} 市場</b>: FRR ${currentFRR} | 7d 均值 ${avg7d}\n`;
     }
 
-    msg += `\n👥 活躍用戶 Telegram Bot: ${userBots.size} 個`;
+    const { getReadOnlyAccountSnapshot } = require('./private-account-status');
+    const adminAccountStatus = await getReadOnlyAccountSnapshot('00000000-0000-0000-0000-000000000001');
+    msg += `\n${formatPrivateAccountSection(adminAccountStatus)}`;
+    msg += `👥 Telegram 帳戶綁定: ${userBots.size} 個`;
     return msg;
+}
+
+function formatPrivateAccountSection(snapshot) {
+    if (!snapshot?.accountDataAvailable) {
+        return `🔐 <b>Bitfinex 個人放貸部位</b>\n  └─ ${snapshot?.accountDataError || '私有帳戶資料暫不可用'}\n\n`;
+    }
+
+    const updatedAt = snapshot.accountDataUpdatedAt
+        ? new Date(snapshot.accountDataUpdatedAt).toLocaleTimeString('zh-TW', {
+            timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false,
+        })
+        : '時間未知';
+    let message = `🔐 <b>Bitfinex 個人放貸部位</b>（${snapshot.accountDataSource || '私有 API'}，${updatedAt} 更新）\n`;
+    for (const currency of ['USD', 'USDT']) {
+        const wallet = snapshot.wallets?.[currency] || {};
+        const offers = Array.isArray(snapshot.activeOffers?.[currency]) ? snapshot.activeOffers[currency] : [];
+        const credits = Array.isArray(snapshot.activeCredits?.[currency]) ? snapshot.activeCredits[currency] : [];
+        const amount = credits.reduce((sum, credit) => sum + Math.abs(Number(credit.amount) || 0), 0);
+        message += `  ├─ ${currency}: Funding 錢包 ${formatFixedMoney(wallet.balance)}（可用 ${formatFixedMoney(wallet.available)}）`;
+        message += ` | 放貸中 ${credits.length} 筆（${formatFixedMoney(amount)}） | 掛單 ${offers.length} 筆\n`;
+    }
+    return `${message}\n`;
 }
 
 // ============== 管理員 Bot 指令處理 ==============
@@ -590,7 +633,11 @@ function setupAdminBotHandlers(bot) {
                 const engine = getBot(boundSettings.user_id);
                 const report = engine
                     ? await buildUserSummaryMessage(boundSettings.user_id, engine, strategy, publicWs, db, marketSummary)
-                    : buildInactiveUserSummaryMessage(boundSettings, marketSummary);
+                    : buildInactiveUserSummaryMessage(
+                        boundSettings,
+                        marketSummary,
+                        await require('./private-account-status').getReadOnlyAccountSnapshot(boundSettings.user_id),
+                    );
                 bot.sendMessage(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => {});
             } else {
                 const activeUserIds = await db.getActiveUsers();
@@ -818,9 +865,9 @@ async function getSettingsByChatId(chatId) {
     }
 }
 
-function buildInactiveUserSummaryMessage(settings, marketSummary) {
+function buildInactiveUserSummaryMessage(settings, marketSummary, accountStatus = null) {
     const strategyConfig = normalizeStrategyConfig(settings?.strategy_config || {});
-    const market = marketSummary?.current || {};
+    const market = marketSummary?.current || marketSummary || {};
     return `📊 <b>放貸狀態</b>\n\n` +
         `👤 帳戶：<code>${settings.user_id}</code>\n` +
         `⏸️ 引擎：<b>${settings.status === 'paused' ? '暫停' : '停止'}</b>\n` +
@@ -828,7 +875,8 @@ function buildInactiveUserSummaryMessage(settings, marketSummary) {
         `🏦 <b>USD 融資市場</b>\n` +
         `目前成交均值：${market.currentApy != null ? `${Number(market.currentApy).toFixed(2)}%` : '—'}\n` +
         `24 小時最高：${market.high24hApy != null ? `${Number(market.high24hApy).toFixed(2)}%` : '—'}\n` +
-        `30 日最高：${market.high30dApy != null ? `${Number(market.high30dApy).toFixed(2)}%` : '—'}`;
+        `30 日最高：${market.high30dApy != null ? `${Number(market.high30dApy).toFixed(2)}%` : '—'}\n\n` +
+        formatPrivateAccountSection(accountStatus);
 }
 
 async function sendAdminControlPanel(bot, chatId) {
@@ -976,6 +1024,10 @@ module.exports = {
     sendTradeNotification,
     sendReofferNotification,
     buildUserSummaryMessage,
+    buildGlobalSummaryMessage,
+    formatFundingMarketSection,
+    formatPrivateAccountSection,
+    buildInactiveUserSummaryMessage,
     getControlPanelText,
     getControlPanelKeyboard,
 };

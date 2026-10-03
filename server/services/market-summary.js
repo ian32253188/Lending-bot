@@ -42,7 +42,7 @@ function getCachedRateHistory(db, now = Date.now()) {
     if (historyPromise) return historyPromise;
 
     historyPromise = Promise.resolve()
-        .then(() => db.getRateHistory('USD', 7 * 24, 'recorded_at,avg_rate,high_rate,low_rate'))
+        .then(() => db.getRateHistory('USD', 30 * 24, 'recorded_at,avg_rate,high_rate,low_rate'))
         .then(history => {
             cachedHistory = Array.isArray(history) ? history : [];
             cachedHistoryAt = now;

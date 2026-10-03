@@ -2,7 +2,7 @@ const express = require('express');
 const { getBot } = require('../services/engine/manager');
 const db = require('../services/database');
 const { getCachedFundingMarketSummary } = require('../services/market-summary');
-const { getInactiveDashboardStatus } = require('../services/dashboard-status');
+const { getInactiveDashboardStatusForUser } = require('../services/dashboard-status');
 
 const router = express.Router();
 
@@ -12,7 +12,7 @@ router.get('/overview', async (req, res) => {
         const userId = req.user.id;
         const engine = getBot(userId);
         if (!engine) {
-            return res.json(getInactiveDashboardStatus());
+            return res.json(await getInactiveDashboardStatusForUser(userId));
         }
         res.json(engine.getStatus());
     } catch (err) {
@@ -26,7 +26,7 @@ router.get('/detailed', async (req, res) => {
         const userId = req.user.id;
         const engine = getBot(userId);
         if (!engine) {
-            return res.json(getInactiveDashboardStatus());
+            return res.json(await getInactiveDashboardStatusForUser(userId, { detailed: true }));
         }
         res.json(engine.getDetailedStatus());
     } catch (err) {

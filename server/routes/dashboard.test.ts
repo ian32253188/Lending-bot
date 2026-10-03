@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => {
   return {
     engine,
     getBot: vi.fn().mockReturnValue(engine),
-    getInactiveDashboardStatus: vi.fn().mockReturnValue({ running: false, inactive: true }),
+    getInactiveDashboardStatusForUser: vi.fn().mockResolvedValue({ running: false, inactive: true }),
     getCachedFundingMarketSummary: vi.fn().mockResolvedValue({ currentApy: 8.9, hourlyMatches24: [] }),
     syncUserEarnings: vi.fn().mockResolvedValue(undefined),
     getRateHistory: vi.fn().mockResolvedValue([{ recorded_at: '2026-08-28T00:00:00Z' }]),
@@ -36,7 +36,7 @@ const mocks = vi.hoisted(() => {
 
 const managerMock = { getBot: mocks.getBot };
 const marketSummaryMock = { getCachedFundingMarketSummary: mocks.getCachedFundingMarketSummary };
-const dashboardStatusMock = { getInactiveDashboardStatus: mocks.getInactiveDashboardStatus };
+const dashboardStatusMock = { getInactiveDashboardStatusForUser: mocks.getInactiveDashboardStatusForUser };
 const syncMock = { syncUserEarnings: mocks.syncUserEarnings };
 const wsMock = {
   getBitfinexPublicWS: () => ({
@@ -90,6 +90,35 @@ describe('Dashboard routes', () => {
     mocks.getBot.mockReturnValueOnce(null);
     const inactive = await request(app).get('/api/dashboard/overview').expect(200);
     expect(inactive.body).toEqual({ running: false, inactive: true });
+    expect(mocks.getInactiveDashboardStatusForUser).toHaveBeenCalledWith('user-a');
+  });
+
+  it('returns read-only private account data when the engine is stopped', async () => {
+    mocks.getBot.mockReturnValueOnce(null);
+    mocks.getInactiveDashboardStatusForUser.mockResolvedValueOnce({
+      running: false,
+      accountDataAvailable: true,
+      activeOffers: { USD: 2, USDT: 0 },
+      activeCredits: { USD: 4, USDT: 1 },
+    });
+
+    const res = await request(app).get('/api/dashboard/overview').expect(200);
+    expect(res.body.accountDataAvailable).toBe(true);
+    expect(res.body.activeCredits).toEqual({ USD: 4, USDT: 1 });
+    expect(mocks.getInactiveDashboardStatusForUser).toHaveBeenCalledWith('user-a');
+  });
+
+  it('returns full private account records from the stopped detailed endpoint', async () => {
+    mocks.getBot.mockReturnValueOnce(null);
+    mocks.getInactiveDashboardStatusForUser.mockResolvedValueOnce({
+      running: false,
+      accountDataAvailable: true,
+      activeCredits: { USD: [{ id: 1, amount: 100 }], USDT: [] },
+    });
+
+    const res = await request(app).get('/api/dashboard/detailed').expect(200);
+    expect(res.body.activeCredits.USD).toEqual([{ id: 1, amount: 100 }]);
+    expect(mocks.getInactiveDashboardStatusForUser).toHaveBeenCalledWith('user-a', { detailed: true });
   });
 
   it('uses the shared public market service without exposing private tenant data', async () => {

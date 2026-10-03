@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getEarnings = vi.fn();
 const getUsdToTwdRate = vi.fn();
+const getAverageFRR = vi.fn();
+const getUserSettings = vi.fn();
 
 const mockModule = (modulePath: string, exports: unknown) => {
   const resolved = require.resolve(modulePath);
@@ -14,7 +16,7 @@ mockModule('../config', {
   telegram: {},
 });
 mockModule('../utils/logger', { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() });
-mockModule('./database', { getEarnings });
+mockModule('./database', { getEarnings, getAverageFRR, getUserSettings });
 mockModule('./exchange-rate', {
   getUsdToTwdRate,
   convertToTwd: (amount: number, currency: string, quote: { rate: number } | null) => {
@@ -23,13 +25,20 @@ mockModule('./exchange-rate', {
   },
 });
 
-const { buildUserSummaryMessage } = require('./telegram');
+const {
+  buildUserSummaryMessage,
+  buildGlobalSummaryMessage,
+  formatFundingMarketSection,
+  buildInactiveUserSummaryMessage,
+} = require('./telegram');
 
 describe('Telegram daily summary currency display', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-31T00:00:00.000Z'));
     vi.clearAllMocks();
+    getAverageFRR.mockImplementation(async (currency: string) => currency === 'USD' ? 0 : 0.000262);
+    getUserSettings.mockResolvedValue(null);
     getUsdToTwdRate.mockResolvedValue({
       rate: 31.5,
       source: 'ExchangeRate-API',
@@ -106,5 +115,48 @@ describe('Telegram daily summary currency display', () => {
     );
 
     expect(message).toContain('貸款中 1 筆 ($25.00)');
+  });
+
+  it('reads the admin seven-day FRR average from history even with no strategy cache', async () => {
+    const message = await buildGlobalSummaryMessage(
+      { historicalFRR: {} },
+      { getMarketData: currency => currency === 'USD' ? { frr: 0 } : { frr: 0.0002 } },
+      { getAverageFRR },
+      null,
+    );
+
+    expect(message).toContain('USD 市場</b>: FRR 0.0000%/天 | 7d 均值 0.0000%/天');
+    expect(message).toContain('USDT 市場</b>: FRR 0.0200%/天 | 7d 均值 0.0262%/天');
+    expect(getAverageFRR).toHaveBeenCalledWith('USD', 168);
+    expect(getAverageFRR).toHaveBeenCalledWith('USDT', 168);
+  });
+
+  it('renders all 24 hourly buckets, including hours with no fills', () => {
+    const now = Date.now();
+    const rows = Array.from({ length: 24 }, (_, index) => ({
+      timestamp: now - index * 60 * 60 * 1000,
+      amount: index ? 0 : 500,
+      minApy: index ? null : 4.5,
+      maxApy: index ? null : 4.5,
+      count: index ? 0 : 1,
+    }));
+
+    const message = formatFundingMarketSection({ hourlyMatches24: rows });
+
+    expect(message).toContain('近 24 小時逐時撮合');
+    expect((message.match(/筆/g) || []).length).toBe(24);
+    expect(message).toContain('無成交');
+  });
+
+  it('uses the actual flat market summary fields for a stopped Telegram account', () => {
+    const message = buildInactiveUserSummaryMessage(
+      { user_id: 'user-a', status: 'stopped' },
+      { currentApy: 4.59, high24hApy: 10.95, high30dApy: 11.68 },
+      null,
+    );
+
+    expect(message).toContain('目前成交均值：4.59%');
+    expect(message).toContain('24 小時最高：10.95%');
+    expect(message).toContain('30 日最高：11.68%');
   });
 });

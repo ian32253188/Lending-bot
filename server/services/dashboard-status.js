@@ -29,4 +29,21 @@ function getInactiveDashboardStatus() {
     };
 }
 
-module.exports = { getInactiveDashboardStatus };
+async function getInactiveDashboardStatusForUser(userId, { detailed = false } = {}) {
+    const status = getInactiveDashboardStatus();
+    const { getReadOnlyAccountSnapshot } = require('./private-account-status');
+    const account = await getReadOnlyAccountSnapshot(userId);
+    const result = { ...status, ...account };
+
+    if (account.accountDataAvailable && !detailed) {
+        result.activeOffers = Object.fromEntries(
+            Object.entries(account.activeOffers).map(([currency, rows]) => [currency, rows.length]),
+        );
+        result.activeCredits = Object.fromEntries(
+            Object.entries(account.activeCredits).map(([currency, rows]) => [currency, rows.length]),
+        );
+    }
+    return result;
+}
+
+module.exports = { getInactiveDashboardStatus, getInactiveDashboardStatusForUser };

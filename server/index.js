@@ -114,7 +114,7 @@ wss.on('connection', (ws, req) => {
     let userId = null;
     let statusInterval = null;
 
-    ws.on('message', (raw) => {
+    ws.on('message', async (raw) => {
         try {
             const msg = JSON.parse(raw.toString());
 
@@ -152,8 +152,14 @@ wss.on('connection', (ws, req) => {
                                     data: engine.getStatus(),
                                 }));
                             } else {
-                                const { getInactiveDashboardStatus } = require('./services/dashboard-status');
-                                ws.send(JSON.stringify({ type: 'status', data: getInactiveDashboardStatus() }));
+                                const { getInactiveDashboardStatusForUser } = require('./services/dashboard-status');
+                                getInactiveDashboardStatusForUser(userId).then(data => {
+                                    if (ws.readyState === 1) {
+                                        ws.send(JSON.stringify({ type: 'status', data }));
+                                    }
+                                }).catch(err => {
+                                    logger.error('ws-server', '讀取停止引擎的帳戶狀態失敗', { error: err.message });
+                                });
                             }
                         }
                     }, 2000); // 每 2 秒推送
@@ -199,14 +205,20 @@ wss.on('connection', (ws, req) => {
                             data: engine.getDetailedStatus(),
                         }));
                     } else {
+                        const { getInactiveDashboardStatusForUser } = require('./services/dashboard-status');
+                        const accountStatus = await getInactiveDashboardStatusForUser(userId, { detailed: true });
                         ws.send(JSON.stringify({
                             type: 'detailed',
                             data: {
-                                activeOffers: [],
-                                activeLoans: [],
+                                activeOffers: accountStatus.activeOffers,
+                                activeCredits: accountStatus.activeCredits,
+                                activeLoans: accountStatus.activeCredits,
                                 rateHistory: [],
-                                logs: []
-                            }
+                                logs: [],
+                                accountDataAvailable: accountStatus.accountDataAvailable,
+                                accountDataUpdatedAt: accountStatus.accountDataUpdatedAt,
+                                accountDataError: accountStatus.accountDataError,
+                            },
                         }));
                     }
                     break;
