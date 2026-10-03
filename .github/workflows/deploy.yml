@@ -81,6 +81,8 @@ jobs:
           username: ${{ secrets.OCI_VM_USER }}
           key: ${{ secrets.OCI_SSH_PRIVATE_KEY }}
           script: |
+            set -eu
+
             # 1. 尋找並進入 VM 上的專案部署目錄（支援多種常見目錄名）
             if [ -d "$HOME/Lending-bot/deploy" ]; then
               cd "$HOME/Lending-bot"
@@ -107,16 +109,21 @@ jobs:
             
             # 4. 拉取最新的 Docker Image
             sudo docker compose -f docker-compose.prod.yml pull
-            
-            # 5. 重啟容器以套用更新
-            sudo docker compose -f docker-compose.prod.yml up -d
 
-            # 6. 驗證應用容器確實能解析同一 Compose 網路中的 PostgreSQL 服務。
+            # 5. Confirm this exact compose file defines PostgreSQL before applying it.
+            compose_services="$(sudo docker compose -f docker-compose.prod.yml config --services)"
+            printf 'Compose services: %s\n' "$compose_services"
+            printf '%s\n' "$compose_services" | grep -qx postgres
+
+            # 6. Explicitly start both services; `set -e` makes any failure fatal.
+            sudo docker compose -f docker-compose.prod.yml up -d postgres lending-bot
+
+            # 7. 驗證應用容器確實能解析並登入同一 Compose 網路中的 PostgreSQL 服務。
             # 不能只以 SSH/Compose 指令成功判定部署完成。
             sudo docker inspect --format='bot={{range $name, $settings := .NetworkSettings.Networks}}{{$name}} {{end}}' bitfinex-lending-bot
             sudo docker inspect --format='postgres={{range $name, $settings := .NetworkSettings.Networks}}{{$name}} {{end}}' lending-bot-postgres
             sudo docker exec bitfinex-lending-bot node -e 'require("dns").lookup(process.env.PGHOST || "postgres", (error, address) => { if (error) { console.error(`PostgreSQL DNS lookup failed: ${error.code} ${error.hostname}`); process.exitCode = 1; } else { console.log(`PostgreSQL DNS resolved: ${address}`); } })'
             sudo docker exec bitfinex-lending-bot node -e 'const { Client } = require("pg"); const client = new Client({ host: process.env.PGHOST || "postgres", port: Number(process.env.PGPORT || 5432), user: process.env.PGUSER || "postgres", password: process.env.PGPASSWORD, database: process.env.PGDATABASE || "lending_bot", connectionTimeoutMillis: 5000 }); client.connect().then(() => client.query("SELECT 1")).then(() => console.log("PostgreSQL SELECT 1 succeeded")).catch(error => { console.error(`PostgreSQL connection check failed: ${error.code || "UNKNOWN"} ${error.hostname || ""}`); process.exitCode = 1; }).finally(() => client.end())'
 
-            # 7. 清理舊的不需要的 Docker 映像檔以釋放虛擬機空間
+            # 8. 清理舊的不需要的 Docker 映像檔以釋放虛擬機空間
             sudo docker image prune -f
