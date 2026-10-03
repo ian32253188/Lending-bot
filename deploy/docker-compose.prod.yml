@@ -37,7 +37,9 @@ services:
     env_file:
       - ../.env
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-lending_bot_db_password}@postgres:5432/${POSTGRES_DB:-lending_bot}
+      # Use explicit PG* settings below. A URI can break when the password
+      # contains reserved URL characters, even though PGHOST resolves correctly.
+      - DATABASE_URL=
       - PGHOST=postgres
       - PGPORT=5432
       - PGUSER=${POSTGRES_USER:-postgres}
