@@ -58,6 +58,9 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
       # 遠端目前是部署目錄而非 Git checkout，直接同步最新 compose，避免舊設定被沿用。
       - name: Copy production compose to OCI VM
         uses: appleboy/scp-action@v0.1.7
@@ -65,7 +68,7 @@ jobs:
           host: ${{ secrets.OCI_VM_IP }}
           username: ${{ secrets.OCI_VM_USER }}
           key: ${{ secrets.OCI_SSH_PRIVATE_KEY }}
-          source: "deploy/docker-compose.prod.yml"
+          source: "./deploy/docker-compose.prod.yml"
           target: "/home/${{ secrets.OCI_VM_USER }}/lending-bot/deploy"
           strip_components: 1
           overwrite: true
