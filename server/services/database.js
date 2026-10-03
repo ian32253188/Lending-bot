@@ -843,53 +843,10 @@ async function saveOrderBookSnapshot(snapshot) {
     return data;
 }
 
-async function getRateHistory(currency, hours = 24, select = '*') {
-    const cacheKey = `${currency}:${select}`;
-    const now = Date.now();
-    let cached = rateHistoryCache.get(cacheKey);
-
-    if (process.env.NODE_ENV !== 'test' && cached && now < cached.expiresAt) {
-        const fromTimestamp = now - hours * 60 * 60 * 1000;
-        const filtered = cached.data.filter(r => !r?.recorded_at || new Date(r.recorded_at).getTime() >= fromTimestamp);
-        return downsampleRateHistory(filtered, hours);
-    }
-
-    if (isPostgresConfigured()) {
-        try {
-            const fetchHours = Math.max(hours, 168);
-            const fromDate = new Date(now - fetchHours * 60 * 60 * 1000).toISOString();
-            const col = select === '*' ? '*' : select;
-            const sql = `
-                SELECT ${col} FROM rate_history
-                WHERE currency = $1 AND recorded_at >= $2
-                ORDER BY recorded_at ASC;
-            `;
-            const res = await query(sql, [currency, fromDate]);
-            const rows = res.rows || [];
-
-            if (rows.length > 0 && process.env.NODE_ENV !== 'test') {
-                rateHistoryCache.set(cacheKey, {
-                    data: rows,
-                    expiresAt: now + RATE_HISTORY_CACHE_TTL_MS,
-                });
-            } else if (cached && process.env.NODE_ENV !== 'test') {
-                return downsampleRateHistory(cached.data, hours);
-            }
-
-            const fromTimestamp = now - hours * 60 * 60 * 1000;
-            const filtered = rows.filter(r => !r?.recorded_at || new Date(r.recorded_at).getTime() >= fromTimestamp);
-            return downsampleRateHistory(filtered, hours);
-        } catch (err) {
-            console.error('getRateHistory (pg) error:', err);
-            return cached?.data ? downsampleRateHistory(cached.data, hours) : [];
-        }
-    }
-
+async function fetchSupabaseRateHistory(currency, fromDate, select) {
     const db = getSupabase();
-    if (!db) return cached?.data ? downsampleRateHistory(cached.data, hours) : [];
+    if (!db) return [];
 
-    const fetchHours = Math.max(hours, 168);
-    const fromDate = new Date(now - fetchHours * 60 * 60 * 1000).toISOString();
     const pageSize = 1000;
     const rows = [];
 
@@ -904,7 +861,7 @@ async function getRateHistory(currency, hours = 24, select = '*') {
                 .range(page * pageSize, (page + 1) * pageSize - 1);
 
             if (error) {
-                console.error('getRateHistory error:', error);
+                console.error('getRateHistory (Supabase fallback) error:', error);
                 break;
             }
 
@@ -912,7 +869,61 @@ async function getRateHistory(currency, hours = 24, select = '*') {
             if (!data || data.length < pageSize) break;
         }
     } catch (err) {
-        console.error('getRateHistory fetch exception:', err);
+        console.error('getRateHistory (Supabase fallback) exception:', err);
+    }
+
+    return rows;
+}
+
+async function getRateHistory(currency, hours = 24, select = '*') {
+    const cacheKey = `${currency}:${select}`;
+    const now = Date.now();
+    const fromTimestamp = now - hours * 60 * 60 * 1000;
+    const fetchHours = Math.max(hours, 168);
+    const fromDate = new Date(now - fetchHours * 60 * 60 * 1000).toISOString();
+    const cached = rateHistoryCache.get(cacheKey);
+
+    if (process.env.NODE_ENV !== 'test' && cached && now < cached.expiresAt) {
+        const filtered = cached.data.filter(r => !r?.recorded_at || new Date(r.recorded_at).getTime() >= fromTimestamp);
+        return downsampleRateHistory(filtered, hours);
+    }
+
+    let rows = [];
+    if (isPostgresConfigured()) {
+        try {
+            const sql = `
+                SELECT ${select === '*' ? '*' : select} FROM rate_history
+                WHERE currency = $1 AND recorded_at >= $2
+                ORDER BY recorded_at ASC;
+            `;
+            const res = await query(sql, [currency, fromDate]);
+            rows = res?.rows || [];
+        } catch (err) {
+            console.error('getRateHistory (pg) error:', err);
+        }
+    }
+
+    // Public rate history predates the Oracle trade collector. Until Oracle has
+    // coverage for the requested window, read the missing history from Supabase;
+    // funding_trades remain Oracle-only and are never fetched from Supabase.
+    const earliestLocalTimestamp = rows.reduce((earliest, row) => {
+        const timestamp = new Date(row?.recorded_at).getTime();
+        return Number.isFinite(timestamp) ? Math.min(earliest, timestamp) : earliest;
+    }, Infinity);
+    if (!isPostgresConfigured() || !Number.isFinite(earliestLocalTimestamp) || earliestLocalTimestamp > fromTimestamp) {
+        const legacyRows = await fetchSupabaseRateHistory(currency, fromDate, select);
+        if (legacyRows.length) {
+            const merged = new Map();
+            for (const row of legacyRows) {
+                const timestamp = new Date(row?.recorded_at).getTime();
+                merged.set(Number.isFinite(timestamp) ? String(timestamp) : JSON.stringify(row), row);
+            }
+            for (const row of rows) {
+                const timestamp = new Date(row?.recorded_at).getTime();
+                merged.set(Number.isFinite(timestamp) ? String(timestamp) : JSON.stringify(row), row);
+            }
+            rows = [...merged.values()].sort((a, b) => new Date(a?.recorded_at) - new Date(b?.recorded_at));
+        }
     }
 
     if (rows.length > 0 && process.env.NODE_ENV !== 'test') {
@@ -924,7 +935,6 @@ async function getRateHistory(currency, hours = 24, select = '*') {
         return downsampleRateHistory(cached.data, hours);
     }
 
-    const fromTimestamp = now - hours * 60 * 60 * 1000;
     const filtered = rows.filter(r => !r?.recorded_at || new Date(r.recorded_at).getTime() >= fromTimestamp);
     return downsampleRateHistory(filtered, hours);
 }

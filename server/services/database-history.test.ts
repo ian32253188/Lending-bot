@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
   ranges: [] as Array<[number, number]>,
+  pgQueries: [] as Array<[string, unknown[]]>,
   from: vi.fn(),
 }));
 
@@ -21,12 +22,21 @@ for (const method of ['select', 'eq', 'gte', 'order', 'insert']) {
 
 const supabaseMock = { createClient: vi.fn(() => ({ from: state.from })) };
 
+class MockPool {
+  on() { return this; }
+  async query(sql: string, params: unknown[]) {
+    state.pgQueries.push([sql, params]);
+    return { rows: [] };
+  }
+}
+
 const mockModule = (modulePath: string, exports: unknown) => {
   const resolved = require.resolve(modulePath);
   require.cache[resolved] = { id: resolved, filename: resolved, loaded: true, exports } as any;
 };
 mockModule('../config', configMock);
 mockModule('@supabase/supabase-js', supabaseMock);
+mockModule('pg', { Pool: MockPool });
 
 const db = require('./database');
 
@@ -34,6 +44,7 @@ describe('rate_history repository', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.ranges.length = 0;
+    state.pgQueries.length = 0;
     state.from.mockReturnValue(query);
     query.range.mockImplementation((start: number, end: number) => {
       state.ranges.push([start, end]);
@@ -53,6 +64,27 @@ describe('rate_history repository', () => {
     expect(state.ranges).toEqual([[0, 999], [1000, 1999]]);
     expect(query.eq).toHaveBeenCalledWith('currency', 'USD');
     expect(query.order).toHaveBeenCalledWith('recorded_at', { ascending: true });
+  });
+
+  it('falls back to legacy Supabase history when Oracle has no coverage for the requested window', async () => {
+    const originalRunDbIntegrationTests = process.env.RUN_DB_INTEGRATION_TESTS;
+    configMock.database = { host: 'postgres', password: 'test-password' };
+    process.env.RUN_DB_INTEGRATION_TESTS = '1';
+
+    try {
+      const rows = await db.getRateHistory('USD', 720, 'recorded_at,avg_rate,high_rate,low_rate');
+
+      expect(state.pgQueries).toHaveLength(1);
+      expect(rows).toHaveLength(1002);
+      expect(state.ranges).toEqual([[0, 999], [1000, 1999]]);
+    } finally {
+      delete configMock.database;
+      if (originalRunDbIntegrationTests === undefined) {
+        delete process.env.RUN_DB_INTEGRATION_TESTS;
+      } else {
+        process.env.RUN_DB_INTEGRATION_TESTS = originalRunDbIntegrationTests;
+      }
+    }
   });
 
   it('maps a rate snapshot to the rate_history schema', async () => {
