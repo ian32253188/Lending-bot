@@ -68,7 +68,7 @@ jobs:
           host: ${{ secrets.OCI_VM_IP }}
           username: ${{ secrets.OCI_VM_USER }}
           key: ${{ secrets.OCI_SSH_PRIVATE_KEY }}
-          source: "./deploy/docker-compose.prod.yml"
+          source: "deploy/docker-compose.prod.yml"
           target: "/home/${{ secrets.OCI_VM_USER }}/lending-bot/deploy"
           strip_components: 1
           overwrite: true
