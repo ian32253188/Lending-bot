@@ -151,4 +151,29 @@ describe('rate_history repository', () => {
       }
     }
   });
+
+  it('creates dashboard history, earnings, and log tables on an existing PostgreSQL volume', async () => {
+    const originalRunDbIntegrationTests = process.env.RUN_DB_INTEGRATION_TESTS;
+    configMock.database = { host: 'postgres', password: 'test-password' };
+    process.env.RUN_DB_INTEGRATION_TESTS = '1';
+
+    try {
+      const ready = await db.ensureApplicationDataTables();
+      expect(ready).toBe(true);
+      const sql = state.pgQueries.map(([statement]) => statement).join('\n');
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS funding_offers');
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS earnings');
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS operation_logs');
+      expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_funding_offers_status');
+      expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_earnings_currency_time');
+      expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_logs_time');
+    } finally {
+      delete configMock.database;
+      if (originalRunDbIntegrationTests === undefined) {
+        delete process.env.RUN_DB_INTEGRATION_TESTS;
+      } else {
+        process.env.RUN_DB_INTEGRATION_TESTS = originalRunDbIntegrationTests;
+      }
+    }
+  });
 });

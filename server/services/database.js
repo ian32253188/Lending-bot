@@ -13,6 +13,7 @@ const RATE_HISTORY_CACHE_TTL_MS = 60 * 60 * 1000;
 let fundingTradesSchemaPromise = null;
 let fundingTradesSchemaErrorCode = null;
 let userSettingsSchemaPromise = null;
+let applicationDataSchemaPromise = null;
 
 /**
  * 判斷是否配置了原生 PostgreSQL
@@ -151,6 +152,66 @@ async function ensureUserBotSettingsTable() {
     });
 
     return userSettingsSchemaPromise;
+}
+
+/**
+ * Ensure tables used by dashboard history/logging exist on persistent PostgreSQL
+ * volumes. Docker init scripts only run for a brand-new data volume, so this
+ * idempotent upgrade also repairs existing production databases without deleting
+ * any rows.
+ */
+async function ensureApplicationDataTables() {
+    if (!isPostgresConfigured()) return false;
+    if (applicationDataSchemaPromise) return applicationDataSchemaPromise;
+
+    applicationDataSchemaPromise = query(`
+        CREATE TABLE IF NOT EXISTS funding_offers (
+            id SERIAL PRIMARY KEY,
+            offer_id BIGINT UNIQUE,
+            currency VARCHAR(10) NOT NULL,
+            amount DECIMAL(20, 8) NOT NULL,
+            rate DECIMAL(20, 10) NOT NULL,
+            period INTEGER NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'active',
+            user_id UUID,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            closed_at TIMESTAMPTZ
+        );
+        CREATE INDEX IF NOT EXISTS idx_funding_offers_status ON funding_offers (status);
+        CREATE INDEX IF NOT EXISTS idx_funding_offers_user ON funding_offers (user_id);
+
+        CREATE TABLE IF NOT EXISTS earnings (
+            id SERIAL PRIMARY KEY,
+            currency VARCHAR(10) NOT NULL,
+            amount DECIMAL(20, 8) NOT NULL,
+            rate DECIMAL(20, 10) NOT NULL,
+            period INTEGER,
+            earned_at TIMESTAMPTZ DEFAULT NOW(),
+            user_id UUID
+        );
+        CREATE INDEX IF NOT EXISTS idx_earnings_currency_time ON earnings (currency, earned_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_earnings_user ON earnings (user_id);
+
+        CREATE TABLE IF NOT EXISTS operation_logs (
+            id SERIAL PRIMARY KEY,
+            level VARCHAR(10) NOT NULL DEFAULT 'info',
+            category VARCHAR(50) NOT NULL,
+            message TEXT NOT NULL,
+            metadata JSONB,
+            user_id UUID,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_logs_time ON operation_logs (created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_logs_category ON operation_logs (category);
+        CREATE INDEX IF NOT EXISTS idx_logs_user ON operation_logs (user_id);
+    `).then(() => true).catch(error => {
+        applicationDataSchemaPromise = null;
+        console.error('ensureApplicationDataTables error:', error);
+        return false;
+    });
+
+    return applicationDataSchemaPromise;
 }
 
 /**
@@ -1328,6 +1389,7 @@ module.exports = {
     query,
     isPostgresConfigured,
     ensureUserBotSettingsTable,
+    ensureApplicationDataTables,
     saveOffer, closeOffer, getActiveOffers,
     saveLoan, closeLoan, getActiveLoans,
     saveEarning, getEarnings, deleteEarnings,

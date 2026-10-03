@@ -76,6 +76,9 @@ app.get('/api/health', async (req, res) => {
     const userSettingsTableReady = db.isPostgresConfigured()
         ? await db.ensureUserBotSettingsTable()
         : null;
+    const applicationDataTablesReady = db.isPostgresConfigured()
+        ? await db.ensureApplicationDataTables()
+        : null;
     const publicWs = getBitfinexPublicWS();
     const memory = process.memoryUsage();
     const fundingTrades = typeof db.getFundingTradeDiagnostics === 'function'
@@ -90,6 +93,7 @@ app.get('/api/health', async (req, res) => {
             ? getTelegramRoutingStats()
             : { sharedBotActive: false, registeredUsers: 0 },
         userSettingsTableReady,
+        applicationDataTablesReady,
         fundingTradeBackfill: typeof getFundingTradeBackfillStatus === 'function'
             ? getFundingTradeBackfillStatus()
             : { state: 'unknown' },
@@ -247,7 +251,14 @@ async function startup() {
 
     const db = require('./services/database');
     let userSettingsReady = !db.isPostgresConfigured();
+    let applicationDataTablesReady = !db.isPostgresConfigured();
     if (db.isPostgresConfigured()) {
+        applicationDataTablesReady = await db.ensureApplicationDataTables();
+        if (applicationDataTablesReady) {
+            logger.info('server', '✅ operation_logs、earnings、funding_offers 資料表已就緒');
+        } else {
+            logger.error('server', '❌ operation_logs、earnings、funding_offers 初始化失敗');
+        }
         userSettingsReady = await db.ensureUserBotSettingsTable();
         if (userSettingsReady) {
             logger.info('server', '✅ user_bot_settings 資料表已就緒');
@@ -264,12 +275,14 @@ async function startup() {
     const { startDailyCleanup } = require('./services/analysis/cleanup');
     const { startFundingTradeCollector } = require('./services/market-summary');
 
-    if (userSettingsReady) {
+    if (userSettingsReady && applicationDataTablesReady) {
         try {
             await autoResumeAll();
         } catch (err) {
             logger.error('server', '放貸引擎自動恢復失敗', { error: err.message });
         }
+    } else {
+        logger.error('server', '資料表未就緒；暫停自動恢復放貸引擎');
     }
 
     try {
