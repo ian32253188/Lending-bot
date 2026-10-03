@@ -1,4 +1,5 @@
 const rest = require('./bitfinex/rest');
+const { isPublicTickerFresh } = require('./bitfinex/ws');
 const { withRetry } = require('../utils/retry');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -62,6 +63,7 @@ function getCachedRateHistory(db, now = Date.now()) {
 }
 
 function numberOrNull(value) {
+    if (value === null || value === undefined || value === '') return null;
     const number = Number(value);
     return Number.isFinite(number) ? number : null;
 }
@@ -305,14 +307,21 @@ async function loadRecentFundingTrades({ db, restClient = rest, now = Date.now()
     let stored = [];
     let latestTimestamp = null;
 
+    let storageReadFailed = false;
     if (db?.getFundingTrades) {
-        stored = await db.getFundingTrades('USD', from, to);
-        if (db.getLatestFundingTradeTimestamp) {
-            latestTimestamp = await db.getLatestFundingTradeTimestamp('USD');
+        try {
+            stored = await db.getFundingTrades('USD', from, to);
+            if (db.getLatestFundingTradeTimestamp) {
+                latestTimestamp = await db.getLatestFundingTradeTimestamp('USD');
+            }
+        } catch (error) {
+            storageReadFailed = true;
+            console.error('Funding trade Oracle read failed; trying Bitfinex public REST:', error.message);
         }
     }
 
-    const needsRepair = !stored.length
+    const needsRepair = storageReadFailed
+        || !stored.length
         || !Number.isFinite(Number(latestTimestamp))
         || Number(latestTimestamp) < now - FUNDING_TRADES_STALE_AFTER_MS;
     // 即使最新一頁已存在，也要確保較早的 24 小時分段補抓任務有啟動。
@@ -323,13 +332,18 @@ async function loadRecentFundingTrades({ db, restClient = rest, now = Date.now()
         const rows = await fetchRecentFundingTrades(restClient);
         const fresh = rows.map(parseFundingTrade).filter(Boolean);
         if (fresh.length && db?.upsertFundingTrades) {
-            await db.upsertFundingTrades(fresh, 'USD');
+            try {
+                await db.upsertFundingTrades(fresh, 'USD');
+            } catch (error) {
+                console.error('Funding trade Oracle write failed; showing verified public REST rows:', error.message);
+            }
         }
         return mergeFundingTrades(stored, fresh);
     } catch (error) {
         // Collector/API repair must not take down the dashboard; retain any Oracle data.
         console.error('Funding trade self-heal error:', error.message);
-        return stored;
+        if (stored.length) return stored;
+        throw error;
     }
 }
 
@@ -487,6 +501,8 @@ function aggregateDailyRateHistory(history, now = Date.now(), days = 30) {
  */
 async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restClient = rest, historyData, tradeData } = {}) {
     const marketData = publicWs?.getMarketData?.('USD') || {};
+    const tickerUpdatedAt = numberOrNull(marketData.tickerLastUpdate);
+    const tickerFresh = isPublicTickerFresh(marketData, now);
     const [tradesResult, historyResult] = await Promise.allSettled([
         tradeData !== undefined
             ? Promise.resolve(tradeData)
@@ -500,10 +516,12 @@ async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restC
                 : Promise.resolve([]),
     ]);
 
-    const trades = (tradesResult.status === 'fulfilled' && Array.isArray(tradesResult.value))
+    const tradeDataAvailable = tradesResult.status === 'fulfilled' && Array.isArray(tradesResult.value);
+    const historyDataAvailable = historyResult.status === 'fulfilled' && Array.isArray(historyResult.value);
+    const trades = tradeDataAvailable
         ? tradesResult.value.map(parseFundingTrade).filter(Boolean)
         : [];
-    const rawHistory = (historyResult.status === 'fulfilled' && Array.isArray(historyResult.value))
+    const rawHistory = historyDataAvailable
         ? historyResult.value
         : [];
     const history = aggregateDailyRateHistory(rawHistory, now, 30);
@@ -513,9 +531,23 @@ async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restC
         ? trades.reduce((sum, trade) => sum + trade.rate * trade.amount, 0) / tradeVolume
         : null;
     const tradeRates = trades.map(trade => trade.rate);
-    const currentRate = weightedRate ?? numberOrNull(marketData.lastPrice) ?? numberOrNull(marketData.frr);
-    const high24h = numberOrNull(marketData.high) ?? (tradeRates.length ? Math.max(...tradeRates) : null);
-    const low24h = numberOrNull(marketData.low) ?? (tradeRates.length ? Math.min(...tradeRates) : null);
+    const tickerLastPrice = tickerFresh ? numberOrNull(marketData.lastPrice) : null;
+    const tickerFrr = tickerFresh ? numberOrNull(marketData.frr) : null;
+    const tickerHigh = tickerFresh ? numberOrNull(marketData.high) : null;
+    const tickerLow = tickerFresh ? numberOrNull(marketData.low) : null;
+    const tickerVolume = tickerFresh ? numberOrNull(marketData.volume) : null;
+    const currentRate = weightedRate ?? tickerLastPrice ?? tickerFrr;
+    const currentRateSource = weightedRate !== null
+        ? 'funding_trades_24h_vwap'
+        : tickerLastPrice !== null
+            ? 'bitfinex_public_ticker_last_price'
+            : tickerFrr !== null
+                ? 'bitfinex_public_ticker_frr'
+                : null;
+    const lastTradeTimestamp = trades.reduce((latest, trade) => Math.max(latest, trade.timestamp), 0) || null;
+    const currentRateObservedAt = weightedRate !== null ? lastTradeTimestamp : tickerUpdatedAt;
+    const high24h = tickerHigh ?? (tradeRates.length ? Math.max(...tradeRates) : null);
+    const low24h = tickerLow ?? (tradeRates.length ? Math.min(...tradeRates) : null);
 
     const averageRates = numericHistory(history, 'avg_rate');
     const highRates = numericHistory(history, 'high_rate');
@@ -537,20 +569,40 @@ async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restC
         currentApy: annualizedPercent(currentRate),
         high24hApy: annualizedPercent(high24h),
         low24hApy: annualizedPercent(low24h),
-        volume24h: numberOrNull(marketData.volume) ?? tradeVolume,
+        volume24h: tickerVolume ?? (tradeDataAvailable ? tradeVolume : null),
+        volume24hSource: tickerVolume !== null
+            ? 'bitfinex_public_ticker'
+            : tradeDataAvailable ? 'funding_trades_24h_sum' : 'unavailable',
+        high24hSource: tickerHigh !== null ? 'bitfinex_public_ticker' : tradeRates.length ? 'funding_trades_24h' : 'unavailable',
+        low24hSource: tickerLow !== null ? 'bitfinex_public_ticker' : tradeRates.length ? 'funding_trades_24h' : 'unavailable',
+        currentRateSource,
+        currentRateObservedAt: currentRateObservedAt ? new Date(currentRateObservedAt).toISOString() : null,
+        tickerFresh,
+        tickerUpdatedAt: tickerUpdatedAt ? new Date(tickerUpdatedAt).toISOString() : null,
+        tradeDataAvailable,
+        historyDataAvailable,
+        marketDataSources: {
+            trades: db?.getFundingTrades
+                ? 'Oracle PostgreSQL primary; Bitfinex public REST self-healing fallback'
+                : 'Bitfinex public REST API',
+            rateHistory: db?.getRateHistory
+                ? 'Oracle PostgreSQL with legacy Supabase fallback when local coverage is incomplete'
+                : 'unavailable',
+            ticker: tickerFresh ? 'Bitfinex public Funding Ticker' : 'stale or unavailable',
+        },
         average30dApy: averageRates.length
             ? annualizedPercent(averageRates.reduce((sum, rate) => sum + rate, 0) / averageRates.length)
             : null,
         high30dApy: highRates.length ? annualizedPercent(Math.max(...highRates)) : null,
         low30dApy: lowRates.length ? annualizedPercent(Math.min(...lowRates)) : null,
-        hourlyMatches: buildHourlyFundingMatches(trades, now),
-        hourlyMatches24: buildHourlyFundingMatches(trades, now, 24, true),
-        collectedTradeCount: trades.length,
-        historyPointCount: history.length,
-        historyCoverageDays: history.length,
+        hourlyMatches: tradeDataAvailable ? buildHourlyFundingMatches(trades, now) : [],
+        hourlyMatches24: tradeDataAvailable ? buildHourlyFundingMatches(trades, now, 24, true) : [],
+        collectedTradeCount: tradeDataAvailable ? trades.length : null,
+        historyPointCount: historyDataAvailable ? history.length : null,
+        historyCoverageDays: historyDataAvailable ? history.length : null,
         historyWindowDays: 30,
-        historyCoverageStartDate: history[0]?.recorded_at?.slice(0, 10) || null,
-        historyCoverageEndDate: history[history.length - 1]?.recorded_at?.slice(0, 10) || null,
+        historyCoverageStartDate: historyDataAvailable ? history[0]?.recorded_at?.slice(0, 10) || null : null,
+        historyCoverageEndDate: historyDataAvailable ? history[history.length - 1]?.recorded_at?.slice(0, 10) || null : null,
     };
 }
 
@@ -569,14 +621,20 @@ async function getCachedFundingMarketSummary(options = {}) {
             now,
         });
 
+    const historyDataPromise = options.historyData !== undefined
+        ? Promise.resolve(options.historyData)
+        : getCachedRateHistory(options.db, now);
+
     cachePromise = Promise.all([
-        tradeDataPromise.catch(() => undefined),
-        getCachedRateHistory(options.db, now).catch(() => []),
+        tradeDataPromise.then(value => ({ available: Array.isArray(value), value }))
+            .catch(error => ({ available: false, error })),
+        historyDataPromise.then(value => ({ available: Array.isArray(value), value }))
+            .catch(error => ({ available: false, error })),
     ])
-    .then(([tradeData, historyData]) => buildFundingMarketSummary({
+    .then(([tradeResult, historyResult]) => buildFundingMarketSummary({
         ...options,
-        tradeData,
-        historyData,
+        tradeData: tradeResult.available ? tradeResult.value : Promise.reject(tradeResult.error),
+        historyData: historyResult.available ? historyResult.value : Promise.reject(historyResult.error),
     }))
         .then(summary => {
             cachedSummary = summary;

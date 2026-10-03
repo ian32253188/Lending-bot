@@ -11,6 +11,7 @@ const PERIODS = [
 export default function EarningsPanel({ token, embedded = false }) {
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
 
     useEffect(() => {
         fetchStats();
@@ -24,9 +25,12 @@ export default function EarningsPanel({ token, embedded = false }) {
                 headers: { Authorization: `Bearer ${token}` },
             });
             const data = await res.json();
+            if (!res.ok) throw new Error(data.error || `收益統計讀取失敗（HTTP ${res.status}）`);
             setStats(data);
+            setError('');
         } catch (err) {
             console.error('收益統計載入失敗', err);
+            setError(err.message || '收益統計暫不可用。');
         } finally {
             setLoading(false);
         }
@@ -60,13 +64,16 @@ export default function EarningsPanel({ token, embedded = false }) {
     }
 
     if (loading) return <div className={`${embedded ? 'earnings-panel-content' : 'panel'} loading-shimmer`} style={{ height: 180 }} />;
-    if (!stats) return null;
+    if (!stats) return <div className={embedded ? 'earnings-panel-content' : 'panel'} role="alert" style={{ color: 'var(--danger)' }}>
+        收益統計暫不可用：{error || '尚未取得資料'} <button type="button" className="btn btn-sm btn-outline" onClick={fetchStats}>重新載入</button>
+    </div>;
 
     const accumulated = stats.allTime || { total: 0, byCurrency: {} };
     const formatEarnings = value => `$${Number(value || 0).toFixed(4)}`;
 
     return (
         <div className={embedded ? 'earnings-panel-content' : 'panel'}>
+            {error && <div className="market-error" role="alert"><strong>收益統計暫時無法更新</strong><span>{error}；畫面保留上次成功資料。</span></div>}
             <div className="panel-header">
                 <h3>💰 收益統計</h3>
                 <button
@@ -125,8 +132,11 @@ export default function EarningsPanel({ token, embedded = false }) {
                             </div>
                         </div>
                     ))}
+                    {stats.utilizationDataAvailable && <div style={{ color: 'var(--text-tertiary)', fontSize: '0.72rem', marginTop: 6 }}>來源：{stats.utilizationDataSource}</div>}
+                    {!stats.utilizationDataAvailable && <div role="status" style={{ color: 'var(--text-secondary)', fontSize: '0.78rem' }}>{stats.utilizationError || '個人帳戶資料不可用；利用率不顯示為 0。'}</div>}
                 </div>
             </div>
+            {stats.dataSource && <div style={{ color: 'var(--text-tertiary)', fontSize: '0.72rem', marginTop: 8 }}>收益來源：{stats.dataSource}</div>}
         </div>
     );
 }

@@ -100,6 +100,43 @@ router.get('/earnings/stats', async (req, res) => {
             db.getEarnings(null, null, null, userId),
         ]);
 
+        const engine = getBot(userId);
+        let utilization = null;
+        let utilizationDataAvailable = false;
+        let utilizationDataSource = null;
+        let utilizationError = null;
+        if (engine?.state?.wallets && engine?.state?.activeCredits) {
+            utilization = {};
+            for (const [currency, wallet] of Object.entries(engine.state.wallets)) {
+                const balance = Number(wallet?.balance);
+                const activeAmount = (engine.state.activeCredits[currency] || [])
+                    .reduce((sum, credit) => sum + Math.abs(Number(credit.amount) || 0), 0);
+                utilization[currency] = Number.isFinite(balance) && balance > 0
+                    ? Math.min(1, activeAmount / balance)
+                    : 0;
+            }
+            utilizationDataAvailable = true;
+            utilizationDataSource = 'Bitfinex 私有 WebSocket（運行中引擎）';
+        } else {
+            const { getReadOnlyAccountSnapshot } = require('../services/private-account-status');
+            const account = await getReadOnlyAccountSnapshot(userId);
+            if (account.accountDataAvailable) {
+                utilization = {};
+                for (const [currency, wallet] of Object.entries(account.wallets || {})) {
+                    const balance = Number(wallet?.balance);
+                    const activeAmount = (account.activeCredits?.[currency] || [])
+                        .reduce((sum, credit) => sum + Math.abs(Number(credit.amount) || 0), 0);
+                    utilization[currency] = Number.isFinite(balance) && balance > 0
+                        ? Math.min(1, activeAmount / balance)
+                        : 0;
+                }
+                utilizationDataAvailable = true;
+                utilizationDataSource = account.accountDataSource;
+            } else {
+                utilizationError = account.accountDataError || 'Bitfinex 個人帳戶資料不可用。';
+            }
+        }
+
         function sumByCurrency(rows) {
             const result = {};
             for (const row of rows) {
@@ -118,21 +155,11 @@ router.get('/earnings/stats', async (req, res) => {
             month: { byCurrency: sumByCurrency(month), total: totalSum(month) },
             year: { byCurrency: sumByCurrency(year), total: totalSum(year) },
             allTime: { byCurrency: sumByCurrency(all), total: totalSum(all) },
-            // 資金利用率
-            utilization: (() => {
-                try {
-                    const engine = getBot(userId);
-                    if (!engine) return {};
-                    const util = {};
-                    for (const [cur, wallet] of Object.entries(engine.state.wallets)) {
-                        const total = wallet.balance || 0;
-                        const activeCredits = engine.state.activeCredits?.[cur] || [];
-                        const activeAmount = activeCredits.reduce((sum, c) => sum + Math.abs(c.amount || 0), 0);
-                        util[cur] = total > 0 ? Math.min(1, activeAmount / total) : 0;
-                    }
-                    return util;
-                } catch { return {}; }
-            })(),
+            dataSource: `${db.isPostgresConfigured() ? 'Oracle PostgreSQL' : 'Supabase'} 已存收益紀錄（可用時同步 Bitfinex Ledger）`,
+            utilization,
+            utilizationDataAvailable,
+            utilizationDataSource,
+            utilizationError,
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -210,6 +237,8 @@ router.get('/history/offers', async (req, res) => {
     try {
         const userId = req.user.id;
         const { currency } = req.query;
+        res.setHeader('X-Data-Source', db.isPostgresConfigured() ? 'Oracle PostgreSQL' : 'Supabase');
+        res.setHeader('X-Record-Scope', 'Bot-tracked active offers');
         const data = await db.getActiveOffers(currency || null, userId);
         res.json(data);
     } catch (err) {
@@ -222,6 +251,8 @@ router.get('/history/loans', async (req, res) => {
     try {
         const userId = req.user.id;
         const { currency } = req.query;
+        res.setHeader('X-Data-Source', db.isPostgresConfigured() ? 'Oracle PostgreSQL' : 'Supabase');
+        res.setHeader('X-Record-Scope', 'Bot-tracked active loans');
         const data = await db.getActiveLoans(currency || null, userId);
         res.json(data);
     } catch (err) {
@@ -261,26 +292,35 @@ router.get('/logs', async (req, res) => {
 // 取得幣種輪動建議
 router.get('/suggestions', async (req, res) => {
     try {
-        const { getBitfinexPublicWS } = require('../services/bitfinex/ws');
+        const { getBitfinexPublicWS, isPublicTickerFresh } = require('../services/bitfinex/ws');
         const publicWs = getBitfinexPublicWS();
         const usdData = publicWs.getMarketData('USD');
         const usdtData = publicWs.getMarketData('USDT');
-
-        const usdRate = usdData?.frr || 0.00038;  // fallback 0.038%
-        const usdtRate = usdtData?.frr || 0.00024; // fallback 0.024%
+        const usdRate = isPublicTickerFresh(usdData) ? Number(usdData.frr) : null;
+        const usdtRate = isPublicTickerFresh(usdtData) ? Number(usdtData.frr) : null;
+        const available = usdRate !== null && usdtRate !== null;
+        const updatedAt = available
+            ? new Date(Math.min(usdData.tickerLastUpdate, usdtData.tickerLastUpdate)).toISOString()
+            : null;
 
         const suggestions = [];
-        const diff = usdRate - usdtRate;
-        if (Math.abs(diff) > 0.00005) { // 利率相差超過萬分之 0.5 (0.005%)
-            const better = diff > 0 ? 'USD' : 'USDT';
-            const worse = diff > 0 ? 'USDT' : 'USD';
-            const diffPct = (Math.abs(diff) * 100).toFixed(4);
-            suggestions.push({
-                reason: `💡 當前 ${better} 利率比 ${worse} 高出約 ${diffPct}%/天，建議增加 ${better} 的放貸權重以獲得更高年化收益。`
-            });
+        if (available) {
+            const diff = usdRate - usdtRate;
+            if (Math.abs(diff) > 0.00005) { // 利率相差超過萬分之 0.5 (0.005%)
+                const better = diff > 0 ? 'USD' : 'USDT';
+                const worse = diff > 0 ? 'USDT' : 'USD';
+                const diffPct = (Math.abs(diff) * 100).toFixed(4);
+                suggestions.push({
+                    reason: `💡 當前 ${better} FRR 比 ${worse} 高出約 ${diffPct}%/天；這是公開市場參考值，不代表實際成交收益。`
+                });
+            }
         }
 
         res.json({
+            available,
+            source: 'Bitfinex 公開 Funding Ticker（FRR）',
+            updatedAt,
+            error: available ? null : 'USD 或 USDT 的公開行情尚未更新或已超過 5 分鐘，暫不能比較。',
             rates: {
                 USD: usdRate,
                 USDT: usdtRate

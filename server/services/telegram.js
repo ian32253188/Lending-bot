@@ -6,6 +6,7 @@ const { buildFundingMarketSummary } = require('./market-summary');
 const { RATE_STRATEGY_LABELS, PERIOD_DAYS, normalizeStrategyConfig } = require('./strategy-config');
 const { normalizeTelegramChatId } = require('./telegram-routing');
 const { getUsdToTwdRate, convertToTwd } = require('./exchange-rate');
+const { isPublicTickerFresh } = require('./bitfinex/ws');
 
 // ============== 多租戶 Telegram Bot 註冊表 ==============
 // One polling process handles all users. Routes are keyed by userId and each
@@ -461,17 +462,37 @@ function formatFundingMarketSection(summary) {
     if (!summary) return `📈 <b>fUSD 市場行情</b>\n  └─ 公開市場資料暫時無法取得\n\n`;
 
     let msg = `📈 <b>fUSD 市場行情</b>（Bitfinex 公開資料）\n`;
-    msg += `  ├─ 目前成交均值: <b>${formatPercent(summary.currentApy)}</b>\n`;
+    const currentRateLabel = summary.currentRateSource === 'funding_trades_24h_vwap'
+        ? '近 24H 成交加權均值'
+        : summary.currentRateSource === 'bitfinex_public_ticker_last_price'
+            ? '最新公開成交價'
+            : summary.currentRateSource === 'bitfinex_public_ticker_frr'
+                ? '公開 FRR'
+                : '成交利率';
+    msg += `  ├─ ${currentRateLabel}: <b>${formatPercent(summary.currentApy)}</b>\n`;
     msg += `  ├─ 24H 區間: ${formatPercent(summary.low24hApy)} – ${formatPercent(summary.high24hApy)}\n`;
-    msg += `  ├─ 24H 最高: ${formatPercent(summary.high24hApy)}\n`;
-    msg += `  ├─ 24H 成交額: ${formatAmount(summary.volume24h)}\n`;
+    msg += `  ├─ 24H 最高: ${formatPercent(summary.high24hApy)}（${summary.high24hSource || '來源未知'}）\n`;
+    msg += `  ├─ 24H 成交額: ${formatAmount(summary.volume24h)}（${summary.volume24hSource || '來源未知'}）\n`;
     msg += `  ├─ 30 日平均: ${formatPercent(summary.average30dApy)}\n`;
     msg += `  ├─ 30 日最高: ${formatPercent(summary.high30dApy)}\n`;
     msg += `  ├─ 30 日最低: ${formatPercent(summary.low30dApy)}\n`;
+    if (summary.currentRateSource) {
+        msg += `  ├─ 成交均值來源: ${summary.currentRateSource}${summary.currentRateObservedAt ? `（截至 ${new Date(summary.currentRateObservedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}）` : ''}\n`;
+    }
     if (summary.historyCoverageDays != null) {
         const start = summary.historyCoverageStartDate || '—';
         const end = summary.historyCoverageEndDate || '—';
         msg += `  ├─ 歷史覆蓋: ${summary.historyCoverageDays}/${summary.historyWindowDays || 30} 日（${start} 至 ${end}）\n`;
+    }
+    if (summary.marketDataSources?.rateHistory) {
+        msg += `  ├─ 歷史來源: ${summary.marketDataSources.rateHistory}\n`;
+    }
+
+    if (summary.tradeDataAvailable === false) {
+        msg += `  └─ 近 24H 撮合: 資料來源暫不可用（不等同無成交）\n`;
+        if (summary.marketDataSources?.trades) msg += `      來源: ${summary.marketDataSources.trades}\n`;
+        msg += `\n`;
+        return msg;
     }
 
     const hasFullHourlyWindow = Array.isArray(summary.hourlyMatches24) && summary.hourlyMatches24.length > 0;
@@ -511,7 +532,8 @@ async function buildGlobalSummaryMessage(strategy, publicWs, db, marketSummary =
     for (const cur of ['USD', 'USDT']) {
         const md = publicWs.getMarketData(cur);
         if (!md) continue;
-        const currentFRR = md.frr !== null && md.frr !== undefined && Number.isFinite(Number(md.frr))
+        const tickerFresh = isPublicTickerFresh(md);
+        const currentFRR = tickerFresh && md.frr !== null && md.frr !== undefined && Number.isFinite(Number(md.frr))
             ? `${(Number(md.frr) * 100).toFixed(4)}%/天`
             : '—';
         let average7dRate = null;
@@ -538,6 +560,10 @@ async function buildGlobalSummaryMessage(strategy, publicWs, db, marketSummary =
             ? `${(Number(average7dRate) * 100).toFixed(4)}%/天${historyDays ? `（${historyDays}/7 日有資料${latestHistoryAt ? `，截至 ${new Date(latestHistoryAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}` : ''}）` : ''}`
             : '—';
         msg += `📊 <b>${cur} 市場</b>: FRR ${currentFRR} | 7d 均值 ${avg7d}\n`;
+        const tickerUpdated = tickerFresh && md.tickerLastUpdate
+            ? `，更新 ${new Date(md.tickerLastUpdate).toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false })}`
+            : '';
+        msg += `  └─ FRR 來源: Bitfinex 公開 Funding Ticker${tickerUpdated || '（尚無新資料）'}\n`;
     }
 
     const { getReadOnlyAccountSnapshot } = require('./private-account-status');

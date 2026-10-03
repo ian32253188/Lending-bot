@@ -16,6 +16,7 @@ const DAYS = ['日', '一', '二', '三', '四', '五', '六'];
 export default function HeatmapView({ token }) {
     const [heatmap, setHeatmap] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
     const [tooltip, setTooltip] = useState(null);
 
     useEffect(() => {
@@ -25,9 +26,13 @@ export default function HeatmapView({ token }) {
                     headers: { Authorization: `Bearer ${token}` },
                 });
                 const data = await res.json();
+                if (!res.ok) throw new Error(data.error || `收益日曆讀取失敗（HTTP ${res.status}）`);
+                if (!Array.isArray(data)) throw new Error('收益日曆服務回傳格式異常。');
                 setHeatmap(data);
+                setError('');
             } catch (err) {
                 console.error('熱力圖載入失敗', err);
+                setError(err.message || '收益日曆暫時無法讀取。');
             } finally {
                 setLoading(false);
             }
@@ -36,6 +41,7 @@ export default function HeatmapView({ token }) {
     }, [token]);
 
     if (loading) return <div className="panel loading-shimmer" style={{ height: 180 }} />;
+    if (error) return <div className="panel market-error" role="alert"><strong>收益日曆暫不可用</strong><span>{error}；不代表沒有收益紀錄。</span></div>;
 
     // 建立日期對應 map
     const amountByDate = {};

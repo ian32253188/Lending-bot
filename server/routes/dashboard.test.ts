@@ -16,6 +16,12 @@ const mocks = vi.hoisted(() => {
     engine,
     getBot: vi.fn().mockReturnValue(engine),
     getInactiveDashboardStatusForUser: vi.fn().mockResolvedValue({ running: false, inactive: true }),
+    getReadOnlyAccountSnapshot: vi.fn().mockResolvedValue({
+      accountDataAvailable: false,
+      accountDataError: 'Bitfinex signature invalid',
+      activeCredits: { USD: null, USDT: null },
+      wallets: { USD: { balance: null }, USDT: { balance: null } },
+    }),
     getCachedFundingMarketSummary: vi.fn().mockResolvedValue({ currentApy: 8.9, hourlyMatches24: [] }),
     syncUserEarnings: vi.fn().mockResolvedValue(undefined),
     getRateHistory: vi.fn().mockResolvedValue([{ recorded_at: '2026-08-28T00:00:00Z' }]),
@@ -26,22 +32,37 @@ const mocks = vi.hoisted(() => {
     deleteEarnings: vi.fn().mockResolvedValue(true),
     getActiveOffers: vi.fn().mockResolvedValue([{ offer_id: 1 }]),
     getActiveLoans: vi.fn().mockResolvedValue([{ loan_id: 2 }]),
+    isPostgresConfigured: vi.fn().mockReturnValue(true),
     getLogs: vi.fn().mockResolvedValue([
       { id: 1, level: 'info', category: 'engine', message: 'started' },
       { id: 2, level: 'warn', category: 'engine', message: 'delayed' },
       { id: 3, level: 'info', category: 'telegram', message: 'started' },
     ]),
+    publicMarketData: {
+      USD: { frr: 0.0004, tickerLastUpdate: Date.now() },
+      USDT: { frr: 0.0002, tickerLastUpdate: Date.now() },
+    },
+    getMarketData: vi.fn((currency: string) => currency === 'USD'
+      ? mocks.publicMarketData.USD
+      : mocks.publicMarketData.USDT),
   };
 });
 
 const managerMock = { getBot: mocks.getBot };
 const marketSummaryMock = { getCachedFundingMarketSummary: mocks.getCachedFundingMarketSummary };
 const dashboardStatusMock = { getInactiveDashboardStatusForUser: mocks.getInactiveDashboardStatusForUser };
+const privateAccountStatusMock = { getReadOnlyAccountSnapshot: mocks.getReadOnlyAccountSnapshot };
 const syncMock = { syncUserEarnings: mocks.syncUserEarnings };
 const wsMock = {
   getBitfinexPublicWS: () => ({
-    getMarketData: (currency: string) => currency === 'USD' ? { frr: 0.0004 } : { frr: 0.0002 },
+    getMarketData: mocks.getMarketData,
   }),
+  isPublicTickerFresh: (marketData: any) => Number.isFinite(Number(marketData?.tickerLastUpdate))
+    && Number(marketData.tickerLastUpdate) > 0
+    && Date.now() - Number(marketData.tickerLastUpdate) <= 5 * 60 * 1000
+    && marketData.frr !== null
+    && marketData.frr !== undefined
+    && Number.isFinite(Number(marketData.frr)),
 };
 const databaseMock = {
   getRateHistory: mocks.getRateHistory,
@@ -49,6 +70,7 @@ const databaseMock = {
   deleteEarnings: mocks.deleteEarnings,
   getActiveOffers: mocks.getActiveOffers,
   getActiveLoans: mocks.getActiveLoans,
+  isPostgresConfigured: mocks.isPostgresConfigured,
   getLogs: mocks.getLogs,
 };
 
@@ -59,6 +81,7 @@ const mockModule = (modulePath: string, exports: unknown) => {
 mockModule('../services/engine/manager', managerMock);
 mockModule('../services/market-summary', marketSummaryMock);
 mockModule('../services/dashboard-status', dashboardStatusMock);
+mockModule('../services/private-account-status', privateAccountStatusMock);
 mockModule('../services/engine/sync', syncMock);
 mockModule('../services/bitfinex/ws', wsMock);
 mockModule('../services/database', databaseMock);
@@ -80,6 +103,11 @@ describe('Dashboard routes', () => {
       { currency: 'USD', amount: 1.25, earned_at: '2026-08-28T01:00:00Z' },
       { currency: 'USD', amount: 2.75, earned_at: '2026-08-27T01:00:00Z' },
     ]);
+    mocks.publicMarketData.USD = { frr: 0.0004, tickerLastUpdate: Date.now() };
+    mocks.publicMarketData.USDT = { frr: 0.0002, tickerLastUpdate: Date.now() };
+    mocks.getMarketData.mockImplementation((currency: string) => currency === 'USD'
+      ? mocks.publicMarketData.USD
+      : mocks.publicMarketData.USDT);
   });
 
   it('returns the authenticated user engine status and an inactive fallback', async () => {
@@ -130,6 +158,24 @@ describe('Dashboard routes', () => {
     }));
   });
 
+  it('builds currency suggestions only from fresh public ticker data', async () => {
+    const res = await request(app).get('/api/dashboard/suggestions').expect(200);
+    expect(res.body.available).toBe(true);
+    expect(res.body.rates).toEqual({ USD: 0.0004, USDT: 0.0002 });
+    expect(res.body.source).toContain('Bitfinex 公開 Funding Ticker');
+    expect(res.body.suggestions).toHaveLength(1);
+
+    mocks.publicMarketData.USD = { frr: 0.0004, tickerLastUpdate: Date.now() - 6 * 60 * 1000 };
+    mocks.getMarketData.mockImplementation((currency: string) => currency === 'USD'
+      ? mocks.publicMarketData.USD
+      : mocks.publicMarketData.USDT);
+    const stale = await request(app).get('/api/dashboard/suggestions').expect(200);
+    expect(stale.body.available).toBe(false);
+    expect(stale.body.rates.USD).toBeNull();
+    expect(stale.body.suggestions).toEqual([]);
+    expect(stale.body.error).toMatch(/尚未更新或已超過/);
+  });
+
   it('passes a 30-day window to the rate history repository', async () => {
     await request(app).get('/api/dashboard/rate-history/USD?hours=720').expect(200);
     expect(mocks.getRateHistory).toHaveBeenCalledWith('USD', 720, 'recorded_at,frr');
@@ -149,6 +195,17 @@ describe('Dashboard routes', () => {
     for (const call of mocks.getEarnings.mock.calls) expect(call[3]).toBe('user-a');
     expect(res.body.today).toEqual({ byCurrency: { USD: 4 }, total: 4 });
     expect(res.body.utilization).toEqual({ USD: 0.25 });
+    expect(res.body.utilizationDataAvailable).toBe(true);
+    expect(res.body.utilizationDataSource).toContain('Bitfinex 私有 WebSocket');
+  });
+
+  it('keeps stopped-engine utilization unavailable when private Bitfinex data cannot be read', async () => {
+    mocks.getBot.mockReturnValueOnce(null);
+    const res = await request(app).get('/api/dashboard/earnings/stats').expect(200);
+    expect(res.body.utilization).toBeNull();
+    expect(res.body.utilizationDataAvailable).toBe(false);
+    expect(res.body.utilizationError).toContain('signature invalid');
+    expect(mocks.getReadOnlyAccountSnapshot).toHaveBeenCalledWith('user-a');
   });
 
   it('resets only the requested tenant earnings and engine counters', async () => {
@@ -158,9 +215,17 @@ describe('Dashboard routes', () => {
   });
 
   it('keeps history queries scoped to the authenticated tenant', async () => {
-    await request(app).get('/api/dashboard/history/offers?currency=USD').expect(200);
+    const offers = await request(app).get('/api/dashboard/history/offers?currency=USD').expect(200);
+    expect(offers.headers['x-data-source']).toBe('Oracle PostgreSQL');
+    expect(offers.headers['x-record-scope']).toBe('Bot-tracked active offers');
     await request(app).get('/api/dashboard/history/loans?currency=USD').expect(200);
     expect(mocks.getActiveOffers).toHaveBeenCalledWith('USD', 'user-a');
     expect(mocks.getActiveLoans).toHaveBeenCalledWith('USD', 'user-a');
+  });
+
+  it('returns a database error instead of pretending a failed history query is empty', async () => {
+    mocks.getActiveLoans.mockRejectedValueOnce(new Error('Oracle read failed'));
+    const res = await request(app).get('/api/dashboard/history/loans').expect(500);
+    expect(res.body.error).toBe('Oracle read failed');
   });
 });

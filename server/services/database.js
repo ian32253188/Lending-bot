@@ -264,17 +264,17 @@ async function getActiveOffers(currency, userId = null) {
             return res.rows || [];
         } catch (err) {
             console.error('getActiveOffers (pg) error:', err);
-            return [];
+            throw err;
         }
     }
 
     const db = getSupabase();
-    if (!db) return [];
+    if (!db) throw new Error('No database configured for offer history');
     let q = db.from('funding_offers').select('*').eq('status', 'active');
     if (currency) q = q.eq('currency', currency);
     if (userId) q = q.eq('user_id', userId);
     const { data, error } = await q.order('created_at', { ascending: false });
-    if (error) console.error('getActiveOffers error:', error);
+    if (error) throw error;
     return data || [];
 }
 
@@ -390,17 +390,17 @@ async function getActiveLoans(currency, userId = null) {
             return res.rows || [];
         } catch (err) {
             console.error('getActiveLoans (pg) error:', err);
-            return [];
+            throw err;
         }
     }
 
     const db = getSupabase();
-    if (!db) return [];
+    if (!db) throw new Error('No database configured for loan history');
     let q = db.from('funding_loans').select('*').eq('status', 'active');
     if (currency) q = q.eq('currency', currency);
     if (userId) q = q.eq('user_id', userId);
     const { data, error } = await q.order('opened_at', { ascending: false });
-    if (error) console.error('getActiveLoans error:', error);
+    if (error) throw error;
     return data || [];
 }
 
@@ -475,19 +475,19 @@ async function getEarnings(currency, fromDate, toDate, userId = null) {
             return res.rows || [];
         } catch (err) {
             console.error('getEarnings (pg) error:', err);
-            return [];
+            throw err;
         }
     }
 
     const db = getSupabase();
-    if (!db) return [];
+    if (!db) throw new Error('No database configured for earnings');
     let q = db.from('earnings').select('*');
     if (currency) q = q.eq('currency', currency);
     if (fromDate) q = q.gte('earned_at', fromDate);
     if (toDate) q = q.lte('earned_at', toDate);
     if (userId) q = q.eq('user_id', userId);
     const { data, error } = await q.order('earned_at', { ascending: false });
-    if (error) console.error('getEarnings error:', error);
+    if (error) throw error;
     return data || [];
 }
 
@@ -696,7 +696,7 @@ async function getFundingTrades(currency = 'USD', from = null, to = null) {
         }));
     } catch (err) {
         console.error('getFundingTrades (pg) error:', err);
-        return [];
+        throw err;
     }
 }
 
@@ -986,19 +986,19 @@ async function getLogs(limit = 100, category = null, userId = null) {
             return res.rows || [];
         } catch (err) {
             console.error('getLogs (pg) error:', err);
-            return [];
+            throw err;
         }
     }
 
     const db = getSupabase();
-    if (!db) return [];
+    if (!db) throw new Error('No database configured for operation logs');
     let q = db.from('operation_logs').select('*');
     if (category) q = q.eq('category', category);
     if (userId) q = q.eq('user_id', userId);
     const { data, error } = await q
         .order('created_at', { ascending: false })
         .limit(limit);
-    if (error) console.error('getLogs error:', error);
+    if (error) throw error;
     return data || [];
 }
 

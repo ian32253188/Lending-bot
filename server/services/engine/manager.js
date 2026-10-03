@@ -1,7 +1,7 @@
 const logger = require('../../utils/logger');
 const db = require('../database');
 const rest = require('../bitfinex/rest');
-const { getBitfinexPublicWS } = require('../bitfinex/ws');
+const { getBitfinexPublicWS, isPublicTickerFresh } = require('../bitfinex/ws');
 const { getStrategyEngine } = require('./strategy');
 const { LendingBot } = require('./lending');
 const { decryptWithFallback } = require('../../utils/crypto');
@@ -259,7 +259,7 @@ async function collectGlobalRateData() {
         for (const currency of ['USD', 'USDT']) {
             try {
                 const marketData = publicWs.getMarketData(currency);
-                if (!marketData || !marketData.lastUpdate) continue;
+                if (!isPublicTickerFresh(marketData)) continue;
 
                 // Note: We use a fixed nominal balance of $10,000 for global market metrics collection since this doesn't execute actual trades.
                 const available = 10000;
@@ -268,10 +268,10 @@ async function collectGlobalRateData() {
                 snapshots.push({
                     currency,
                     frr: marketData.frr,
-                    avgRate: marketData.lastPrice || marketData.frr,
-                    highRate: marketData.high || marketData.frr,
-                    lowRate: marketData.low || marketData.frr,
-                    volume: marketData.volume || 0,
+                    avgRate: marketData.lastPrice ?? marketData.frr,
+                    highRate: marketData.high ?? marketData.frr,
+                    lowRate: marketData.low ?? marketData.frr,
+                    volume: marketData.volume ?? 0,
                     bidDepth: marketData.bids?.length || 0,
                     askDepth: marketData.asks?.length || 0,
                     demandSupplyRatio: optimalResult.diagnostics?.demandSupplyRatio || 1,

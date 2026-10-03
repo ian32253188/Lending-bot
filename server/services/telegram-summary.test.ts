@@ -123,7 +123,9 @@ describe('Telegram daily summary currency display', () => {
   it('reads the admin seven-day FRR average from history even with no strategy cache', async () => {
     const message = await buildGlobalSummaryMessage(
       { historicalFRR: {} },
-      { getMarketData: currency => currency === 'USD' ? { frr: 0 } : { frr: 0.0002 } },
+      { getMarketData: currency => currency === 'USD'
+        ? { frr: 0, tickerLastUpdate: Date.now() }
+        : { frr: 0.0002, tickerLastUpdate: Date.now() } },
       { getRateHistory },
       null,
     );
@@ -138,13 +140,33 @@ describe('Telegram daily summary currency display', () => {
     getRateHistory.mockResolvedValue([]);
     const message = await buildGlobalSummaryMessage(
       { historicalFRR: { USD: { '7d': 0.0005 }, USDT: { '7d': 0.0004 } } },
-      { getMarketData: currency => currency === 'USD' ? { frr: 0.0003 } : { frr: 0.0002 } },
+      { getMarketData: currency => currency === 'USD'
+        ? { frr: 0.0003, tickerLastUpdate: Date.now() }
+        : { frr: 0.0002, tickerLastUpdate: Date.now() } },
       { getRateHistory },
       null,
     );
 
     expect(message).toContain('USD 市場</b>: FRR 0.0300%/天 | 7d 均值 —');
     expect(message).toContain('USDT 市場</b>: FRR 0.0200%/天 | 7d 均值 —');
+  });
+
+  it('shows stale ticker FRR as unavailable rather than displaying old values', async () => {
+    getRateHistory.mockResolvedValue([]);
+    const staleTime = Date.now() - 6 * 60 * 1000;
+    const message = await buildGlobalSummaryMessage(
+      {},
+      { getMarketData: currency => ({
+        frr: currency === 'USD' ? 0.0003 : 0.0002,
+        tickerLastUpdate: staleTime,
+      }) },
+      { getRateHistory },
+      null,
+    );
+
+    expect(message).toContain('USD 市場</b>: FRR — | 7d 均值 —');
+    expect(message).toContain('FRR 來源: Bitfinex 公開 Funding Ticker（尚無新資料）');
+    expect(message).not.toContain('FRR 0.0300%/天');
   });
 
   it('renders all 24 hourly buckets, including hours with no fills', () => {
@@ -169,6 +191,17 @@ describe('Telegram daily summary currency display', () => {
     expect((message.match(/筆/g) || []).length).toBe(24);
     expect(message).toContain('無成交');
     expect(message).toContain('歷史覆蓋: 24/30 日（2026-09-09 至 2026-10-02）');
+  });
+
+  it('does not report unavailable public trades as an empty market', () => {
+    const message = formatFundingMarketSection({
+      tradeDataAvailable: false,
+      hourlyMatches24: [],
+      currentApy: null,
+    });
+
+    expect(message).toContain('撮合: 資料來源暫不可用（不等同無成交）');
+    expect(message).not.toContain('暫無資料');
   });
 
   it('uses the actual flat market summary fields for a stopped Telegram account', () => {

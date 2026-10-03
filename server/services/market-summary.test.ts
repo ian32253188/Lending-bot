@@ -57,6 +57,7 @@ describe('fUSD market summary helpers', () => {
     });
 
     expect(summary.currentApy).toBeCloseTo(13.3833333, 5);
+    expect(summary.currentRateSource).toBe('funding_trades_24h_vwap');
     expect(summary.high24hApy).toBeCloseTo(18.25, 5);
     expect(summary.average30dApy).toBeCloseTo(9.125, 5);
     expect(summary.high30dApy).toBeCloseTo(21.9, 5);
@@ -150,5 +151,47 @@ describe('fUSD market summary helpers', () => {
     expect(rows[0].count).toBe(0);
     expect(rows[1].count).toBe(1);
     expect(rows[1].details[0].period).toBe(2);
+  });
+
+  it('does not use stale public ticker values as current market data', async () => {
+    const now = Date.parse('2026-08-28T08:00:00Z');
+    const summary = await buildFundingMarketSummary({
+      now,
+      publicWs: {
+        getMarketData: () => ({
+          frr: 0.0004,
+          lastPrice: 0.0005,
+          high: 0.0008,
+          low: 0.0001,
+          volume: 5000,
+          tickerLastUpdate: now - 6 * 60 * 1000,
+        }),
+      },
+      tradeData: [],
+      historyData: [],
+    });
+
+    expect(summary.tickerFresh).toBe(false);
+    expect(summary.currentApy).toBeNull();
+    expect(summary.high24hApy).toBeNull();
+    expect(summary.low24hApy).toBeNull();
+    expect(summary.volume24h).toBe(0);
+    expect(summary.currentRateSource).toBeNull();
+    expect(summary.hourlyMatches24).toHaveLength(24);
+  });
+
+  it('marks failed market repositories unavailable instead of fabricating empty-hour data', async () => {
+    const summary = await buildFundingMarketSummary({
+      publicWs: { getMarketData: () => ({ frr: null, tickerLastUpdate: null }) },
+      tradeData: Promise.reject(new Error('Oracle unavailable')),
+      historyData: Promise.reject(new Error('history unavailable')),
+    });
+
+    expect(summary.tradeDataAvailable).toBe(false);
+    expect(summary.historyDataAvailable).toBe(false);
+    expect(summary.volume24h).toBeNull();
+    expect(summary.collectedTradeCount).toBeNull();
+    expect(summary.hourlyMatches24).toEqual([]);
+    expect(summary.historyCoverageDays).toBeNull();
   });
 });

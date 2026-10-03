@@ -6,7 +6,8 @@ const LEVEL_ICONS = { info: '✅', warn: '⚠️', error: '❌', debug: '🔍' }
 
 export default function LogViewer({ token }) {
     const [logs, setLogs] = useState([]);
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
     const [levelFilter, setLevelFilter] = useState('all');
     const [keyword, setKeyword] = useState('');
     const [autoScroll, setAutoScroll] = useState(false);
@@ -22,12 +23,14 @@ export default function LogViewer({ token }) {
             const res = await fetch(`/api/dashboard/logs?${params}`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
-            if (res.ok) {
-                const data = await res.json();
-                setLogs(data.reverse()); // 最舊的在上
-            }
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || `日誌讀取失敗（HTTP ${res.status}）`);
+            if (!Array.isArray(data)) throw new Error('日誌服務回傳格式異常。');
+            setLogs(data.reverse()); // 最舊的在上
+            setError('');
         } catch (err) {
             console.error('載入日誌失敗:', err);
+            setError(err.message || '日誌暫時無法讀取。');
         } finally {
             setLoading(false);
         }
@@ -84,8 +87,10 @@ export default function LogViewer({ token }) {
                 </form>
             </div>
 
+            {error && <div className="market-error" role="alert"><strong>日誌暫不可用</strong><span>{error}；不代表目前沒有日誌。</span></div>}
+
             <div style={{ maxHeight: 360, overflowY: 'auto', fontSize: '0.78rem' }}>
-                {logs.length === 0 ? (
+                {logs.length === 0 && error ? null : logs.length === 0 ? (
                     <div style={{ color: 'var(--text-tertiary)', textAlign: 'center', padding: 20 }}>暫無日誌</div>
                 ) : (
                     logs.map((log) => (

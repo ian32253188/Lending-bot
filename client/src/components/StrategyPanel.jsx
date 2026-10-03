@@ -4,16 +4,26 @@ export default function StrategyPanel({ status, token, onRefresh }) {
     const [loading, setLoading] = useState(false);
     const [msg, setMsg] = useState('');
     const [suggestion, setSuggestion] = useState(null);
+    const [strategySettingsError, setStrategySettingsError] = useState('');
     const [strategySettings, setStrategySettings] = useState({ rateStrategy: 'current_avg', periodDays: 2 });
 
     const features = status?.features || {};
     const strategyActive = status?.running && !status?.paused;
 
+    async function fetchStrategySettings() {
+        try {
+            const res = await fetch('/api/lending/strategy-settings', { headers: { Authorization: `Bearer ${token}` } });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || `策略設定讀取失敗（HTTP ${res.status}）`);
+            setStrategySettings({ rateStrategy: data.rateStrategy, periodDays: data.periodDays });
+            setStrategySettingsError('');
+        } catch (err) {
+            setStrategySettingsError(err.message || '策略設定暫時無法讀取。');
+        }
+    }
+
     useEffect(() => {
-        fetch('/api/lending/strategy-settings', { headers: { Authorization: `Bearer ${token}` } })
-            .then(res => res.ok ? res.json() : null)
-            .then(data => data && setStrategySettings({ rateStrategy: data.rateStrategy, periodDays: data.periodDays }))
-            .catch(() => {});
+        fetchStrategySettings();
     }, [token]);
 
     useEffect(() => {
@@ -31,7 +41,9 @@ export default function StrategyPanel({ status, token, onRefresh }) {
             headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         });
-        return res.json();
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `操作失敗（HTTP ${res.status}）`);
+        return data;
     };
 
     const apiCall = async (fn) => {
@@ -66,7 +78,11 @@ export default function StrategyPanel({ status, token, onRefresh }) {
             const r = await fetch('/api/dashboard/suggestions', {
                 headers: { Authorization: `Bearer ${token}` },
             });
-            setSuggestion(await r.json());
+            const data = await r.json();
+            if (!r.ok) throw new Error(data.error || `行情讀取失敗（HTTP ${r.status}）`);
+            setSuggestion(data);
+        } catch (err) {
+            setSuggestion({ available: false, error: err.message, rates: {}, suggestions: [] });
         } finally {
             setLoading(false);
         }
@@ -94,6 +110,7 @@ export default function StrategyPanel({ status, token, onRefresh }) {
 
             <div className="strategy-settings-box">
                 <div className="strategy-settings-title">fUSD 策略基準</div>
+                {strategySettingsError && !status?.strategySettings && <div className="market-error" role="alert"><strong>策略設定暫不可用</strong><span>{strategySettingsError}；下方選項是預設值，尚未確認為已儲存設定。</span><button type="button" className="btn btn-sm btn-outline" onClick={fetchStrategySettings}>重新載入</button></div>}
                 <div className="strategy-choice-grid">
                     {[
                         ['current_avg', '目前成交均值'],
@@ -151,20 +168,24 @@ export default function StrategyPanel({ status, token, onRefresh }) {
                     <div style={{ marginTop: 10, fontSize: '0.82rem' }}>
                         <div style={{ display: 'flex', gap: 12, marginBottom: 6 }}>
                             {Object.entries(suggestion.rates || {}).map(([cur, rate]) => (
-                                <span key={cur}>
+                                rate !== null && rate !== undefined && Number.isFinite(Number(rate)) && <span key={cur}>
                                     <span className="badge">{cur}</span>
-                                    {' '}{(rate * 100).toFixed(4)}%/天
+                                    {' '}{(Number(rate) * 100).toFixed(4)}%/天
                                 </span>
                             ))}
                         </div>
+                        {suggestion.source && <div style={{ color: 'var(--text-tertiary)', marginBottom: 6 }}>來源：{suggestion.source}{suggestion.updatedAt ? `｜更新 ${new Date(suggestion.updatedAt).toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei' })}` : ''}</div>}
+                        {suggestion.error && <div role="alert" style={{ color: 'var(--warning)', marginBottom: 6 }}>{suggestion.error}</div>}
                         {suggestion.suggestions?.length > 0 ? (
                             suggestion.suggestions.map((s, i) => (
                                 <div key={i} style={{ background: 'var(--surface-2)', borderRadius: 8, padding: '8px 10px', color: 'var(--warning)', fontSize: '0.8rem' }}>
                                     💡 {s.reason}
                                 </div>
                             ))
-                        ) : (
+                        ) : suggestion.available ? (
                             <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>目前利率相近，無需切換</div>
+                        ) : (
+                            <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>行情尚未更新或已過期，暫不提供輪動建議。</div>
                         )}
                     </div>
                 )}

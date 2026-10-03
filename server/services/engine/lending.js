@@ -2,7 +2,7 @@ const config = require('../../config');
 const logger = require('../../utils/logger');
 const db = require('../database');
 const rest = require('../bitfinex/rest');
-const { getBitfinexPublicWS, createBitfinexPrivateWS } = require('../bitfinex/ws');
+const { getBitfinexPublicWS, createBitfinexPrivateWS, isPublicTickerFresh } = require('../bitfinex/ws');
 const { getStrategyEngine } = require('./strategy');
 const { getCachedFundingMarketSummary } = require('../market-summary');
 
@@ -275,7 +275,7 @@ class LendingBot {
     async _processForCurrency(currency) {
         const publicWs = getBitfinexPublicWS();
         let marketData = publicWs.getMarketData(currency);
-        if (!marketData || !marketData.lastUpdate) return;
+        if (!isPublicTickerFresh(marketData)) return;
 
         // fUSD 的三種策略基準來自公開成交/歷史資料；使用 60 秒快取，避免每個決策週期重複打 API。
         if (currency === 'USD') {

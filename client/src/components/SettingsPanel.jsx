@@ -29,23 +29,22 @@ export default function SettingsPanel({ token }) {
             const res = await fetch('/api/lending/settings', {
                 headers: { Authorization: `Bearer ${token}` },
             });
-            if (res.ok) {
-                const data = await res.json();
-                if (data) {
-                    setSettings({
-                        bitfinex_api_key: data.bitfinex_api_key || '',
-                        bitfinex_api_secret: data.bitfinex_api_secret || '',
-                        telegram_bot_token: data.telegram_bot_token || '',
-                        telegram_chat_id: data.telegram_chat_id || '',
-                        min_offer_amount: data.min_offer_amount ?? 150,
-                        compounding_enabled: data.compounding_enabled ?? true,
-                        auto_transfer_enabled: data.auto_transfer_enabled ?? false,
-                        auto_transfer_threshold: data.auto_transfer_threshold ?? 500,
-                        lending_currencies: data.lending_currencies || ['USD', 'USDT'],
-                        rateStrategy: data.strategy_config?.rateStrategy || 'current_avg',
-                        periodDays: data.strategy_config?.periodDays || 2,
-                    });
-                }
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || `設定讀取失敗（HTTP ${res.status}）`);
+            if (data) {
+                setSettings({
+                    bitfinex_api_key: data.bitfinex_api_key || '',
+                    bitfinex_api_secret: data.bitfinex_api_secret || '',
+                    telegram_bot_token: data.telegram_bot_token || '',
+                    telegram_chat_id: data.telegram_chat_id || '',
+                    min_offer_amount: data.min_offer_amount ?? 150,
+                    compounding_enabled: data.compounding_enabled ?? true,
+                    auto_transfer_enabled: data.auto_transfer_enabled ?? false,
+                    auto_transfer_threshold: data.auto_transfer_threshold ?? 500,
+                    lending_currencies: data.lending_currencies || ['USD', 'USDT'],
+                    rateStrategy: data.strategy_config?.rateStrategy || 'current_avg',
+                    periodDays: data.strategy_config?.periodDays || 2,
+                });
             }
         } catch (err) {
             setMsg({ type: 'error', text: '無法讀取放貸設定：' + err.message });

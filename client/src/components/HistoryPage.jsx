@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-const TABS = ['掛單紀錄', '放貸紀錄'];
+const TABS = ['Bot 活躍掛單', 'Bot 活躍放貸'];
 
 function formatDate(str) {
     if (!str) return '-';
@@ -25,6 +25,8 @@ export default function HistoryPage({ token }) {
     const [offers, setOffers] = useState([]);
     const [loans, setLoans] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+    const [dataSource, setDataSource] = useState('');
     const [currencyFilter, setCurrencyFilter] = useState('ALL');
 
     useEffect(() => {
@@ -39,10 +41,16 @@ export default function HistoryPage({ token }) {
                 fetch('/api/dashboard/history/offers', { headers }),
                 fetch('/api/dashboard/history/loans', { headers }),
             ]);
-            setOffers(await offersRes.json());
-            setLoans(await loansRes.json());
+            const [offersData, loansData] = await Promise.all([offersRes.json(), loansRes.json()]);
+            if (!offersRes.ok) throw new Error(offersData.error || `掛單記錄讀取失敗（HTTP ${offersRes.status}）`);
+            if (!loansRes.ok) throw new Error(loansData.error || `放貸記錄讀取失敗（HTTP ${loansRes.status}）`);
+            setOffers(offersData);
+            setLoans(loansData);
+            setDataSource(offersRes.headers.get('x-data-source') || '資料來源未提供');
+            setError('');
         } catch (err) {
             console.error('歷史紀錄載入失敗', err);
+            setError(err.message || '歷史紀錄讀取失敗；目前狀態不可用。');
         } finally {
             setLoading(false);
         }
@@ -55,6 +63,10 @@ export default function HistoryPage({ token }) {
 
     return (
         <div className="panel">
+            <div className="market-note" style={{ marginBottom: 12 }}>
+                資料來源：{dataSource || '連線中'}。本頁是資料庫中由 Bot 追蹤的活躍掛單／放貸，不是 Bitfinex 完整帳戶歷史；目前個人部位請看總覽的 Bitfinex 私有 API 狀態。
+            </div>
+            {error && <div className="market-error" role="alert"><strong>紀錄暫不可用</strong><span>{error}；不代表沒有放貸紀錄。</span><button type="button" className="btn btn-sm btn-outline" onClick={fetchData}>重新載入</button></div>}
             <div className="panel-header">
                 <div style={{ display: 'flex', gap: '8px' }}>
                     {TABS.map((t, i) => (
@@ -83,9 +95,9 @@ export default function HistoryPage({ token }) {
 
             {loading ? (
                 <div className="loading-shimmer" style={{ height: 200, borderRadius: 8 }} />
-            ) : filteredData.length === 0 ? (
+            ) : error ? null : filteredData.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-secondary)' }}>
-                    暫無紀錄
+                    目前資料庫沒有本 Bot 的活躍記錄；這不代表 Bitfinex 帳戶沒有放貸部位。
                 </div>
             ) : (
                 <div style={{ overflowX: 'auto' }}>

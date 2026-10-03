@@ -27,7 +27,7 @@ const mockModule = (modulePath: string, exports: unknown) => {
 mockModule('../../config', configMock);
 mockModule('../../utils/logger', loggerMock);
 
-const { BitfinexWS, getBitfinexPublicWS, createBitfinexPrivateWS } = require('./ws');
+const { BitfinexWS, getBitfinexPublicWS, createBitfinexPrivateWS, isPublicTickerFresh } = require('./ws');
 
 describe('Bitfinex public WebSocket adapter', () => {
   it('updates ticker cache and emits a normalized ticker event', () => {
@@ -46,7 +46,22 @@ describe('Bitfinex public WebSocket adapter', () => {
       high: 0.0006,
       low: 0.0002,
       frrAmountAvailable: 5000,
+      tickerLastUpdate: expect.any(Number),
     });
+    expect(isPublicTickerFresh(ws.getMarketData('USDT'))).toBe(true);
+  });
+
+  it('keeps missing ticker rates null and does not treat a funding-book update as a fresh ticker', () => {
+    const ws = new BitfinexWS({ publicOnly: true });
+    expect(ws.getMarketData('USD').frr).toBeNull();
+    expect(isPublicTickerFresh(ws.getMarketData('USD'))).toBe(false);
+
+    ws._handleEvent({ event: 'subscribed', chanId: 10, channel: 'book', symbol: 'fUSD' });
+    ws._handleMessage([10, [[0.0005, 2, 1, 100]]]);
+
+    expect(ws.getMarketData('USD').lastUpdate).toEqual(expect.any(Number));
+    expect(ws.getMarketData('USD').tickerLastUpdate).toBeNull();
+    expect(isPublicTickerFresh(ws.getMarketData('USD'))).toBe(false);
   });
 
   it('splits funding book snapshots into sorted bid and ask sides', () => {

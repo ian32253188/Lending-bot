@@ -4,6 +4,19 @@ const config = require('../../config');
 const logger = require('../../utils/logger');
 const EventEmitter = require('events');
 
+const PUBLIC_TICKER_STALE_AFTER_MS = 5 * 60 * 1000;
+
+function isPublicTickerFresh(marketData, now = Date.now()) {
+    const updatedAt = Number(marketData?.tickerLastUpdate);
+    return Number.isFinite(updatedAt)
+        && updatedAt > 0
+        && updatedAt <= now
+        && now - updatedAt <= PUBLIC_TICKER_STALE_AFTER_MS
+        && marketData?.frr !== null
+        && marketData?.frr !== undefined
+        && Number.isFinite(Number(marketData.frr));
+}
+
 // 單例快取
 let publicInstance = null;
 let legacyInstance = null;
@@ -27,8 +40,8 @@ class BitfinexWS extends EventEmitter {
 
         // 即時市場資料快取
         this.marketData = {
-            USD: { frr: 0, bids: [], asks: [], lastUpdate: null },
-            USDT: { frr: 0, bids: [], asks: [], lastUpdate: null },
+            USD: { frr: null, bids: [], asks: [], lastUpdate: null, tickerLastUpdate: null },
+            USDT: { frr: null, bids: [], asks: [], lastUpdate: null, tickerLastUpdate: null },
         };
     }
 
@@ -312,6 +325,7 @@ class BitfinexWS extends EventEmitter {
             //  DAILY_CHANGE, DAILY_CHANGE_RELATIVE, LAST_PRICE, VOLUME, HIGH, LOW,
             //  _PLACEHOLDER, _PLACEHOLDER, FRR_AMOUNT_AVAILABLE]
             if (Array.isArray(payload) && payload.length >= 16) {
+                const tickerLastUpdate = Date.now();
                 this.marketData[currency] = {
                     ...this.marketData[currency],
                     frr: payload[0],
@@ -328,7 +342,8 @@ class BitfinexWS extends EventEmitter {
                     high: payload[11],
                     low: payload[12],
                     frrAmountAvailable: payload[15],
-                    lastUpdate: Date.now(),
+                    lastUpdate: tickerLastUpdate,
+                    tickerLastUpdate,
                 };
                 this.emit('tickerUpdate', { currency, data: this.marketData[currency] });
             }
@@ -485,9 +500,10 @@ function getBitfinexWS() {
     return legacyInstance;
 }
 
-module.exports = { 
+module.exports = {
     BitfinexWS, 
     getBitfinexWS, 
     getBitfinexPublicWS, 
-    createBitfinexPrivateWS 
+    createBitfinexPrivateWS,
+    isPublicTickerFresh,
 };

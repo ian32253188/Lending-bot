@@ -292,6 +292,10 @@ body {
   margin-left: 6px;
 }
 
+.market-live.market-stale {
+  color: var(--warning);
+}
+
 .status-pip {
   display: inline-block;
   width: 7px;

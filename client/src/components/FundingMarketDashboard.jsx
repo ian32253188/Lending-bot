@@ -35,9 +35,28 @@ function toPoints(summary) {
     })).filter(point => point.avg != null);
 }
 
-function MarketChart({ points }) {
+function currentRateLabel(source) {
+    if (source === 'funding_trades_24h_vwap') return '近 24H 成交加權均值';
+    if (source === 'bitfinex_public_ticker_last_price') return '最新公開成交價（Ticker）';
+    if (source === 'bitfinex_public_ticker_frr') return '公開 FRR（Ticker）';
+    return '目前成交利率';
+}
+
+function sourceLabel(source) {
+    if (source === 'oracle_postgres') return 'Oracle PostgreSQL';
+    if (source === 'bitfinex_public_rest') return 'Bitfinex 公開 REST';
+    if (source === 'funding_trades_24h_vwap') return '近 24H 公開成交量加權';
+    if (source === 'bitfinex_public_ticker_last_price') return 'Bitfinex 公開 Ticker 最新成交價';
+    if (source === 'bitfinex_public_ticker_frr') return 'Bitfinex 公開 Ticker FRR';
+    if (source === 'funding_trades_24h_sum') return '24H 公開成交加總';
+    if (source === 'bitfinex_public_ticker') return 'Bitfinex 公開 Ticker';
+    if (source === 'unavailable') return '暫不可用';
+    return source || '—';
+}
+
+function MarketChart({ points, unavailable = false }) {
     const [hoveredIndex, setHoveredIndex] = useState(null);
-    if (!points.length) return <div className="market-empty">等待公開市場歷史資料…</div>;
+    if (!points.length) return <div className="market-empty">{unavailable ? '歷史資料來源暫時無法讀取。' : '等待公開市場歷史資料…'}</div>;
 
     const width = 720;
     const height = 190;
@@ -92,6 +111,8 @@ export default function FundingMarketDashboard({ token }) {
     const [detailSort, setDetailSort] = useState({ key: 'amount', direction: 'desc' });
     const historyCoverageDays = summary?.historyCoverageDays;
     const historyWindowDays = summary?.historyWindowDays || 30;
+    const tradeDataAvailable = summary?.tradeDataAvailable !== false;
+    const historyDataAvailable = summary?.historyDataAvailable !== false;
     const coverageRange = summary?.historyCoverageStartDate && summary?.historyCoverageEndDate
         ? `（資料日期 ${summary.historyCoverageStartDate} 至 ${summary.historyCoverageEndDate}）`
         : '';
@@ -157,16 +178,16 @@ export default function FundingMarketDashboard({ token }) {
             <div className="market-header">
                 <div>
                     <div className="market-kicker">PUBLIC MARKET / USD</div>
-                    <div className="market-title">USD 融資市場 <span className="market-live"><span className="status-pip" /> LIVE</span></div>
-                    <div className="market-subtitle">24H 成交額 {summary?.volume24h == null ? '—' : `${fmtAmount(summary.volume24h)} USD`}</div>
+                    <div className="market-title">USD 融資市場 <span className={`market-live ${summary?.tickerFresh ? '' : 'market-stale'}`}><span className="status-pip" /> {summary?.tickerFresh ? 'LIVE' : 'TICKER 暫無更新'}</span></div>
+                    <div className="market-subtitle">24H 成交額 {summary?.volume24h == null ? '—' : `${fmtAmount(summary.volume24h)} USD`} · {sourceLabel(summary?.volume24hSource)}</div>
                 </div>
                 <div className="market-header-meta">
-                    <div className="market-top-rate">{fmt(summary?.high24hApy)}<small>近 24 小時最高借出利率</small></div>
+                    <div className="market-top-rate">{fmt(summary?.high24hApy)}<small>近 24 小時最高借出利率 · {sourceLabel(summary?.high24hSource)}</small></div>
                     <span className="market-updated">{lastUpdated ? `更新 ${lastUpdated.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}` : '等待同步'}</span>
                 </div>
             </div>
             <div className="market-metrics">
-                <div><strong>{fmt(summary?.currentApy)}</strong><span>目前成交均值</span></div>
+                <div><strong>{fmt(summary?.currentApy)}</strong><span>{currentRateLabel(summary?.currentRateSource)}</span></div>
                 <div><strong>{fmt(summary?.average30dApy)}</strong><span>30 天平均{historyCoverageDays != null ? `（${historyCoverageDays}/${historyWindowDays} 日資料）` : ''}</span></div>
                 <div><strong>{fmt(summary?.high30dApy)}</strong><span>30 天最高{historyCoverageDays != null ? `（${historyCoverageDays}/${historyWindowDays} 日資料）` : ''}</span></div>
                 <div><strong>{fmt(summary?.low30dApy)}</strong><span>30 天最低{historyCoverageDays != null ? `（${historyCoverageDays}/${historyWindowDays} 日資料）` : ''}</span></div>
@@ -174,11 +195,13 @@ export default function FundingMarketDashboard({ token }) {
             <div className="market-body">
                 <div className="market-chart-column">
                     <h3>近 30 日利率走勢 <span className="section-code">RATE RANGE / APY</span></h3>
-                    <MarketChart points={points} />
+                    <MarketChart points={points} unavailable={!historyDataAvailable} />
                     <div className="market-note">
-                        灰色區間為每日最低至最高成交利率，青線為成交均值。
+                        灰色區間為每日最低至最高利率，青線為均值；每日歷史來源：{summary?.marketDataSources?.rateHistory || 'Oracle PostgreSQL'}。
                         {historyCoverageDays != null && ` 歷史覆蓋 ${historyCoverageDays}/${historyWindowDays} 日${coverageRange}。`}
+                        {!historyDataAvailable && ' 歷史來源暫時無法讀取，圖表不代表零成交。'}
                     </div>
+                    <div className="market-note">行情來源：即時 ticker {summary?.tickerFresh ? `有效（${summary.tickerUpdatedAt ? new Date(summary.tickerUpdatedAt).toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei' }) : '更新時間未知'}）` : '逾時或尚未收到'}；24H 撮合：{summary?.marketDataSources?.trades || '—'}；利率歷史：{summary?.marketDataSources?.rateHistory || '—'}{summary?.currentRateSource ? `；成交均值：${sourceLabel(summary.currentRateSource)}（${summary.currentRateObservedAt ? new Date(summary.currentRateObservedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }) : '時間未知'}）` : ''}。</div>
                 </div>
                 <div className="market-matches">
                     <h3>過去每小時撮合 <span className="section-code">LAST 24H</span></h3>
@@ -192,7 +215,7 @@ export default function FundingMarketDashboard({ token }) {
                             </button>
                         ))}
                     </div>
-                    {!hourlyMatches.length && <div className="market-empty">目前沒有最近 24 小時成交紀錄</div>}
+                    {!hourlyMatches.length && <div className="market-empty">{tradeDataAvailable ? '目前沒有最近 24 小時成交紀錄' : '撮合資料來源暫時無法讀取；這不代表沒有成交。'}</div>}
                 </div>
             </div>
             {error && (
