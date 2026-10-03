@@ -110,6 +110,12 @@ jobs:
             
             # 5. 重啟容器以套用更新
             sudo docker compose -f docker-compose.prod.yml up -d
-            
-            # 6. 清理舊的不需要的 Docker 映像檔以釋放虛擬機空間
+
+            # 6. 驗證應用容器確實能解析同一 Compose 網路中的 PostgreSQL 服務。
+            # 不能只以 SSH/Compose 指令成功判定部署完成。
+            sudo docker inspect --format='bot={{range $name, $settings := .NetworkSettings.Networks}}{{$name}} {{end}}' bitfinex-lending-bot
+            sudo docker inspect --format='postgres={{range $name, $settings := .NetworkSettings.Networks}}{{$name}} {{end}}' lending-bot-postgres
+            sudo docker exec bitfinex-lending-bot node -e 'require("dns").lookup(process.env.PGHOST || "postgres", (error, address) => { if (error) { console.error(`PostgreSQL DNS lookup failed: ${error.code} ${error.hostname}`); process.exitCode = 1; } else { console.log(`PostgreSQL DNS resolved: ${address}`); } })'
+
+            # 7. 清理舊的不需要的 Docker 映像檔以釋放虛擬機空間
             sudo docker image prune -f
