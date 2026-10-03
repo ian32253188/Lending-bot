@@ -51,6 +51,7 @@ require.cache[databasePath] = {
   exports: {
     getSupabase: () => mockSupabase,
     initDatabase: vi.fn(),
+    isPostgresConfigured: vi.fn().mockReturnValue(false),
     getUserSettings: mockGetUserSettings,
     saveUserSettings: mockSaveUserSettings,
   }

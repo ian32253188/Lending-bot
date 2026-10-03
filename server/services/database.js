@@ -12,6 +12,7 @@ const rateHistoryCache = new Map();
 const RATE_HISTORY_CACHE_TTL_MS = 60 * 60 * 1000;
 let fundingTradesSchemaPromise = null;
 let fundingTradesSchemaErrorCode = null;
+let userSettingsSchemaPromise = null;
 
 /**
  * 判斷是否配置了原生 PostgreSQL
@@ -109,6 +110,47 @@ async function ensureFundingTradesTable() {
     });
 
     return fundingTradesSchemaPromise;
+}
+
+/**
+ * Ensure the per-user settings table exists on persistent PostgreSQL volumes.
+ * Docker init scripts only run when a data volume is first created, so older
+ * production volumes need an idempotent in-app schema upgrade.
+ */
+async function ensureUserBotSettingsTable() {
+    if (!isPostgresConfigured()) return false;
+    if (userSettingsSchemaPromise) return userSettingsSchemaPromise;
+
+    userSettingsSchemaPromise = query(`
+        CREATE TABLE IF NOT EXISTS user_bot_settings (
+            user_id UUID PRIMARY KEY,
+            bitfinex_api_key TEXT,
+            bitfinex_api_secret TEXT,
+            telegram_bot_token TEXT,
+            telegram_chat_id TEXT,
+            lending_currencies VARCHAR(10)[] DEFAULT ARRAY['USD', 'USDT'],
+            min_offer_amount DECIMAL(20, 8) DEFAULT 150.0,
+            status VARCHAR(20) DEFAULT 'stopped',
+            strategy_config JSONB DEFAULT '{"mode": "simplified"}',
+            compounding_enabled BOOLEAN DEFAULT true,
+            auto_transfer_enabled BOOLEAN DEFAULT false,
+            auto_transfer_threshold INT DEFAULT 500,
+            pause_reason TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS user_bot_settings_telegram_chat_id_unique
+            ON user_bot_settings (btrim(telegram_chat_id))
+            WHERE telegram_chat_id IS NOT NULL AND btrim(telegram_chat_id) <> '';
+        CREATE INDEX IF NOT EXISTS user_bot_settings_telegram_chat_id_lookup
+            ON user_bot_settings (telegram_chat_id);
+    `).then(() => true).catch(error => {
+        userSettingsSchemaPromise = null;
+        console.error('ensureUserBotSettingsTable error:', error);
+        return false;
+    });
+
+    return userSettingsSchemaPromise;
 }
 
 /**
@@ -1058,11 +1100,12 @@ async function saveSetting(key, value) {
 async function getUserSettings(userId) {
     if (isPostgresConfigured()) {
         try {
+            if (!(await ensureUserBotSettingsTable())) throw new Error('Could not ensure user_bot_settings table');
             const res = await query(`SELECT * FROM user_bot_settings WHERE user_id = $1;`, [userId]);
             return res.rows[0] || null;
         } catch (err) {
             console.error('getUserSettings (pg) error:', err);
-            return null;
+            throw err;
         }
     }
 
@@ -1088,6 +1131,7 @@ async function saveUserSettings(userId, settings) {
 
     if (isPostgresConfigured()) {
         try {
+            if (!(await ensureUserBotSettingsTable())) throw new Error('Could not ensure user_bot_settings table');
             const keys = Object.keys(normalizedSettings);
             const cols = ['user_id', ...keys, 'updated_at'];
             const valPlaceholders = cols.map((_, i) => `$${i + 1}`).join(', ');
@@ -1133,11 +1177,12 @@ async function getUserSettingsByTelegramChatId(chatId) {
 
     if (isPostgresConfigured()) {
         try {
+            if (!(await ensureUserBotSettingsTable())) throw new Error('Could not ensure user_bot_settings table');
             const res = await query(`SELECT * FROM user_bot_settings WHERE telegram_chat_id = $1 LIMIT 1;`, [normalizedChatId]);
             return res.rows[0] || null;
         } catch (err) {
             console.error('getUserSettingsByTelegramChatId (pg) error:', err);
-            return null;
+            throw err;
         }
     }
 
@@ -1158,6 +1203,7 @@ async function getUserSettingsByTelegramChatId(chatId) {
 async function getActiveUsers() {
     if (isPostgresConfigured()) {
         try {
+            if (!(await ensureUserBotSettingsTable())) throw new Error('Could not ensure user_bot_settings table');
             const res = await query(`SELECT user_id FROM user_bot_settings WHERE status = 'running';`);
             return res.rows.map(x => x.user_id);
         } catch (err) {
@@ -1182,6 +1228,7 @@ async function getActiveUsers() {
 async function getUsersToResume() {
     if (isPostgresConfigured()) {
         try {
+            if (!(await ensureUserBotSettingsTable())) throw new Error('Could not ensure user_bot_settings table');
             const res = await query(`SELECT user_id, status, pause_reason FROM user_bot_settings WHERE status IN ('running', 'paused');`);
             return res.rows || [];
         } catch (err) {
@@ -1280,6 +1327,7 @@ module.exports = {
     getSupabase,
     query,
     isPostgresConfigured,
+    ensureUserBotSettingsTable,
     saveOffer, closeOffer, getActiveOffers,
     saveLoan, closeLoan, getActiveLoans,
     saveEarning, getEarnings, deleteEarnings,

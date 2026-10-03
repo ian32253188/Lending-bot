@@ -129,4 +129,26 @@ describe('rate_history repository', () => {
       expect.objectContaining({ currency: 'USDT', frr: 0.0002 }),
     ]);
   });
+
+  it('creates the per-user settings schema idempotently for an existing PostgreSQL volume', async () => {
+    const originalRunDbIntegrationTests = process.env.RUN_DB_INTEGRATION_TESTS;
+    configMock.database = { host: 'postgres', password: 'test-password' };
+    process.env.RUN_DB_INTEGRATION_TESTS = '1';
+
+    try {
+      const ready = await db.ensureUserBotSettingsTable();
+      expect(ready).toBe(true);
+      const sql = state.pgQueries.map(([statement]) => statement).join('\n');
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS user_bot_settings');
+      expect(sql).toContain('user_id UUID PRIMARY KEY');
+      expect(sql).toContain('user_bot_settings_telegram_chat_id_unique');
+    } finally {
+      delete configMock.database;
+      if (originalRunDbIntegrationTests === undefined) {
+        delete process.env.RUN_DB_INTEGRATION_TESTS;
+      } else {
+        process.env.RUN_DB_INTEGRATION_TESTS = originalRunDbIntegrationTests;
+      }
+    }
+  });
 });

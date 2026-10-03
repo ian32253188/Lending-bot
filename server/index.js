@@ -73,6 +73,9 @@ app.get('/api/health', async (req, res) => {
     const { getTelegramRoutingStats } = require('./services/telegram');
     const { getFundingTradeBackfillStatus } = require('./services/market-summary');
     const db = require('./services/database');
+    const userSettingsTableReady = db.isPostgresConfigured()
+        ? await db.ensureUserBotSettingsTable()
+        : null;
     const publicWs = getBitfinexPublicWS();
     const memory = process.memoryUsage();
     const fundingTrades = typeof db.getFundingTradeDiagnostics === 'function'
@@ -86,6 +89,7 @@ app.get('/api/health', async (req, res) => {
         telegram: typeof getTelegramRoutingStats === 'function'
             ? getTelegramRoutingStats()
             : { sharedBotActive: false, registeredUsers: 0 },
+        userSettingsTableReady,
         fundingTradeBackfill: typeof getFundingTradeBackfillStatus === 'function'
             ? getFundingTradeBackfillStatus()
             : { state: 'unknown' },
@@ -241,6 +245,17 @@ wss.on('connection', (ws, req) => {
 async function startup() {
     logger.info('server', '🚀 Bitfinex 多用戶 SaaS 放貸平台啟動中...');
 
+    const db = require('./services/database');
+    let userSettingsReady = !db.isPostgresConfigured();
+    if (db.isPostgresConfigured()) {
+        userSettingsReady = await db.ensureUserBotSettingsTable();
+        if (userSettingsReady) {
+            logger.info('server', '✅ user_bot_settings 資料表已就緒');
+        } else {
+            logger.error('server', '❌ user_bot_settings 資料表初始化失敗；暫停自動恢復引擎');
+        }
+    }
+
     // 初始化管理員全域 Telegram Bot (SaaS 模式下為選配，用戶各自的 Bot 在 manager.startBot 中初始化)
     initTelegram();
 
@@ -248,12 +263,13 @@ async function startup() {
     const { autoResumeAll } = require('./services/engine/manager');
     const { startDailyCleanup } = require('./services/analysis/cleanup');
     const { startFundingTradeCollector } = require('./services/market-summary');
-    const db = require('./services/database');
 
-    try {
-        await autoResumeAll();
-    } catch (err) {
-        logger.error('server', '放貸引擎自動恢復失敗', { error: err.message });
+    if (userSettingsReady) {
+        try {
+            await autoResumeAll();
+        } catch (err) {
+            logger.error('server', '放貸引擎自動恢復失敗', { error: err.message });
+        }
     }
 
     try {
