@@ -90,6 +90,11 @@ export default function FundingMarketDashboard({ token }) {
     const [lastUpdated, setLastUpdated] = useState(null);
     const [selectedHour, setSelectedHour] = useState(null);
     const [detailSort, setDetailSort] = useState({ key: 'amount', direction: 'desc' });
+    const historyCoverageDays = summary?.historyCoverageDays;
+    const historyWindowDays = summary?.historyWindowDays || 30;
+    const coverageRange = summary?.historyCoverageStartDate && summary?.historyCoverageEndDate
+        ? `（資料日期 ${summary.historyCoverageStartDate} 至 ${summary.historyCoverageEndDate}）`
+        : '';
 
     const load = async () => {
         try {
@@ -162,15 +167,18 @@ export default function FundingMarketDashboard({ token }) {
             </div>
             <div className="market-metrics">
                 <div><strong>{fmt(summary?.currentApy)}</strong><span>目前成交均值</span></div>
-                <div><strong>{fmt(summary?.average30dApy)}</strong><span>30 天平均</span></div>
-                <div><strong>{fmt(summary?.high30dApy)}</strong><span>30 天最高</span></div>
-                <div><strong>{fmt(summary?.low30dApy)}</strong><span>30 天最低</span></div>
+                <div><strong>{fmt(summary?.average30dApy)}</strong><span>30 天平均{historyCoverageDays != null ? `（${historyCoverageDays}/${historyWindowDays} 日資料）` : ''}</span></div>
+                <div><strong>{fmt(summary?.high30dApy)}</strong><span>30 天最高{historyCoverageDays != null ? `（${historyCoverageDays}/${historyWindowDays} 日資料）` : ''}</span></div>
+                <div><strong>{fmt(summary?.low30dApy)}</strong><span>30 天最低{historyCoverageDays != null ? `（${historyCoverageDays}/${historyWindowDays} 日資料）` : ''}</span></div>
             </div>
             <div className="market-body">
                 <div className="market-chart-column">
                     <h3>近 30 日利率走勢 <span className="section-code">RATE RANGE / APY</span></h3>
                     <MarketChart points={points} />
-                    <div className="market-note">灰色區間為每日最低至最高成交利率，青線為成交均值。</div>
+                    <div className="market-note">
+                        灰色區間為每日最低至最高成交利率，青線為成交均值。
+                        {historyCoverageDays != null && ` 歷史覆蓋 ${historyCoverageDays}/${historyWindowDays} 日${coverageRange}。`}
+                    </div>
                 </div>
                 <div className="market-matches">
                     <h3>過去每小時撮合 <span className="section-code">LAST 24H</span></h3>

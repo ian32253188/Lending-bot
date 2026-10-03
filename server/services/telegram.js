@@ -468,6 +468,11 @@ function formatFundingMarketSection(summary) {
     msg += `  ├─ 30 日平均: ${formatPercent(summary.average30dApy)}\n`;
     msg += `  ├─ 30 日最高: ${formatPercent(summary.high30dApy)}\n`;
     msg += `  ├─ 30 日最低: ${formatPercent(summary.low30dApy)}\n`;
+    if (summary.historyCoverageDays != null) {
+        const start = summary.historyCoverageStartDate || '—';
+        const end = summary.historyCoverageEndDate || '—';
+        msg += `  ├─ 歷史覆蓋: ${summary.historyCoverageDays}/${summary.historyWindowDays || 30} 日（${start} 至 ${end}）\n`;
+    }
 
     const hasFullHourlyWindow = Array.isArray(summary.hourlyMatches24) && summary.hourlyMatches24.length > 0;
     const hourly = hasFullHourlyWindow
@@ -510,14 +515,27 @@ async function buildGlobalSummaryMessage(strategy, publicWs, db, marketSummary =
             ? `${(Number(md.frr) * 100).toFixed(4)}%/天`
             : '—';
         let average7dRate = null;
+        let historyDays = 0;
+        let latestHistoryAt = null;
         try {
-            average7dRate = await db.getAverageFRR(cur, 168);
+            const rows = await db.getRateHistory(cur, 168, 'recorded_at,frr');
+            const validRows = (Array.isArray(rows) ? rows : [])
+                .filter(row => row?.recorded_at && row.frr !== null && row.frr !== undefined && Number.isFinite(Number(row.frr)));
+            if (validRows.length) {
+                average7dRate = validRows.reduce((sum, row) => sum + Number(row.frr), 0) / validRows.length;
+                historyDays = new Set(validRows.map(row => new Intl.DateTimeFormat('en-CA', {
+                    timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit',
+                }).format(new Date(row.recorded_at)))).size;
+                latestHistoryAt = validRows.reduce((latest, row) =>
+                    Date.parse(row.recorded_at) > Date.parse(latest) ? row.recorded_at : latest,
+                validRows[0].recorded_at);
+            }
         } catch (error) {
             logger.warn('telegram', `讀取 ${cur} 近 7 日 FRR 平均失敗`, { error: error.message });
         }
-        if (average7dRate == null) average7dRate = strategy.historicalFRR?.[cur]?.['7d'];
-        const avg7d = average7dRate !== null && average7dRate !== undefined && Number.isFinite(Number(average7dRate))
-            ? `${(Number(average7dRate) * 100).toFixed(4)}%/天`
+        const hasHistoryAverage = average7dRate !== null && average7dRate !== undefined && Number.isFinite(Number(average7dRate));
+        const avg7d = hasHistoryAverage
+            ? `${(Number(average7dRate) * 100).toFixed(4)}%/天${historyDays ? `（${historyDays}/7 日有資料${latestHistoryAt ? `，截至 ${new Date(latestHistoryAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}` : ''}）` : ''}`
             : '—';
         msg += `📊 <b>${cur} 市場</b>: FRR ${currentFRR} | 7d 均值 ${avg7d}\n`;
     }
@@ -875,7 +893,10 @@ function buildInactiveUserSummaryMessage(settings, marketSummary, accountStatus 
         `🏦 <b>USD 融資市場</b>\n` +
         `目前成交均值：${market.currentApy != null ? `${Number(market.currentApy).toFixed(2)}%` : '—'}\n` +
         `24 小時最高：${market.high24hApy != null ? `${Number(market.high24hApy).toFixed(2)}%` : '—'}\n` +
-        `30 日最高：${market.high30dApy != null ? `${Number(market.high30dApy).toFixed(2)}%` : '—'}\n\n` +
+        `30 日最高：${market.high30dApy != null ? `${Number(market.high30dApy).toFixed(2)}%` : '—'}\n` +
+        (market.historyCoverageDays != null
+            ? `歷史覆蓋：${market.historyCoverageDays}/${market.historyWindowDays || 30} 日\n\n`
+            : '\n') +
         formatPrivateAccountSection(accountStatus);
 }
 

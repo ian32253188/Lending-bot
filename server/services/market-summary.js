@@ -547,6 +547,10 @@ async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restC
         hourlyMatches24: buildHourlyFundingMatches(trades, now, 24, true),
         collectedTradeCount: trades.length,
         historyPointCount: history.length,
+        historyCoverageDays: history.length,
+        historyWindowDays: 30,
+        historyCoverageStartDate: history[0]?.recorded_at?.slice(0, 10) || null,
+        historyCoverageEndDate: history[history.length - 1]?.recorded_at?.slice(0, 10) || null,
     };
 }
 

@@ -61,6 +61,10 @@ describe('fUSD market summary helpers', () => {
     expect(summary.average30dApy).toBeCloseTo(9.125, 5);
     expect(summary.high30dApy).toBeCloseTo(21.9, 5);
     expect(summary.history).toHaveLength(2);
+    expect(summary.historyCoverageDays).toBe(2);
+    expect(summary.historyWindowDays).toBe(30);
+    expect(summary.historyCoverageStartDate).toBe('2026-08-27');
+    expect(summary.historyCoverageEndDate).toBe('2026-08-28');
     expect(summary.hourlyMatches).toHaveLength(1);
     expect(summary.hourlyMatches24).toHaveLength(24);
     expect(summary.hourlyMatches24[1].details).toHaveLength(2);
