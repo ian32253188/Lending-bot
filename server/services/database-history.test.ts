@@ -162,9 +162,11 @@ describe('rate_history repository', () => {
       expect(ready).toBe(true);
       const sql = state.pgQueries.map(([statement]) => statement).join('\n');
       expect(sql).toContain('CREATE TABLE IF NOT EXISTS funding_offers');
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS funding_loans');
       expect(sql).toContain('CREATE TABLE IF NOT EXISTS earnings');
       expect(sql).toContain('CREATE TABLE IF NOT EXISTS operation_logs');
       expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_funding_offers_status');
+      expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_funding_loans_status');
       expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_earnings_currency_time');
       expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_logs_time');
     } finally {

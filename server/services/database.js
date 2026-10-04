@@ -181,6 +181,23 @@ async function ensureApplicationDataTables() {
         CREATE INDEX IF NOT EXISTS idx_funding_offers_status ON funding_offers (status);
         CREATE INDEX IF NOT EXISTS idx_funding_offers_user ON funding_offers (user_id);
 
+        CREATE TABLE IF NOT EXISTS funding_loans (
+            id SERIAL PRIMARY KEY,
+            loan_id BIGINT UNIQUE,
+            currency VARCHAR(10) NOT NULL,
+            amount DECIMAL(20, 8) NOT NULL,
+            rate DECIMAL(20, 10) NOT NULL,
+            period INTEGER NOT NULL,
+            opened_at TIMESTAMPTZ,
+            closed_at TIMESTAMPTZ,
+            status VARCHAR(20) NOT NULL DEFAULT 'active',
+            interest_earned DECIMAL(20, 8) DEFAULT 0,
+            user_id UUID,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_funding_loans_status ON funding_loans (status);
+        CREATE INDEX IF NOT EXISTS idx_funding_loans_user ON funding_loans (user_id);
+
         CREATE TABLE IF NOT EXISTS earnings (
             id SERIAL PRIMARY KEY,
             currency VARCHAR(10) NOT NULL,

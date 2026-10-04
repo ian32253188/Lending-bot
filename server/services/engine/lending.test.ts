@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   getActiveFundingOffers: vi.fn(),
   getActiveFundingCredits: vi.fn(),
   getActiveFundingLoans: vi.fn(),
+  saveLoan: vi.fn(),
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
@@ -15,7 +16,7 @@ const mockModule = (modulePath: string, exports: unknown) => {
 
 mockModule('../../config', { lending: { currencies: ['USD', 'USDT'] } });
 mockModule('../../utils/logger', mocks.logger);
-mockModule('../database', {});
+mockModule('../database', { saveLoan: mocks.saveLoan });
 mockModule('../bitfinex/rest', {
   getWallets: mocks.getWallets,
   getActiveFundingOffers: mocks.getActiveFundingOffers,
@@ -62,6 +63,26 @@ describe('LendingBot private account status', () => {
     expect(status.accountDataError).toBeNull();
     expect(status.wallets.USD).toEqual({ balance: 100, available: 20 });
     expect(status.activeCredits.USD).toBe(0);
+  });
+
+  it('backfills active Bitfinex lending positions into the local loan history', async () => {
+    const openedAt = new Date('2026-10-03T08:30:00Z');
+    mocks.getActiveFundingCredits.mockResolvedValueOnce([
+      { id: 77, currency: 'USD', side: 1, amount: '-500', rate: 0.0003, period: 2, openedAt },
+    ]);
+    const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' });
+
+    await bot._loadInitialState();
+
+    expect(mocks.saveLoan).toHaveBeenCalledWith({
+      id: 77,
+      currency: 'USD',
+      amount: 500,
+      rate: 0.0003,
+      period: 2,
+      openedAt,
+      status: 'active',
+    }, 'user-a');
   });
 
   it('does not report initialized zeroes when private wallet reads fail', async () => {

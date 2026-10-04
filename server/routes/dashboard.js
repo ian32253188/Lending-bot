@@ -11,6 +11,17 @@ function normalizeEarningAmount(value) {
     return Number.isFinite(amount) ? amount : 0;
 }
 
+function normalizeEarningDate(value) {
+    if (value === null || value === undefined || value === '') {
+        return new Date().toISOString().slice(0, 10);
+    }
+    if (!(value instanceof Date) && typeof value !== 'string' && typeof value !== 'number') {
+        return null;
+    }
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : null;
+}
+
 // 取得儀表板總覽
 router.get('/overview', async (req, res) => {
     try {
@@ -225,7 +236,8 @@ router.get('/earnings/heatmap', async (req, res) => {
 
         const byDate = {};
         for (const row of rows) {
-            const date = row.earned_at?.slice(0, 10) || new Date().toISOString().slice(0, 10);
+            const date = normalizeEarningDate(row.earned_at);
+            if (!date) continue;
             byDate[date] = (byDate[date] || 0) + normalizeEarningAmount(row.amount);
         }
 

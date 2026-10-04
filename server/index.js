@@ -270,9 +270,9 @@ async function startup() {
     if (db.isPostgresConfigured()) {
         applicationDataTablesReady = await db.ensureApplicationDataTables();
         if (applicationDataTablesReady) {
-            logger.info('server', '✅ operation_logs、earnings、funding_offers 資料表已就緒');
+            logger.info('server', '✅ operation_logs、earnings、funding_offers、funding_loans 資料表已就緒');
         } else {
-            logger.error('server', '❌ operation_logs、earnings、funding_offers 初始化失敗');
+            logger.error('server', '❌ operation_logs、earnings、funding_offers、funding_loans 初始化失敗');
         }
         userSettingsReady = await db.ensureUserBotSettingsTable();
         if (userSettingsReady) {

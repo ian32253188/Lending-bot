@@ -275,6 +275,7 @@ class LendingBot {
                 const parsedCredits = credits.map(rest.parseFundingCredit).filter(row => row?.side === 1);
                 const parsedLoans = loans.map(rest.parseFundingCredit).filter(row => row?.side === 1);
                 this.state.activeCredits[currency] = [...parsedCredits, ...parsedLoans];
+                await this._persistActiveLoans(currency);
                 this._accountDataLoadState.credits[currency] = true;
                 this._accountDataErrors.delete(`${currency}:credits`);
             } catch (error) {
@@ -303,6 +304,35 @@ class LendingBot {
             || (this.state.accountDataComplete ? null : 'BITFINEX_ACCOUNT_DATA_INCOMPLETE');
     }
 
+    async _persistActiveLoans(currency) {
+        if (typeof db.saveLoan !== 'function') return;
+        const activeLoans = this.state.activeCredits[currency] || [];
+        await Promise.all(activeLoans.map(async loan => {
+            const amount = Number(loan?.amount);
+            const rate = Number(loan?.rate);
+            const period = Number(loan?.period);
+            if (loan?.id === null || loan?.id === undefined
+                || !Number.isFinite(amount) || !Number.isFinite(rate) || !Number.isFinite(period)) return;
+            try {
+                await db.saveLoan({
+                    id: loan.id,
+                    currency,
+                    amount: Math.abs(amount),
+                    rate,
+                    period,
+                    openedAt: loan.openedAt,
+                    status: 'active',
+                }, this.userId);
+            } catch (error) {
+                logger.warn('engine', `同步 ${currency} 活躍放貸紀錄至資料庫失敗`, {
+                    userId: this.userId,
+                    loanId: loan.id,
+                    error: error.message,
+                });
+            }
+        }));
+    }
+
     _applyWebSocketCreditSnapshots() {
         if (!this._wsCreditSnapshot || !this._wsLoanSnapshot) return;
 
@@ -311,6 +341,7 @@ class LendingBot {
             const loans = this._wsLoanSnapshot[currency] || [];
             const uniqueById = new Map([...credits, ...loans].map(row => [row.id, row]));
             this.state.activeCredits[currency] = [...uniqueById.values()];
+            void this._persistActiveLoans(currency);
             this._accountDataLoadState.credits[currency] = true;
             this._accountDataErrors.delete(`${currency}:credits`);
         }
@@ -559,7 +590,7 @@ class LendingBot {
                     this.state.activeCredits[cur].push(credit);
                     db.saveLoan({
                         id: credit.id, currency: cur, amount: Math.abs(credit.amount),
-                        rate: credit.rate, period: credit.period, status: 'active',
+                        rate: credit.rate, period: credit.period, openedAt: credit.openedAt, status: 'active',
                     }, this.userId);
 
                     const amount = Math.abs(credit.amount);
@@ -634,7 +665,7 @@ class LendingBot {
                         this.state.activeCredits[cur].push(loan);
                         db.saveLoan({
                             id: loan.id, currency: cur, amount: Math.abs(loan.amount),
-                            rate: loan.rate, period: loan.period, status: 'active',
+                            rate: loan.rate, period: loan.period, openedAt: loan.openedAt, status: 'active',
                         }, this.userId);
 
                         const amount = Math.abs(loan.amount);

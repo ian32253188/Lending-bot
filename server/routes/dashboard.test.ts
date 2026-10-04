@@ -223,6 +223,18 @@ describe('Dashboard routes', () => {
     expect(res.body).toEqual([{ date: '2026-10-04', amount: 4 }]);
   });
 
+  it('groups earnings when PostgreSQL returns earned_at as Date objects', async () => {
+    mocks.getEarnings.mockResolvedValue([
+      { currency: 'USD', amount: '1.25', earned_at: new Date('2026-10-04T01:00:00Z') },
+      { currency: 'USD', amount: '2.75', earned_at: new Date('2026-10-04T02:00:00Z') },
+      { currency: 'USD', amount: '50', earned_at: new Date('invalid') },
+    ]);
+
+    const res = await request(app).get('/api/dashboard/earnings/heatmap').expect(200);
+
+    expect(res.body).toEqual([{ date: '2026-10-04', amount: 4 }]);
+  });
+
   it('keeps stopped-engine utilization unavailable when private Bitfinex data cannot be read', async () => {
     mocks.getBot.mockReturnValueOnce(null);
     const res = await request(app).get('/api/dashboard/earnings/stats').expect(200);
