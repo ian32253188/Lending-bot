@@ -8,6 +8,7 @@ import HeatmapView from './HeatmapView';
 import HistoryPage from './HistoryPage';
 import SettingsPanel from './SettingsPanel';
 import FundingMarketDashboard from './FundingMarketDashboard';
+import { getEngineBadge } from './engine-status';
 
 const NAV_ITEMS = [
     { key: 'overview', code: '01', label: '總覽' },
@@ -20,22 +21,7 @@ const NAV_ITEMS = [
 export default function Dashboard({ status, connected, token, onLogout, onRefresh }) {
     const [activePage, setActivePage] = useState('overview');
 
-    const isRunning = status?.running;
-    const isPaused = status?.paused;
-
-    // 強化狀態顯示
-    let engineStatusLabel = '⛹️ 放貸停止';
-    let engineStatusClass = 'disconnected';
-    
-    if (isRunning) {
-        if (isPaused) {
-            engineStatusLabel = '⛸️ 放貸暂停';
-            engineStatusClass = 'paused';
-        } else {
-            engineStatusLabel = '🟢 放貸中';
-            engineStatusClass = 'connected';
-        }
-    }
+    const engineBadge = getEngineBadge(status);
 
     return (
         <div className="app-layout">
@@ -65,8 +51,8 @@ export default function Dashboard({ status, connected, token, onLogout, onRefres
                         <div className="connection-dot"></div>
                         {connected ? 'WS 連線' : '離線'}
                     </div>
-                    <div className={`connection-badge ${engineStatusClass}`} title="放貸引擎狀態">
-                        {engineStatusLabel}
+                    <div className={`connection-badge ${engineBadge.className}`} title={engineBadge.title}>
+                        {engineBadge.label}
                     </div>
                     <span className="header-clock">LIVE CONTROL</span>
                     <button className="btn btn-outline btn-sm" onClick={onLogout}>登出</button>

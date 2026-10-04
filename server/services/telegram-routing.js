@@ -1,5 +1,7 @@
 'use strict';
 
+const { isSingleAccount } = require('../config/single-account');
+
 /**
  * Telegram Chat ID is an identifier, not a number. Keep it as a string so
  * large IDs and negative group IDs are never rounded or reformatted.
@@ -25,6 +27,7 @@ function resolveUserSettingsByChatId(settingsRows, chatId) {
     if (!normalizedChatId) return null;
 
     return (settingsRows || []).find((row) => {
+        if (!isSingleAccount(row?.user_id)) return false;
         try {
             return normalizeTelegramChatId(row?.telegram_chat_id) === normalizedChatId;
         } catch {

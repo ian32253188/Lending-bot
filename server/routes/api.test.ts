@@ -38,7 +38,7 @@ const mockSupabase = {
   auth: {
     getUser: vi.fn().mockImplementation((token) => {
       if (token === 'valid-test-token') {
-        return Promise.resolve({ data: { user: { id: 'test-user-id' } }, error: null });
+        return Promise.resolve({ data: { user: { id: '00000000-0000-0000-0000-000000000001' } }, error: null });
       }
       return Promise.resolve({ data: { user: null }, error: new Error('Invalid token') });
     })
@@ -97,6 +97,8 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
       .expect(200);
 
     expect(res.body.status).toBe('ok');
+    expect(res.body.accountMode).toBe('single');
+    expect(res.body.maxEngineCount).toBe(1);
     expect(res.body.publicWsConnected).toBeDefined();
     expect(res.body.uptime).toBeDefined();
     expect(res.body.runningEngineCount).toBe(0);
@@ -199,7 +201,7 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
     expect(valid.body.rateStrategy).toBe('high_30d');
     expect(valid.body.periodDays).toBe(120);
     expect(valid.body.useAllAvailable).toBe(true);
-    expect(mockSaveUserSettings).toHaveBeenCalledWith('test-user-id', expect.objectContaining({
+    expect(mockSaveUserSettings).toHaveBeenCalledWith('00000000-0000-0000-0000-000000000001', expect.objectContaining({
       strategy_config: expect.objectContaining({ rateStrategy: 'high_30d', periodDays: 120, useAllAvailable: true }),
     }));
 

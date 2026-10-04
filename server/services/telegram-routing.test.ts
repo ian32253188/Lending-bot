@@ -4,13 +4,13 @@ const { normalizeTelegramChatId, resolveUserSettingsByChatId } = require('./tele
 
 describe('Telegram Chat ID binding isolation', () => {
   const users = [
-    { user_id: 'user-a', telegram_chat_id: '10001' },
+    { user_id: '00000000-0000-0000-0000-000000000001', telegram_chat_id: '10001' },
     { user_id: 'user-b', telegram_chat_id: '10002' },
   ];
 
   it('resolves each user only by an exact normalized Chat ID', () => {
-    expect(resolveUserSettingsByChatId(users, 10001).user_id).toBe('user-a');
-    expect(resolveUserSettingsByChatId(users, '10002').user_id).toBe('user-b');
+    expect(resolveUserSettingsByChatId(users, 10001).user_id).toBe('00000000-0000-0000-0000-000000000001');
+    expect(resolveUserSettingsByChatId(users, '10002')).toBeNull();
     expect(resolveUserSettingsByChatId(users, '010001')).toBeNull();
     expect(resolveUserSettingsByChatId(users, '99999')).toBeNull();
   });

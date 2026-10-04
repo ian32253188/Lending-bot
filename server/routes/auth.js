@@ -2,12 +2,13 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 const { getSupabase } = require('../services/database');
+const { SINGLE_ACCOUNT_USER_ID, isSingleAccount } = require('../config/single-account');
 
 const router = express.Router();
 
 // 本地管理員固定帳號 ID（與資料庫 01_init.sql 保持一致）
 const ADMIN_USER = {
-    id: '00000000-0000-0000-0000-000000000001',
+    id: SINGLE_ACCOUNT_USER_ID,
     email: 'admin@lending-bot.local',
     role: 'admin',
 };
@@ -63,6 +64,9 @@ router.get('/verify', async (req, res) => {
     try {
         const decoded = jwt.verify(token, config.jwt.secret);
         if (decoded && decoded.id) {
+            if (!isSingleAccount(decoded.id)) {
+                return res.status(403).json({ valid: false, error: '此系統僅開放單一管理帳戶' });
+            }
             return res.json({
                 valid: true,
                 user: {
@@ -83,6 +87,9 @@ router.get('/verify', async (req, res) => {
         try {
             const { data: { user }, error } = await supabase.auth.getUser(token);
             if (!error && user) {
+                if (!isSingleAccount(user.id)) {
+                    return res.status(403).json({ valid: false, error: '此系統僅開放單一管理帳戶' });
+                }
                 return res.json({
                     valid: true,
                     user: {

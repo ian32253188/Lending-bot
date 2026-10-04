@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 const { getSupabase } = require('../services/database');
+const { isSingleAccount } = require('../config/single-account');
 
 const tokenCache = new Map(); // token -> { user, expiresAt }
 const CACHE_TTL_MS = 60 * 1000; // 60 seconds TTL
@@ -28,6 +29,10 @@ async function authMiddleware(req, res, next) {
     const now = Date.now();
     const cached = tokenCache.get(token);
     if (cached && now < cached.expiresAt) {
+        if (!isSingleAccount(cached.user.id)) {
+            tokenCache.delete(token);
+            return res.status(403).json({ error: '此系統僅開放單一管理帳戶' });
+        }
         req.user = cached.user;
         return next();
     }
@@ -36,6 +41,9 @@ async function authMiddleware(req, res, next) {
     try {
         const decoded = jwt.verify(token, config.jwt.secret);
         if (decoded && decoded.id) {
+            if (!isSingleAccount(decoded.id)) {
+                return res.status(403).json({ error: '此系統僅開放單一管理帳戶' });
+            }
             const user = {
                 id: decoded.id,
                 email: decoded.email,
@@ -58,6 +66,9 @@ async function authMiddleware(req, res, next) {
         try {
             const { data: { user }, error } = await supabase.auth.getUser(token);
             if (!error && user) {
+                if (!isSingleAccount(user.id)) {
+                    return res.status(403).json({ error: '此系統僅開放單一管理帳戶' });
+                }
                 tokenCache.set(token, {
                     user,
                     expiresAt: now + CACHE_TTL_MS

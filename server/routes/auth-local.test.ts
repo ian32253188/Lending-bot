@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import express from 'express';
+import jwt from 'jsonwebtoken';
 import authRoutes from './auth';
 import authMiddleware from '../middleware/auth';
 import config from '../config';
@@ -64,5 +65,21 @@ describe('本地管理員認證與 JWT 驗證 (Local Auth Tests)', () => {
         expect(res.status).toBe(200);
         expect(res.body.message).toBe('ok');
         expect(res.body.user.role).toBe('admin');
+    });
+
+    it('拒絕第二個本機 JWT 帳戶，避免多帳戶存取受保護資料', async () => {
+        const token = jwt.sign({ id: '11111111-1111-4111-8111-111111111111', role: 'user' }, config.jwt.secret);
+
+        const protectedRes = await request(app)
+            .get('/api/protected')
+            .set('Authorization', `Bearer ${token}`);
+        expect(protectedRes.status).toBe(403);
+        expect(protectedRes.body.error).toContain('單一管理帳戶');
+
+        const verifyRes = await request(app)
+            .get('/api/auth/verify')
+            .set('Authorization', `Bearer ${token}`);
+        expect(verifyRes.status).toBe(403);
+        expect(verifyRes.body.valid).toBe(false);
     });
 });

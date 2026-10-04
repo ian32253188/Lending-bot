@@ -5,6 +5,7 @@ const path = require('path');
 const { WebSocketServer } = require('ws');
 const http = require('http');
 const config = require('./config');
+const { isSingleAccount } = require('./config/single-account');
 const logger = require('./utils/logger');
 const authMiddleware = require('./middleware/auth');
 const { getBitfinexPublicWS } = require('./services/bitfinex/ws');
@@ -89,6 +90,8 @@ app.get('/api/health', async (req, res) => {
         : { configured: false, tableReady: false };
     res.json({
         status: 'ok',
+        accountMode: 'single',
+        maxEngineCount: 1,
         uptime: process.uptime(),
         publicWsConnected: publicWs.isConnected(),
         activeEngineCount: typeof getActiveEngineCount === 'function' ? getActiveEngineCount() : 0,
@@ -144,8 +147,11 @@ wss.on('connection', (ws, req) => {
 
                 try {
                     const decoded = jwt.verify(msg.token, config.jwt.secret);
-                    if (decoded && decoded.id) {
+                    if (decoded && isSingleAccount(decoded.id)) {
                         verifiedUser = decoded;
+                    } else if (decoded?.id) {
+                        ws.send(JSON.stringify({ type: 'auth', status: 'error', message: '此系統僅開放單一管理帳戶' }));
+                        return;
                     }
                 } catch (jwtErr) {}
 
@@ -190,6 +196,10 @@ wss.on('connection', (ws, req) => {
                     supabase.auth.getUser(msg.token).then(({ data: { user }, error }) => {
                         if (error || !user) {
                             ws.send(JSON.stringify({ type: 'auth', status: 'error', message: 'Token 無效或已過期' }));
+                            return;
+                        }
+                        if (!isSingleAccount(user.id)) {
+                            ws.send(JSON.stringify({ type: 'auth', status: 'error', message: '此系統僅開放單一管理帳戶' }));
                             return;
                         }
                         handleAuthSuccess(user);

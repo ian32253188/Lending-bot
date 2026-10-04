@@ -4,7 +4,7 @@ const { resolveUserSettingsByChatId } = require('./telegram-routing');
 
 describe('shared Telegram Bot multi-tenant isolation', () => {
   const accounts = [
-    { user_id: 'user-a', telegram_chat_id: '10001', balance: 123 },
+    { user_id: '00000000-0000-0000-0000-000000000001', telegram_chat_id: '10001', balance: 123 },
     { user_id: 'user-b', telegram_chat_id: '10002', balance: 456 },
   ];
 
@@ -13,9 +13,9 @@ describe('shared Telegram Bot multi-tenant isolation', () => {
     return account ? { userId: account.user_id, balance: account.balance } : null;
   }
 
-  it('routes two users to their own private account data through one Bot', () => {
-    expect(routePrivateMessage('10001')).toEqual({ userId: 'user-a', balance: 123 });
-    expect(routePrivateMessage('10002')).toEqual({ userId: 'user-b', balance: 456 });
+  it('routes only the canonical private account through the shared Bot', () => {
+    expect(routePrivateMessage('10001')).toEqual({ userId: '00000000-0000-0000-0000-000000000001', balance: 123 });
+    expect(routePrivateMessage('10002')).toBeNull();
   });
 
   it('does not fallback an unknown tenant to another user or admin chat', () => {

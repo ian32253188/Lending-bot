@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const userId = '11111111-1111-4111-8111-111111111111';
+const userId = '00000000-0000-0000-0000-000000000001';
 const saveUserSettings = vi.fn().mockResolvedValue(null);
 const getUserSettings = vi.fn().mockResolvedValue({
   bitfinex_api_key: 'key',
@@ -67,7 +67,8 @@ moduleMock('../../utils/crypto', { decryptWithFallback: (value: string) => value
 const { getBot, startBot, restartBotPreservingState, shutdownAll, getEngineStateCounts } = require('./manager');
 
 describe('Engine manager persisted state', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await shutdownAll();
     vi.clearAllMocks();
     getUserSettings.mockResolvedValue({
       bitfinex_api_key: 'key',
@@ -94,7 +95,6 @@ describe('Engine manager persisted state', () => {
   });
 
   it('恢復 running 使用者時會持久化 running 而不意外改成 stopped', async () => {
-    const runningUserId = 'running-user';
     getUserSettings.mockResolvedValueOnce({
       bitfinex_api_key: 'key',
       bitfinex_api_secret: 'secret',
@@ -103,14 +103,22 @@ describe('Engine manager persisted state', () => {
       strategy_config: { rateStrategy: 'current_avg', periodDays: 2 },
     });
 
-    const bot = await startBot(runningUserId);
+    const bot = await startBot(userId);
 
     expect(bot.running).toBe(true);
-    expect(saveUserSettings).toHaveBeenCalledWith(runningUserId, { status: 'running' });
-    expect(saveUserSettings).not.toHaveBeenCalledWith(runningUserId, { status: 'stopped' });
+    expect(saveUserSettings).toHaveBeenCalledWith(userId, { status: 'running' });
+    expect(saveUserSettings).not.toHaveBeenCalledWith(userId, { status: 'stopped' });
+  });
+
+  it('拒絕啟動第二個帳戶，也不讀取或修改其設定', async () => {
+    await expect(startBot('another-account')).rejects.toMatchObject({ code: 'SINGLE_ACCOUNT_ONLY' });
+    expect(getUserSettings).not.toHaveBeenCalled();
+    expect(saveUserSettings).not.toHaveBeenCalled();
   });
 
   it('程序關閉時停止引擎但不把 persisted status 改成 stopped', async () => {
+    await startBot(userId);
+    saveUserSettings.mockClear();
     await shutdownAll();
 
     expect(saveUserSettings).not.toHaveBeenCalledWith(userId, { status: 'stopped' });

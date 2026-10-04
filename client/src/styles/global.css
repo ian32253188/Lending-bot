@@ -733,6 +733,18 @@ body {
   border: 1px solid rgba(248, 81, 73, 0.3);
 }
 
+.connection-badge.degraded {
+  background: rgba(210, 153, 34, 0.15);
+  color: #e3b341;
+  border: 1px solid rgba(210, 153, 34, 0.38);
+}
+
+.connection-badge.paused {
+  background: rgba(210, 153, 34, 0.15);
+  color: #e3b341;
+  border: 1px solid rgba(210, 153, 34, 0.38);
+}
+
 .connection-dot {
   width: 8px;
   height: 8px;

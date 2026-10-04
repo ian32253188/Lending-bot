@@ -7,10 +7,9 @@ const { RATE_STRATEGY_LABELS, PERIOD_DAYS, normalizeStrategyConfig } = require('
 const { normalizeTelegramChatId } = require('./telegram-routing');
 const { getUsdToTwdRate, convertToTwd } = require('./exchange-rate');
 const { isPublicTickerFresh } = require('./bitfinex/ws');
+const { isSingleAccount } = require('../config/single-account');
 
-// ============== 多租戶 Telegram Bot 註冊表 ==============
-// One polling process handles all users. Routes are keyed by userId and each
-// route is resolved from the exact Telegram Chat ID stored in the database.
+// One shared Bot and one private account route are supported in this deployment.
 const userBots = new Map();
 
 // 系統管理員 Bot (用 .env 設定的全域 Bot，可選)
@@ -79,6 +78,10 @@ function ensureSharedBot(botToken) {
  * @param {string} chatId - 用戶自訂的 Telegram Chat ID
  */
 function initUserTelegram(userId, botToken, chatId) {
+    if (!isSingleAccount(userId)) {
+        logger.warn('telegram', '拒絕註冊非管理員帳戶的 Telegram route（單一帳戶模式）');
+        return null;
+    }
     const normalizedChatId = normalizeTelegramChatId(chatId);
     if (!normalizedChatId) {
         logger.debug('telegram', `用戶 ${userId} 未設定 Telegram Chat ID，通知功能跳過`);
@@ -116,6 +119,10 @@ function destroyUserTelegram(userId) {
 async function sendMessage(text, userId = null) {
     // 1. 嘗試用該用戶自己的 Bot
     if (userId) {
+        if (!isSingleAccount(userId)) {
+            logger.warn('telegram', '拒絕向非管理員帳戶發送訊息（單一帳戶模式）');
+            return;
+        }
         const entry = userBots.get(userId);
         if (entry && entry.bot && entry.chatId) {
             try {
@@ -718,7 +725,7 @@ function setupAdminBotHandlers(bot) {
                     );
                 bot.sendMessage(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => {});
             } else {
-                const activeUserIds = await db.getActiveUsers();
+                const activeUserIds = (await db.getActiveUsers()).filter(isSingleAccount);
                 if (activeUserIds.length > 0) {
                 let report = '';
                 for (const userId of activeUserIds) {
@@ -924,7 +931,8 @@ async function getSettingsByChatId(chatId) {
     try {
         const db = require('./database');
         if (typeof db.getUserSettingsByTelegramChatId === 'function') {
-            return await db.getUserSettingsByTelegramChatId(chatId);
+            const settings = await db.getUserSettingsByTelegramChatId(chatId);
+            return isSingleAccount(settings?.user_id) ? settings : null;
         }
 
         // Compatibility path for isolated test doubles only. It is still an
@@ -937,7 +945,7 @@ async function getSettingsByChatId(chatId) {
             .eq('telegram_chat_id', normalizedChatId)
             .maybeSingle();
         if (error) return null;
-        return data || null;
+        return isSingleAccount(data?.user_id) ? data : null;
     } catch {
         return null;
     }

@@ -6,8 +6,10 @@ const { getStrategyEngine } = require('./strategy');
 const { LendingBot } = require('./lending');
 const { decryptWithFallback } = require('../../utils/crypto');
 const metrics = require('../metrics');
+const { isSingleAccount, SINGLE_ACCOUNT_USER_ID } = require('../../config/single-account');
 
-// 在記憶體中維護所有活躍的使用者機器人實例
+// The map remains keyed by user ID for compatibility with persisted records,
+// but the guard below limits this deployment to its one canonical account.
 const activeRunners = new Map();
 const activeStarting = new Set(); // 并发启动保护
 let globalRateCollectorTimer = null;
@@ -19,6 +21,11 @@ const HISTORICAL_FRR_REFRESH_MS = 6 * 60 * 60 * 1000;
  * 啟動特定使用者的放貸機器人
  */
 async function startBot(userId) {
+    if (!isSingleAccount(userId)) {
+        const error = new Error('此系統僅支援單一放貸帳戶；請使用管理員帳戶設定');
+        error.code = 'SINGLE_ACCOUNT_ONLY';
+        throw error;
+    }
     if (activeStarting.has(userId)) {
         logger.info('manager', `使用者 ${userId} 的放貸機器人啟動中，跳過重複請求`);
         return;
@@ -105,6 +112,11 @@ async function startBot(userId) {
  * 停止特定使用者的放貸機器人
  */
 async function stopBot(userId, { persistStatus = true } = {}) {
+    if (!isSingleAccount(userId)) {
+        const error = new Error('此系統僅支援單一放貸帳戶');
+        error.code = 'SINGLE_ACCOUNT_ONLY';
+        throw error;
+    }
     const bot = activeRunners.get(userId);
     if (!bot) {
         logger.warn('manager', `使用者 ${userId} 的放貸機器人未在運行中`);
@@ -148,6 +160,7 @@ async function restartBotPreservingState(userId) {
  * 取得特定使用者的運行實例
  */
 function getBot(userId) {
+    if (!isSingleAccount(userId)) return null;
     return activeRunners.get(userId) || null;
 }
 
@@ -180,9 +193,11 @@ async function autoResumeAll() {
         startGlobalRateCollector();
 
         const resumableUsers = await db.getUsersToResume();
-        logger.info('manager', `發現共有 ${resumableUsers.length} 個帳戶需要恢復運行或暫停狀態`);
+        const account = resumableUsers.find(user => isSingleAccount(user.user_id));
+        const ignoredLegacyCount = resumableUsers.length - (account ? 1 : 0);
+        logger.info('manager', `單一帳戶模式：${account ? '找到可恢復的管理員帳戶' : '沒有可恢復的管理員帳戶'}；忽略 ${ignoredLegacyCount} 筆舊帳戶設定`);
 
-        for (const user of resumableUsers) {
+        for (const user of (account ? [account] : [])) {
             const userId = user.user_id;
             try {
                 await startBot(userId);
@@ -192,7 +207,7 @@ async function autoResumeAll() {
                 // 實際是否活躍仍由 activeRunners / health metrics 判斷。
             }
         }
-        logger.info('manager', '✅ 所有活躍帳戶自動恢復完成');
+        logger.info('manager', `✅ 單一帳戶自動恢復程序完成 (${SINGLE_ACCOUNT_USER_ID})`);
     } catch (err) {
         logger.error('manager', '自動恢復程序出錯', { error: err.message });
     }
