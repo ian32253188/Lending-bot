@@ -7,6 +7,7 @@ const HOUR_MS = 60 * 60 * 1000;
 const CACHE_MS = 60 * 1000;
 const HISTORY_CACHE_MS = 60 * 60 * 1000; // 1 小時快取
 const PUBLIC_FUNDING_TRADES_LIMIT = 10000;
+const PUBLIC_FUNDING_CANDLES_LIMIT = 1000;
 const FUNDING_TRADES_REQUEST_INTERVAL_MS = 4100;
 const FUNDING_TRADES_COLLECT_INTERVAL_MS = 60 * 1000;
 const FUNDING_TRADES_STALE_AFTER_MS = 5 * 60 * 1000;
@@ -17,6 +18,10 @@ let cachedHistory = null;
 let cachedHistoryAt = 0;
 let cachedHistoryDb = null;
 let historyPromise = null;
+let cachedFundingCandles = null;
+let cachedFundingCandlesAt = 0;
+let cachedFundingCandlesClient = null;
+let fundingCandlesPromise = null;
 let fundingTradeCollectorTimer = null;
 let fundingTradeCollectorPromise = null;
 let fundingTradeBackfillPromise = null;
@@ -494,12 +499,92 @@ function aggregateDailyRateHistory(history, now = Date.now(), days = 30) {
         }));
 }
 
+function aggregateDailyFundingCandles(candles, now = Date.now(), days = 30) {
+    const currentDate = taipeiDateKey(new Date(now).toISOString());
+    if (!currentDate) return [];
+    const currentDayStart = Date.parse(`${currentDate}T00:00:00+08:00`);
+    const firstDate = taipeiDateKey(new Date(currentDayStart - (days - 1) * DAY_MS).toISOString());
+    const buckets = new Map();
+
+    for (const candle of candles || []) {
+        if (!Array.isArray(candle) || candle.length < 6) continue;
+        const timestamp = numberOrNull(candle[0]);
+        const closeRate = numberOrNull(candle[2]);
+        const highRate = numberOrNull(candle[3]);
+        const lowRate = numberOrNull(candle[4]);
+        if (timestamp === null || timestamp > now) continue;
+        const date = taipeiDateKey(new Date(timestamp).toISOString());
+        if (!date || date < firstDate || date > currentDate) continue;
+
+        const bucket = buckets.get(date) || { date, closeSum: 0, closeCount: 0, highRate: null, lowRate: null };
+        if (closeRate !== null) {
+            bucket.closeSum += closeRate;
+            bucket.closeCount += 1;
+        }
+        if (highRate !== null) bucket.highRate = bucket.highRate === null ? highRate : Math.max(bucket.highRate, highRate);
+        if (lowRate !== null) bucket.lowRate = bucket.lowRate === null ? lowRate : Math.min(bucket.lowRate, lowRate);
+        buckets.set(date, bucket);
+    }
+
+    return [...buckets.values()]
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .map(bucket => ({
+            recorded_at: `${bucket.date}T00:00:00+08:00`,
+            avg_rate: bucket.closeCount ? bucket.closeSum / bucket.closeCount : null,
+            high_rate: bucket.highRate,
+            low_rate: bucket.lowRate,
+        }));
+}
+
+function mergeMissingRateHistory(history, candleHistory) {
+    const byDate = new Map(history.map(row => [row.recorded_at.slice(0, 10), row]));
+    let fallbackDays = 0;
+    for (const row of candleHistory) {
+        const date = row.recorded_at.slice(0, 10);
+        if (byDate.has(date)) continue;
+        byDate.set(date, row);
+        fallbackDays += 1;
+    }
+    return {
+        history: [...byDate.values()].sort((a, b) => a.recorded_at.localeCompare(b.recorded_at)),
+        fallbackDays,
+    };
+}
+
+async function getCachedFundingCandles(restClient, now = Date.now()) {
+    if (typeof restClient?.getFundingCandles !== 'function') return [];
+    if (
+        cachedFundingCandles !== null &&
+        cachedFundingCandlesClient === restClient &&
+        now - cachedFundingCandlesAt < HISTORY_CACHE_MS
+    ) {
+        return cachedFundingCandles;
+    }
+    if (fundingCandlesPromise) return fundingCandlesPromise;
+
+    fundingCandlesPromise = Promise.resolve()
+        .then(() => restClient.getFundingCandles('USD', { limit: PUBLIC_FUNDING_CANDLES_LIMIT, sort: -1 }))
+        .then(rows => Array.isArray(rows) ? rows : [])
+        .catch(error => {
+            console.error('Bitfinex public funding candle fallback failed:', error.message);
+            return [];
+        })
+        .then(rows => {
+            cachedFundingCandles = rows;
+            cachedFundingCandlesAt = now;
+            cachedFundingCandlesClient = restClient;
+            return rows;
+        })
+        .finally(() => { fundingCandlesPromise = null; });
+    return fundingCandlesPromise;
+}
+
 /**
  * 取得每日摘要所需的 fUSD 公開市場資料。
  * 市場成交資料優先來自 OCI VM 本機 PostgreSQL；沒有本機資料庫時才直接查 Bitfinex。
  * 30 日統計使用本機已收集的 rate_history。
  */
-async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restClient = rest, historyData, tradeData } = {}) {
+async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restClient = rest, historyData, historyCandleData, tradeData } = {}) {
     const marketData = publicWs?.getMarketData?.('USD') || {};
     const tickerUpdatedAt = numberOrNull(marketData.tickerLastUpdate);
     const tickerFresh = isPublicTickerFresh(marketData, now);
@@ -518,13 +603,23 @@ async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restC
 
     const tradeDataAvailable = tradesResult.status === 'fulfilled' && Array.isArray(tradesResult.value);
     const historyDataAvailable = historyResult.status === 'fulfilled' && Array.isArray(historyResult.value);
+    const candleResult = await Promise.allSettled([Promise.resolve(historyCandleData ?? [])]);
+    const historyCandleDataAvailable = candleResult[0].status === 'fulfilled' && Array.isArray(candleResult[0].value);
     const trades = tradeDataAvailable
         ? tradesResult.value.map(parseFundingTrade).filter(Boolean)
         : [];
     const rawHistory = historyDataAvailable
         ? historyResult.value
         : [];
-    const history = aggregateDailyRateHistory(rawHistory, now, 30);
+    const oracleHistory = aggregateDailyRateHistory(rawHistory, now, 30);
+    const candleHistory = aggregateDailyFundingCandles(
+        historyCandleDataAvailable ? candleResult[0].value : [],
+        now,
+        30,
+    );
+    const mergedHistory = mergeMissingRateHistory(oracleHistory, candleHistory);
+    const history = mergedHistory.history;
+    const historyAvailable = historyDataAvailable || candleHistory.length > 0;
 
     const tradeVolume = trades.reduce((sum, trade) => sum + trade.amount, 0);
     const weightedRate = tradeVolume > 0
@@ -580,14 +675,16 @@ async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restC
         tickerFresh,
         tickerUpdatedAt: tickerUpdatedAt ? new Date(tickerUpdatedAt).toISOString() : null,
         tradeDataAvailable,
-        historyDataAvailable,
+        historyDataAvailable: historyAvailable,
         marketDataSources: {
             trades: db?.getFundingTrades
                 ? 'Oracle PostgreSQL primary; Bitfinex public REST self-healing fallback'
                 : 'Bitfinex public REST API',
-            rateHistory: db?.getRateHistory
-                ? 'Oracle PostgreSQL with legacy Supabase fallback when local coverage is incomplete'
-                : 'unavailable',
+            rateHistory: mergedHistory.fallbackDays
+                ? `${db?.getRateHistory && historyDataAvailable ? 'Oracle PostgreSQL' : 'No local history'} + Bitfinex public hourly candles for ${mergedHistory.fallbackDays} missing day(s); daily mean of hourly closes`
+                : db?.getRateHistory
+                    ? historyDataAvailable ? 'Oracle PostgreSQL rate history' : 'Oracle PostgreSQL rate history unavailable'
+                    : history.length ? 'Bitfinex public hourly candles; daily mean of hourly closes' : 'unavailable',
             ticker: tickerFresh ? 'Bitfinex public Funding Ticker' : 'stale or unavailable',
         },
         average30dApy: averageRates.length
@@ -598,11 +695,12 @@ async function buildFundingMarketSummary({ publicWs, db, now = Date.now(), restC
         hourlyMatches: tradeDataAvailable ? buildHourlyFundingMatches(trades, now) : [],
         hourlyMatches24: tradeDataAvailable ? buildHourlyFundingMatches(trades, now, 24, true) : [],
         collectedTradeCount: tradeDataAvailable ? trades.length : null,
-        historyPointCount: historyDataAvailable ? history.length : null,
-        historyCoverageDays: historyDataAvailable ? history.length : null,
+        historyPointCount: historyAvailable ? history.length : null,
+        historyCoverageDays: historyAvailable ? history.length : null,
+        historyCandleFallbackDays: mergedHistory.fallbackDays,
         historyWindowDays: 30,
-        historyCoverageStartDate: historyDataAvailable ? history[0]?.recorded_at?.slice(0, 10) || null : null,
-        historyCoverageEndDate: historyDataAvailable ? history[history.length - 1]?.recorded_at?.slice(0, 10) || null : null,
+        historyCoverageStartDate: historyAvailable ? history[0]?.recorded_at?.slice(0, 10) || null : null,
+        historyCoverageEndDate: historyAvailable ? history[history.length - 1]?.recorded_at?.slice(0, 10) || null : null,
     };
 }
 
@@ -625,16 +723,28 @@ async function getCachedFundingMarketSummary(options = {}) {
         ? Promise.resolve(options.historyData)
         : getCachedRateHistory(options.db, now);
 
+    const historyCandleDataPromise = options.historyCandleData !== undefined
+        ? Promise.resolve(options.historyCandleData)
+        : historyDataPromise
+            .then(history => {
+                const dailyHistory = aggregateDailyRateHistory(Array.isArray(history) ? history : [], now, 30);
+                return dailyHistory.length >= 30 ? [] : getCachedFundingCandles(options.restClient || rest, now);
+            })
+            .catch(() => getCachedFundingCandles(options.restClient || rest, now));
+
     cachePromise = Promise.all([
         tradeDataPromise.then(value => ({ available: Array.isArray(value), value }))
             .catch(error => ({ available: false, error })),
         historyDataPromise.then(value => ({ available: Array.isArray(value), value }))
             .catch(error => ({ available: false, error })),
+        historyCandleDataPromise.then(value => ({ available: Array.isArray(value), value }))
+            .catch(error => ({ available: false, error })),
     ])
-    .then(([tradeResult, historyResult]) => buildFundingMarketSummary({
+    .then(([tradeResult, historyResult, candleResult]) => buildFundingMarketSummary({
         ...options,
         tradeData: tradeResult.available ? tradeResult.value : Promise.reject(tradeResult.error),
         historyData: historyResult.available ? historyResult.value : Promise.reject(historyResult.error),
+        historyCandleData: candleResult.available ? candleResult.value : Promise.reject(candleResult.error),
     }))
         .then(summary => {
             cachedSummary = summary;
@@ -650,6 +760,7 @@ async function getCachedFundingMarketSummary(options = {}) {
 module.exports = {
     annualizedPercent,
     aggregateDailyRateHistory,
+    aggregateDailyFundingCandles,
     buildHourlyFundingMatches,
     buildFundingMarketSummary,
     getCachedFundingMarketSummary,

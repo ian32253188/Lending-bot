@@ -66,6 +66,17 @@ describe('Bitfinex REST adapter', () => {
     expect(fetchMock).toHaveBeenCalledWith('https://api.test/v2/trades/fUSD/hist?limit=25&start=100');
   });
 
+  it('requests hourly public funding candles for the mapped Bitfinex symbol', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await rest.getFundingCandles('USDT', { limit: 1000, sort: -1 });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.test/v2/candles/trade:1h:fUST:a30:p2:p30/hist?limit=1000&sort=-1',
+    );
+  });
+
   it('uses per-user credentials and a Bitfinex HMAC signature for private calls', async () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse([{ type: 'funding' }]));
     vi.stubGlobal('fetch', fetchMock);

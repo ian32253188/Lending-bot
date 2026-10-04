@@ -6,6 +6,11 @@ const { getInactiveDashboardStatusForUser } = require('../services/dashboard-sta
 
 const router = express.Router();
 
+function normalizeEarningAmount(value) {
+    const amount = Number(value);
+    return Number.isFinite(amount) ? amount : 0;
+}
+
 // 取得儀表板總覽
 router.get('/overview', async (req, res) => {
     try {
@@ -142,13 +147,13 @@ router.get('/earnings/stats', async (req, res) => {
         function sumByCurrency(rows) {
             const result = {};
             for (const row of rows) {
-                result[row.currency] = (result[row.currency] || 0) + (row.amount || 0);
+                result[row.currency] = (result[row.currency] || 0) + normalizeEarningAmount(row.amount);
             }
             return result;
         }
 
         function totalSum(rows) {
-            return rows.reduce((s, r) => s + (r.amount || 0), 0);
+            return rows.reduce((sum, row) => sum + normalizeEarningAmount(row.amount), 0);
         }
 
         res.json({
@@ -221,7 +226,7 @@ router.get('/earnings/heatmap', async (req, res) => {
         const byDate = {};
         for (const row of rows) {
             const date = row.earned_at?.slice(0, 10) || new Date().toISOString().slice(0, 10);
-            byDate[date] = (byDate[date] || 0) + (row.amount || 0);
+            byDate[date] = (byDate[date] || 0) + normalizeEarningAmount(row.amount);
         }
 
         const result = Object.entries(byDate)

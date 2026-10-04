@@ -316,6 +316,20 @@ async function getFundingTrades(currency, options = {}) {
 }
 
 /**
+ * 取得公開 Funding 成交 K 線（每小時），供缺少本機日歷史時補足圖表。
+ * Bitfinex candle 格式為 [MTS, OPEN, CLOSE, HIGH, LOW, VOLUME]。
+ */
+async function getFundingCandles(currency, options = {}) {
+    const bfxSym = toBfxSymbol(currency);
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(options)) {
+        if (value !== undefined && value !== null) params.set(key, String(value));
+    }
+    const query = params.toString();
+    return publicRequest(`/candles/trade:1h:f${bfxSym}:a30:p2:p30/hist${query ? `?${query}` : ''}`);
+}
+
+/**
  * 取得 Funding Book
  */
 async function getFundingBook(currency, precision = 'P0') {
@@ -405,6 +419,7 @@ module.exports = {
     getFundingTicker,
     getFundingStats,
     getFundingTrades,
+    getFundingCandles,
     getFundingBook,
     parseFundingOffer,
     parseFundingCredit,

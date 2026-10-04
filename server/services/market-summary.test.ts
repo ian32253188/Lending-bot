@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { aggregateDailyRateHistory, annualizedPercent, buildFundingMarketSummary, buildHourlyFundingMatches, getCachedFundingMarketSummary, loadRecentFundingTrades } from './market-summary';
+import { aggregateDailyFundingCandles, aggregateDailyRateHistory, annualizedPercent, buildFundingMarketSummary, buildHourlyFundingMatches, getCachedFundingMarketSummary, loadRecentFundingTrades } from './market-summary';
 
 describe('fUSD market summary helpers', () => {
   it('converts Bitfinex daily funding rates to annualized percentages', () => {
@@ -151,6 +151,56 @@ describe('fUSD market summary helpers', () => {
     expect(rows[0].count).toBe(0);
     expect(rows[1].count).toBe(1);
     expect(rows[1].details[0].period).toBe(2);
+  });
+
+  it('aggregates public hourly candle closes and ranges by Taipei date', () => {
+    const now = Date.parse('2026-10-04T08:00:00Z');
+    const history = aggregateDailyFundingCandles([
+      [1, 0.0002, 0.0003, 0.0005, 0.0001, 100],
+      [Date.parse('2026-10-04T01:00:00Z'), 0.0004, 0.0005, 0.0007, 0.0003, 200],
+      [Date.parse('2026-10-04T03:00:00Z'), 0.0006, 0.0007, 0.001, 0.0004, 300],
+    ], now, 30);
+
+    expect(history).toHaveLength(1);
+    expect(history[0].recorded_at).toBe('2026-10-04T00:00:00+08:00');
+    expect(history[0].avg_rate).toBeCloseTo(0.0006, 10);
+    expect(history[0].high_rate).toBe(0.001);
+    expect(history[0].low_rate).toBe(0.0003);
+  });
+
+  it('fills missing 30-day dates from public candles without replacing Oracle days', async () => {
+    const now = Date.parse('2026-10-04T08:00:00Z');
+    const db = {
+      getRateHistory: vi.fn().mockResolvedValue([
+        { recorded_at: '2026-10-02T00:00:00+08:00', avg_rate: 0.0002, high_rate: 0.0003, low_rate: 0.0001 },
+      ]),
+    };
+    const restClient = {
+      getFundingCandles: vi.fn().mockResolvedValue([
+        [Date.parse('2026-10-03T12:00:00Z'), 0.0002, 0.0004, 0.0006, 0.0001, 100],
+        [Date.parse('2026-10-04T01:00:00Z'), 0.0004, 0.0005, 0.0007, 0.0003, 200],
+        [Date.parse('2026-10-04T03:00:00Z'), 0.0006, 0.0007, 0.001, 0.0004, 300],
+        [Date.parse('2026-10-02T02:00:00Z'), 0.0009, 0.001, 0.0011, 0.0008, 900],
+      ]),
+    };
+
+    const summary = await getCachedFundingMarketSummary({
+      now,
+      force: true,
+      db,
+      restClient,
+      tradeData: [],
+      publicWs: { getMarketData: () => ({}) },
+    });
+
+    expect(restClient.getFundingCandles).toHaveBeenCalledWith('USD', { limit: 1000, sort: -1 });
+    expect(summary.history.map(row => row.timestamp.slice(0, 10))).toEqual(['2026-10-02', '2026-10-03', '2026-10-04']);
+    expect(summary.history[0].avgRate).toBe(0.0002);
+    expect(summary.history[1].avgRate).toBe(0.0004);
+    expect(summary.history[2].avgRate).toBeCloseTo(0.0006, 10);
+    expect(summary.historyCandleFallbackDays).toBe(2);
+    expect(summary.historyCoverageDays).toBe(3);
+    expect(summary.marketDataSources.rateHistory).toContain('daily mean of hourly closes');
   });
 
   it('does not use stale public ticker values as current market data', async () => {

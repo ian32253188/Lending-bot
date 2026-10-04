@@ -199,6 +199,30 @@ describe('Dashboard routes', () => {
     expect(res.body.utilizationDataSource).toContain('Bitfinex 私有 WebSocket');
   });
 
+  it('adds Oracle numeric-string earnings as numbers instead of concatenating them', async () => {
+    mocks.getEarnings.mockResolvedValue([
+      { currency: 'USD', amount: '1.8603', earned_at: '2026-10-04T01:00:00Z' },
+      { currency: 'USD', amount: '2.1397', earned_at: '2026-10-03T01:00:00Z' },
+      { currency: 'USDT', amount: '0.25', earned_at: '2026-10-03T02:00:00Z' },
+    ]);
+
+    const res = await request(app).get('/api/dashboard/earnings/stats').expect(200);
+
+    expect(res.body.today).toEqual({ byCurrency: { USD: 4, USDT: 0.25 }, total: 4.25 });
+    expect(res.body.allTime).toEqual({ byCurrency: { USD: 4, USDT: 0.25 }, total: 4.25 });
+  });
+
+  it('adds Oracle numeric-string earnings correctly in the heatmap', async () => {
+    mocks.getEarnings.mockResolvedValue([
+      { currency: 'USD', amount: '1.8603', earned_at: '2026-10-04T01:00:00Z' },
+      { currency: 'USD', amount: '2.1397', earned_at: '2026-10-04T02:00:00Z' },
+    ]);
+
+    const res = await request(app).get('/api/dashboard/earnings/heatmap').expect(200);
+
+    expect(res.body).toEqual([{ date: '2026-10-04', amount: 4 }]);
+  });
+
   it('keeps stopped-engine utilization unavailable when private Bitfinex data cannot be read', async () => {
     mocks.getBot.mockReturnValueOnce(null);
     const res = await request(app).get('/api/dashboard/earnings/stats').expect(200);
