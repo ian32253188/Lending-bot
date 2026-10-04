@@ -22,6 +22,7 @@ const mockGetUserSettings = vi.fn().mockResolvedValue({
 const mockSaveUserSettings = vi.fn().mockResolvedValue(null);
 const mockManager = {
   getBot: vi.fn().mockReturnValue(mockEngine),
+  getEngineStateCounts: vi.fn().mockReturnValue({ instances: 1, running: 0, paused: 1 }),
   startBot: vi.fn().mockResolvedValue(mockEngine),
   stopBot: vi.fn().mockResolvedValue(null),
   restartBotPreservingState: vi.fn().mockResolvedValue(mockEngine)
@@ -98,6 +99,8 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
     expect(res.body.status).toBe('ok');
     expect(res.body.publicWsConnected).toBeDefined();
     expect(res.body.uptime).toBeDefined();
+    expect(res.body.runningEngineCount).toBe(0);
+    expect(res.body.pausedEngineCount).toBe(1);
   });
 
   it('GET /metrics 應能輸出符合 Prometheus Exposition 格式之指標', async () => {

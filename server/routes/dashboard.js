@@ -105,7 +105,9 @@ router.get('/earnings/stats', async (req, res) => {
         let utilizationDataAvailable = false;
         let utilizationDataSource = null;
         let utilizationError = null;
-        if (engine?.state?.wallets && engine?.state?.activeCredits) {
+        const engineAccountDataComplete = engine?.state?.accountDataComplete
+            ?? Boolean(engine?.state?.wallets && engine?.state?.activeCredits);
+        if (engineAccountDataComplete && engine?.state?.wallets && engine?.state?.activeCredits) {
             utilization = {};
             for (const [currency, wallet] of Object.entries(engine.state.wallets)) {
                 const balance = Number(wallet?.balance);

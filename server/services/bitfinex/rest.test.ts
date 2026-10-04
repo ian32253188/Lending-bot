@@ -86,6 +86,33 @@ describe('Bitfinex REST adapter', () => {
     expect(options.body).toBe(JSON.stringify(body));
   });
 
+  it('serializes private requests that use the same API key to preserve nonce order', async () => {
+    let releaseFirst: ((value: unknown) => void) | undefined;
+    let firstStarted: (() => void) | undefined;
+    const started = new Promise<void>(resolve => { firstStarted = resolve; });
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => {
+        firstStarted?.();
+        return new Promise(resolve => { releaseFirst = resolve; });
+      })
+      .mockResolvedValueOnce(okResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const credentials = { apiKey: 'shared-key', apiSecret: 'shared-secret' };
+    const first = rest.authRequest('/auth/r/wallets', {}, credentials);
+    const second = rest.authRequest('/auth/r/funding/offers/fUSD', {}, credentials);
+    await started;
+    await Promise.resolve();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    releaseFirst?.(okResponse([]));
+    await Promise.all([first, second]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const nonces = fetchMock.mock.calls.map(([, options]) => Number(options.headers['bfx-nonce']));
+    expect(nonces[1]).toBeGreaterThan(nonces[0]);
+  });
+
   it('rejects an authenticated request before fetch when credentials are missing', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

@@ -13,6 +13,7 @@ const inFlightSnapshots = new Map();
 function unavailableSnapshot(error, errorCode = null) {
     return {
         accountDataAvailable: false,
+        accountDataComplete: false,
         accountDataSource: 'Bitfinex private REST API',
         accountDataUpdatedAt: null,
         accountDataError: error,
@@ -46,6 +47,13 @@ function classifyPrivateApiError(error) {
             code: 'BITFINEX_SIGNATURE_INVALID',
             status,
             message: 'Bitfinex 拒絕 API 簽章；請核對 API Key 與 Secret 是否配對且仍有效。',
+        };
+    }
+    if (bitfinexCode === 10114 || /nonce:\s*(small|too small)/i.test(bitfinexMessage)) {
+        return {
+            code: 'BITFINEX_NONCE_OUT_OF_ORDER',
+            status,
+            message: 'Bitfinex 私有 API 請求順序衝突；系統會序列化請求，請稍後重新整理。',
         };
     }
     if (/permission|access denied|not authorized|invalid scope/i.test(bitfinexMessage)) {
@@ -105,17 +113,14 @@ async function fetchAccountSnapshot(userId) {
             return unavailableSnapshot('尚未設定可讀取 Bitfinex 帳戶的 API 金鑰。', 'BITFINEX_CREDENTIALS_MISSING');
         }
 
-        const [rawWallets, currencyResults] = await Promise.all([
-            rest.getWallets(credentials),
-            Promise.all(['USD', 'USDT'].map(async currency => {
-                const [rawOffers, rawCredits, rawLoans] = await Promise.all([
-                    rest.getActiveFundingOffers(currency, credentials),
-                    rest.getActiveFundingCredits(currency, credentials),
-                    rest.getActiveFundingLoans(currency, credentials),
-                ]);
-                return { currency, rawOffers, rawCredits, rawLoans };
-            })),
-        ]);
+        const rawWallets = await rest.getWallets(credentials);
+        const currencyResults = [];
+        for (const currency of ['USD', 'USDT']) {
+            const rawOffers = await rest.getActiveFundingOffers(currency, credentials);
+            const rawCredits = await rest.getActiveFundingCredits(currency, credentials);
+            const rawLoans = await rest.getActiveFundingLoans(currency, credentials);
+            currencyResults.push({ currency, rawOffers, rawCredits, rawLoans });
+        }
 
         const wallets = {
             USD: { balance: 0, available: 0 },
@@ -151,6 +156,7 @@ async function fetchAccountSnapshot(userId) {
 
         return {
             accountDataAvailable: true,
+            accountDataComplete: true,
             accountDataSource: 'Bitfinex private REST API',
             accountDataUpdatedAt: new Date().toISOString(),
             accountDataError: null,
@@ -212,4 +218,4 @@ function clearReadOnlyAccountSnapshotCache() {
     inFlightSnapshots.clear();
 }
 
-module.exports = { getReadOnlyAccountSnapshot, clearReadOnlyAccountSnapshotCache };
+module.exports = { getReadOnlyAccountSnapshot, clearReadOnlyAccountSnapshotCache, classifyPrivateApiError };

@@ -5,6 +5,7 @@ const rest = require('../bitfinex/rest');
 const { getBitfinexPublicWS, createBitfinexPrivateWS, isPublicTickerFresh } = require('../bitfinex/ws');
 const { getStrategyEngine } = require('./strategy');
 const { getCachedFundingMarketSummary } = require('../market-summary');
+const { classifyPrivateApiError } = require('../private-account-status');
 
 class LendingBot {
     constructor(userId, credentials, settings = {}) {
@@ -26,6 +27,11 @@ class LendingBot {
 
         // 用戶運行狀態快取
         this.state = {
+            accountDataAvailable: false,
+            accountDataComplete: false,
+            accountDataUpdatedAt: null,
+            accountDataError: 'Bitfinex 個人帳戶資料正在同步。',
+            accountDataErrorCode: 'BITFINEX_ACCOUNT_DATA_PENDING',
             wallets: {},       // { USD: { balance, available }, USDT: {...} }
             activeOffers: {},  // { USD: [...], USDT: [...] }
             activeCredits: {}, // { USD: [...], USDT: [...] }
@@ -42,13 +48,19 @@ class LendingBot {
         this._pendingDecisions = {};
         this._tradeBuffer = {};
         this._submitTimers = [];
+        this._accountDataLoadState = { wallets: false, offers: {}, credits: {} };
+        this._accountDataErrors = new Map();
+        this._wsCreditSnapshot = null;
+        this._wsLoanSnapshot = null;
 
         // 初始化幣種狀態
         for (const cur of this.currencies) {
-            this.state.wallets[cur] = { balance: 0, available: 0 };
+            this.state.wallets[cur] = { balance: null, available: null };
             this.state.activeOffers[cur] = [];
             this.state.activeCredits[cur] = [];
             this.state.stats.totalEarned[cur] = 0;
+            this._accountDataLoadState.offers[cur] = false;
+            this._accountDataLoadState.credits[cur] = false;
         }
 
         this.bfxWs = null;
@@ -202,53 +214,107 @@ class LendingBot {
      * 初始載入個人帳戶狀態
      */
     async _loadInitialState() {
+        const noteFailure = (dataset, currency, error) => {
+            const diagnostic = classifyPrivateApiError(error);
+            const key = dataset === 'wallets' ? 'wallets' : `${currency}:${dataset}`;
+            const alreadySynced = dataset === 'wallets'
+                ? this._accountDataLoadState.wallets
+                : this._accountDataLoadState[dataset]?.[currency] === true;
+            if (!alreadySynced) this._accountDataErrors.set(key, diagnostic);
+            logger.warn('engine', 'Bitfinex 私有帳戶資料同步失敗', {
+                userId: this.userId,
+                dataset,
+                currency,
+                errorCode: diagnostic.code,
+                httpStatus: diagnostic.status,
+            });
+        };
+
         try {
-            // 載入錢包
             const wallets = await rest.getWallets(this.credentials);
-            if (Array.isArray(wallets)) {
-                for (const w of wallets) {
-                    const wallet = rest.parseWallet(w);
-                    if (wallet && wallet.type === 'funding') {
-                        const cur = wallet.currency;
-                        if (this.state.wallets[cur] !== undefined) {
-                            this.state.wallets[cur] = {
-                                balance: wallet.balance,
-                                available: wallet.available || 0,
-                            };
-                        }
-                    }
-                }
+            if (!Array.isArray(wallets)) throw new Error('Invalid wallet response');
+            for (const currency of ['USD', 'USDT']) {
+                if (!this.state.wallets[currency]) this.state.wallets[currency] = { balance: 0, available: 0 };
             }
-
-            // 載入當前活躍掛單與貸款
             for (const currency of this.currencies) {
-                try {
-                    const offers = await rest.getActiveFundingOffers(currency, this.credentials);
-                    if (Array.isArray(offers)) {
-                        this.state.activeOffers[currency] = offers.map(rest.parseFundingOffer).filter(Boolean);
-                    }
-
-                    const [credits, loans] = await Promise.all([
-                        rest.getActiveFundingCredits(currency, this.credentials),
-                        rest.getActiveFundingLoans(currency, this.credentials),
-                    ]);
-
-                    const parsedCredits = Array.isArray(credits)
-                        ? credits.map(rest.parseFundingCredit).filter(c => c && c.side === 1)
-                        : [];
-                    
-                    const parsedLoans = Array.isArray(loans)
-                        ? loans.map(rest.parseFundingCredit).filter(l => l && l.side === 1)
-                        : [];
-
-                    this.state.activeCredits[currency] = [...parsedCredits, ...parsedLoans];
-                } catch (err) {
-                    logger.error('engine', `載入 ${currency} 初始帳戶資料失敗`, { error: err.message, userId: this.userId });
+                this.state.wallets[currency] = { balance: 0, available: 0 };
+            }
+            for (const row of wallets) {
+                const wallet = rest.parseWallet(row);
+                if (wallet?.type === 'funding' && this.state.wallets[wallet.currency] !== undefined) {
+                    this.state.wallets[wallet.currency] = {
+                        balance: Number(wallet.balance),
+                        available: Number(wallet.available) || 0,
+                    };
                 }
             }
-        } catch (err) {
-            logger.error('engine', '載入初始帳戶狀態失敗', { error: err.message, userId: this.userId });
+            this._accountDataLoadState.wallets = true;
+            this._accountDataErrors.delete('wallets');
+        } catch (error) {
+            noteFailure('wallets', null, error);
         }
+
+        // Bitfinex enforces increasing nonces. Read each dataset in a fixed
+        // order and let the REST adapter serialize requests per API key.
+        for (const currency of this.currencies) {
+            try {
+                const offers = await rest.getActiveFundingOffers(currency, this.credentials);
+                if (!Array.isArray(offers)) throw new Error(`Invalid ${currency} offers response`);
+                this.state.activeOffers[currency] = offers.map(rest.parseFundingOffer).filter(Boolean);
+                this._accountDataLoadState.offers[currency] = true;
+                this._accountDataErrors.delete(`${currency}:offers`);
+            } catch (error) {
+                noteFailure('offers', currency, error);
+            }
+
+            try {
+                const credits = await rest.getActiveFundingCredits(currency, this.credentials);
+                if (!Array.isArray(credits)) throw new Error(`Invalid ${currency} credits response`);
+                const loans = await rest.getActiveFundingLoans(currency, this.credentials);
+                if (!Array.isArray(loans)) throw new Error(`Invalid ${currency} loans response`);
+                const parsedCredits = credits.map(rest.parseFundingCredit).filter(row => row?.side === 1);
+                const parsedLoans = loans.map(rest.parseFundingCredit).filter(row => row?.side === 1);
+                this.state.activeCredits[currency] = [...parsedCredits, ...parsedLoans];
+                this._accountDataLoadState.credits[currency] = true;
+                this._accountDataErrors.delete(`${currency}:credits`);
+            } catch (error) {
+                noteFailure('credits', currency, error);
+            }
+        }
+
+        this._refreshAccountDataSyncState();
+    }
+
+    _refreshAccountDataSyncState() {
+        const checks = [
+            this._accountDataLoadState.wallets,
+            ...this.currencies.flatMap(currency => [
+                this._accountDataLoadState.offers[currency],
+                this._accountDataLoadState.credits[currency],
+            ]),
+        ];
+        this.state.accountDataAvailable = checks.some(Boolean);
+        this.state.accountDataComplete = checks.length > 0 && checks.every(Boolean);
+        this.state.accountDataUpdatedAt = this.state.accountDataAvailable ? new Date().toISOString() : null;
+        const firstError = this._accountDataErrors.values().next().value;
+        this.state.accountDataError = firstError?.message
+            || (this.state.accountDataComplete ? null : 'Bitfinex 個人帳戶資料尚未完整同步。');
+        this.state.accountDataErrorCode = firstError?.code
+            || (this.state.accountDataComplete ? null : 'BITFINEX_ACCOUNT_DATA_INCOMPLETE');
+    }
+
+    _applyWebSocketCreditSnapshots() {
+        if (!this._wsCreditSnapshot || !this._wsLoanSnapshot) return;
+
+        for (const currency of this.currencies) {
+            const credits = this._wsCreditSnapshot[currency] || [];
+            const loans = this._wsLoanSnapshot[currency] || [];
+            const uniqueById = new Map([...credits, ...loans].map(row => [row.id, row]));
+            this.state.activeCredits[currency] = [...uniqueById.values()];
+            this._accountDataLoadState.credits[currency] = true;
+            this._accountDataErrors.delete(`${currency}:credits`);
+        }
+        this._refreshAccountDataSyncState();
     }
 
     /**
@@ -385,6 +451,27 @@ class LendingBot {
      * 設定專屬 WebSocket 監聽器
      */
     _setupWSListeners(bfxWs) {
+        // Wallet snapshot is authoritative for every configured funding wallet,
+        // including currencies with a zero balance or no wallet row at all.
+        bfxWs.on('walletSnapshot', (data) => {
+            if (!Array.isArray(data)) return;
+            for (const currency of this.currencies) {
+                this.state.wallets[currency] = { balance: 0, available: 0 };
+            }
+            for (const row of data) {
+                const wallet = rest.parseWallet(row);
+                if (wallet?.type === 'funding' && this.state.wallets[wallet.currency] !== undefined) {
+                    this.state.wallets[wallet.currency] = {
+                        balance: Number(wallet.balance),
+                        available: Number(wallet.available) || 0,
+                    };
+                }
+            }
+            this._accountDataLoadState.wallets = true;
+            this._accountDataErrors.delete('wallets');
+            this._refreshAccountDataSyncState();
+        });
+
         // 錢包餘額更新
         bfxWs.on('walletUpdate', (data) => {
             const wallet = rest.parseWallet(data);
@@ -408,31 +495,19 @@ class LendingBot {
 
         // 活躍掛單快照
         bfxWs.on('fundingOfferSnapshot', (data) => {
-            if (Array.isArray(data)) {
-                // 先分組以清除對應幣種的快取
-                const currenciesInSnapshot = new Set();
-                const parsedOffers = [];
-                for (const o of data) {
-                    const offer = rest.parseFundingOffer(o);
-                    if (offer) {
-                        currenciesInSnapshot.add(offer.currency);
-                        parsedOffers.push(offer);
-                    }
-                }
-                // 清除 snapshot 中出現的幣種活躍掛單
-                for (const cur of currenciesInSnapshot) {
-                    if (this.state.activeOffers[cur]) {
-                        this.state.activeOffers[cur] = [];
-                    }
-                }
-                // 填充新資料
-                for (const offer of parsedOffers) {
-                    const cur = offer.currency;
-                    if (this.state.activeOffers[cur]) {
-                        this.state.activeOffers[cur].push(offer);
-                    }
+            if (!Array.isArray(data)) return;
+            for (const currency of this.currencies) this.state.activeOffers[currency] = [];
+            for (const rawOffer of data) {
+                const offer = rest.parseFundingOffer(rawOffer);
+                if (offer && this.state.activeOffers[offer.currency]) {
+                    this.state.activeOffers[offer.currency].push(offer);
                 }
             }
+            for (const currency of this.currencies) {
+                this._accountDataLoadState.offers[currency] = true;
+                this._accountDataErrors.delete(`${currency}:offers`);
+            }
+            this._refreshAccountDataSyncState();
         });
 
         // 新增掛單
@@ -464,30 +539,15 @@ class LendingBot {
 
         // 活躍貸款快照 (Credits)
         bfxWs.on('fundingCreditSnapshot', (data) => {
-            if (Array.isArray(data)) {
-                const currenciesInSnapshot = new Set();
-                const parsedCredits = [];
-                for (const c of data) {
-                    const credit = rest.parseFundingCredit(c);
-                    if (credit) {
-                        currenciesInSnapshot.add(credit.currency);
-                        parsedCredits.push(credit);
-                    }
-                }
-                // 清除 snapshot 中出現的幣種活躍貸款
-                for (const cur of currenciesInSnapshot) {
-                    if (this.state.activeCredits[cur]) {
-                        this.state.activeCredits[cur] = [];
-                    }
-                }
-                // 填充新資料
-                for (const credit of parsedCredits) {
-                    const cur = credit.currency;
-                    if (this.state.activeCredits[cur]) {
-                        this.state.activeCredits[cur].push(credit);
-                    }
+            if (!Array.isArray(data)) return;
+            this._wsCreditSnapshot = Object.fromEntries(this.currencies.map(currency => [currency, []]));
+            for (const row of data) {
+                const credit = rest.parseFundingCredit(row);
+                if (credit?.side === 1 && this._wsCreditSnapshot[credit.currency]) {
+                    this._wsCreditSnapshot[credit.currency].push(credit);
                 }
             }
+            this._applyWebSocketCreditSnapshots();
         });
 
         // 貸款成交
@@ -554,19 +614,15 @@ class LendingBot {
 
         // 未使用貸款快照 (Loans)
         bfxWs.on('fundingLoanSnapshot', (data) => {
-            if (Array.isArray(data)) {
-                for (const l of data) {
-                    const loan = rest.parseFundingCredit(l);
-                    if (loan && loan.side === 1) {
-                        const cur = loan.currency;
-                        if (this.state.activeCredits[cur]) {
-                            if (!this.state.activeCredits[cur].some(x => x.id === loan.id)) {
-                                this.state.activeCredits[cur].push(loan);
-                            }
-                        }
-                    }
+            if (!Array.isArray(data)) return;
+            this._wsLoanSnapshot = Object.fromEntries(this.currencies.map(currency => [currency, []]));
+            for (const row of data) {
+                const loan = rest.parseFundingCredit(row);
+                if (loan?.side === 1 && this._wsLoanSnapshot[loan.currency]) {
+                    this._wsLoanSnapshot[loan.currency].push(loan);
                 }
             }
+            this._applyWebSocketCreditSnapshots();
         });
 
         bfxWs.on('fundingLoanNew', (data) => {
@@ -667,6 +723,11 @@ class LendingBot {
             running: this.running,
             paused: this.paused,
             pauseReason: this.pauseReason,
+            accountDataAvailable: this.state.accountDataAvailable,
+            accountDataComplete: this.state.accountDataComplete,
+            accountDataUpdatedAt: this.state.accountDataUpdatedAt,
+            accountDataError: this.state.accountDataError,
+            accountDataErrorCode: this.state.accountDataErrorCode,
             monitorOnly: this.monitorOnly,
             compounding: this.compoundingEnabled,
             autoTransfer: this.autoTransferEnabled,
@@ -675,14 +736,19 @@ class LendingBot {
             connected: this.bfxWs ? this.bfxWs.isConnected() : false,
             authenticated: this.bfxWs ? this.bfxWs.isAuthenticated() : false,
             stats: this.state.stats,
-            wallets: this.state.wallets,
+            wallets: Object.fromEntries(['USD', 'USDT'].map(currency => [
+                currency,
+                this._accountDataLoadState.wallets
+                    ? (this.state.wallets[currency] || { balance: 0, available: 0 })
+                    : { balance: null, available: null },
+            ])),
             activeOffers: {
-                USD: this.state.activeOffers.USD?.length || 0,
-                USDT: this.state.activeOffers.USDT?.length || 0,
+                USD: this._accountDataLoadState.offers.USD ? this.state.activeOffers.USD?.length || 0 : null,
+                USDT: this._accountDataLoadState.offers.USDT ? this.state.activeOffers.USDT?.length || 0 : null,
             },
             activeCredits: {
-                USD: this.state.activeCredits.USD?.length || 0,
-                USDT: this.state.activeCredits.USDT?.length || 0,
+                USD: this._accountDataLoadState.credits.USD ? this.state.activeCredits.USD?.length || 0 : null,
+                USDT: this._accountDataLoadState.credits.USDT ? this.state.activeCredits.USDT?.length || 0 : null,
             },
             marketData: publicWs.marketData,
             strategy: strategyStatus,
@@ -702,9 +768,14 @@ class LendingBot {
     getDetailedStatus() {
         return {
             ...this.getStatus(),
-            wallets: this.state.wallets,
-            activeOffers: this.state.activeOffers,
-            activeCredits: this.state.activeCredits,
+            activeOffers: Object.fromEntries(['USD', 'USDT'].map(currency => [
+                currency,
+                this._accountDataLoadState.offers[currency] ? this.state.activeOffers[currency] : null,
+            ])),
+            activeCredits: Object.fromEntries(['USD', 'USDT'].map(currency => [
+                currency,
+                this._accountDataLoadState.credits[currency] ? this.state.activeCredits[currency] : null,
+            ])),
             lastDecision: this.state.lastDecision,
         };
     }

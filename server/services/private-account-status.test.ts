@@ -56,6 +56,7 @@ describe('read-only private Bitfinex account snapshot', () => {
     const snapshot = await getReadOnlyAccountSnapshot('user-a');
 
     expect(snapshot.accountDataAvailable).toBe(true);
+    expect(snapshot.accountDataComplete).toBe(true);
     expect(snapshot.accountDataSource).toBe('Bitfinex private REST API');
     expect(snapshot.wallets.USD).toEqual({ balance: 1000, available: 200 });
     expect(snapshot.activeOffers.USD).toEqual([{ id: 1 }]);
@@ -81,6 +82,7 @@ describe('read-only private Bitfinex account snapshot', () => {
     const snapshot = await getReadOnlyAccountSnapshot('user-b');
 
     expect(snapshot.accountDataAvailable).toBe(false);
+    expect(snapshot.accountDataComplete).toBe(false);
     expect(snapshot.activeCredits.USD).toBeNull();
     expect(snapshot.accountDataError).toMatch(/尚未設定/);
     expect(mocks.getActiveFundingCredits).not.toHaveBeenCalled();
@@ -120,6 +122,18 @@ describe('read-only private Bitfinex account snapshot', () => {
       errorCode: 'BITFINEX_SIGNATURE_INVALID',
       httpStatus: 500,
     }));
+  });
+
+  it('classifies an out-of-order Bitfinex nonce as a retryable account sync error', async () => {
+    mocks.getActiveFundingCredits.mockRejectedValue(new Error(
+      'Bitfinex API 錯誤 (500): ["error",10114,"nonce: small"]',
+    ));
+
+    const snapshot = await getReadOnlyAccountSnapshot('user-a');
+
+    expect(snapshot.accountDataErrorCode).toBe('BITFINEX_NONCE_OUT_OF_ORDER');
+    expect(snapshot.accountDataError).toContain('請求順序衝突');
+    expect(snapshot.accountDataError).not.toContain('nonce: small');
   });
 
   it('preserves the last successful snapshot when a refresh temporarily fails', async () => {

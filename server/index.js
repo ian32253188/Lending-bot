@@ -69,10 +69,13 @@ app.get('/metrics', async (req, res) => {
 
 // 健康檢查（不需認證）
 app.get('/api/health', async (req, res) => {
-    const { getActiveEngineCount } = require('./services/engine/manager');
+    const { getActiveEngineCount, getEngineStateCounts } = require('./services/engine/manager');
     const { getTelegramRoutingStats } = require('./services/telegram');
     const { getFundingTradeBackfillStatus } = require('./services/market-summary');
     const db = require('./services/database');
+    const engineStateCounts = typeof getEngineStateCounts === 'function'
+        ? getEngineStateCounts()
+        : null;
     const userSettingsTableReady = db.isPostgresConfigured()
         ? await db.ensureUserBotSettingsTable()
         : null;
@@ -89,6 +92,8 @@ app.get('/api/health', async (req, res) => {
         uptime: process.uptime(),
         publicWsConnected: publicWs.isConnected(),
         activeEngineCount: typeof getActiveEngineCount === 'function' ? getActiveEngineCount() : 0,
+        runningEngineCount: engineStateCounts?.running ?? null,
+        pausedEngineCount: engineStateCounts?.paused ?? null,
         telegram: typeof getTelegramRoutingStats === 'function'
             ? getTelegramRoutingStats()
             : { sharedBotActive: false, registeredUsers: 0 },

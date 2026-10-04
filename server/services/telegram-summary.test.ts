@@ -120,6 +120,37 @@ describe('Telegram daily summary currency display', () => {
     expect(message).toContain('貸款中 1 筆 ($25.00)');
   });
 
+  it('reports a paused engine and unavailable account data instead of fake zero balances', async () => {
+    const engine = {
+      getDetailedStatus: () => ({
+        running: true,
+        paused: true,
+        pauseReason: 'Bitfinex maintenance',
+        accountDataAvailable: false,
+        accountDataComplete: false,
+        accountDataError: 'Bitfinex API 讀取失敗，請檢查唯讀權限。',
+        wallets: { USD: { balance: null, available: null } },
+        activeOffers: { USD: null },
+        activeCredits: { USD: null },
+      }),
+    };
+
+    const message = await buildUserSummaryMessage(
+      'user-a',
+      engine,
+      {},
+      { getMarketData: () => null },
+      { getEarnings },
+      null,
+    );
+
+    expect(message).toContain('放貸引擎</b>: 已暫停（Bitfinex maintenance）');
+    expect(message).toContain('Bitfinex 帳戶同步</b>: Bitfinex API 讀取失敗');
+    expect(message).toContain('錢包總額: $—');
+    expect(message).toContain('掛單 — 筆');
+    expect(message).not.toContain('錢包總額: $0.00');
+  });
+
   it('reads the admin seven-day FRR average from history even with no strategy cache', async () => {
     const message = await buildGlobalSummaryMessage(
       { historicalFRR: {} },

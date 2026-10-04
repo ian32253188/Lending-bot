@@ -155,6 +155,17 @@ function getActiveEngineCount() {
     return activeRunners.size;
 }
 
+function getEngineStateCounts() {
+    let running = 0;
+    let paused = 0;
+    for (const bot of activeRunners.values()) {
+        if (!bot.running) continue;
+        if (bot.paused) paused++;
+        else running++;
+    }
+    return { instances: activeRunners.size, running, paused };
+}
+
 /**
  * 伺服器開機自動重啟所有原本處於 running 狀態的用戶
  */
@@ -326,6 +337,7 @@ module.exports = {
     restartBotPreservingState,
     getBot,
     getActiveEngineCount,
+    getEngineStateCounts,
     autoResumeAll,
     shutdownAll,
 };

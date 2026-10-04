@@ -312,6 +312,18 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, m
 
     let msg = `📊 <b>每日放貸營運總結</b>\n`;
     msg += `📅 統計時間: <code>${now}</code>\n\n`;
+    const engineLabel = !status.running
+        ? '已停止'
+        : status.paused
+            ? `已暫停（${status.pauseReason || '未提供原因'}）`
+            : '運作中';
+    msg += `🤖 <b>放貸引擎</b>: ${engineLabel}\n`;
+    if (status.accountDataError) {
+        msg += `⚠️ <b>Bitfinex 帳戶同步</b>: ${status.accountDataError}\n`;
+    } else if (status.accountDataComplete === true) {
+        msg += `🔐 Bitfinex 私有帳戶資料已完整同步\n`;
+    }
+    msg += `\n`;
 
     // 1. fUSD 市場行情
     msg += formatFundingMarketSection(marketSummary);
@@ -327,29 +339,34 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, m
     // 3. 各幣種錢包與放貸水位
     msg += `💳 <b>資產與放貸水位</b>\n`;
     for (const cur of Object.keys(status.wallets)) {
-        const wallet = status.wallets[cur] || { balance: 0, available: 0 };
+        const wallet = status.wallets[cur] || { balance: null, available: null };
         const activeOffers = Array.isArray(status.activeOffers[cur]) ? status.activeOffers[cur] : [];
         const activeCredits = Array.isArray(status.activeCredits[cur]) ? status.activeCredits[cur] : [];
-        const walletBalance = Number(wallet.balance);
-        const availableBalance = Number(wallet.available);
-        const offersCount = Array.isArray(status.activeOffers[cur]) ? activeOffers.length : (status.activeOffers[cur] || 0);
-        const creditsCount = Array.isArray(status.activeCredits[cur]) ? activeCredits.length : (status.activeCredits[cur] || 0);
-        const offersAmount = activeOffers.length > 0
+        const walletBalance = wallet.balance === null || wallet.balance === undefined ? null : Number(wallet.balance);
+        const availableBalance = wallet.available === null || wallet.available === undefined ? null : Number(wallet.available);
+        const rawOffers = status.activeOffers[cur];
+        const rawCredits = status.activeCredits[cur];
+        const offersCount = Array.isArray(rawOffers) ? activeOffers.length : rawOffers == null ? null : Number(rawOffers);
+        const creditsCount = Array.isArray(rawCredits) ? activeCredits.length : rawCredits == null ? null : Number(rawCredits);
+        const offersAmount = Array.isArray(rawOffers) && activeOffers.length > 0
             ? activeOffers.reduce((sum, offer) => sum + (Number(offer.amount) || 0), 0)
-            : 0;
-        const creditsAmount = activeCredits.length > 0
+            : Array.isArray(rawOffers) ? 0 : null;
+        const creditsAmount = Array.isArray(rawCredits) && activeCredits.length > 0
             ? activeCredits.reduce((sum, credit) => sum + Math.abs(Number(credit.amount) || 0), 0)
-            : 0;
-        const creditDetails = activeCredits.length > 0
+            : Array.isArray(rawCredits) ? 0 : null;
+        const creditDetails = Array.isArray(rawCredits) && activeCredits.length > 0
             ? activeCredits.map(formatActiveCredit).join('、')
-            : formatFixedMoney(creditsAmount);
-        const lendingAmount = Math.max(0, (Number.isFinite(walletBalance) ? walletBalance : 0) - (Number.isFinite(availableBalance) ? availableBalance : 0));
-        const walletTwd = convertToTwd(walletBalance, cur, exchangeQuote);
+            : formatOptionalFixedMoney(creditsAmount);
+        const lendingAmount = Number.isFinite(walletBalance) && Number.isFinite(availableBalance)
+            ? Math.max(0, walletBalance - availableBalance)
+            : null;
+        const walletTwd = Number.isFinite(walletBalance) ? convertToTwd(walletBalance, cur, exchangeQuote) : null;
         msg += `  <b>${cur} 資產</b>:\n`;
-        msg += `  ├─ 錢包總額: ${formatFixedMoney(walletBalance)}（約 ${formatTwdAmount(walletTwd, 2)}）\n`;
-        msg += `  ├─ 可用餘額: ${formatFixedMoney(availableBalance)}\n`;
-        msg += `  ├─ 已投入放貸: ${formatFixedMoney(lendingAmount)}\n`;
-        msg += `  └─ 進行中: 掛單 ${offersCount} 筆 (${formatFixedMoney(offersAmount)}) | 貸款中 ${creditsCount} 筆 (${creditDetails})\n`;
+        const walletTwdText = walletTwd === null ? 'NT$—' : formatTwdAmount(walletTwd, 2);
+        msg += `  ├─ 錢包總額: ${formatOptionalFixedMoney(walletBalance)}（約 ${walletTwdText}）\n`;
+        msg += `  ├─ 可用餘額: ${formatOptionalFixedMoney(availableBalance)}\n`;
+        msg += `  ├─ 已投入放貸: ${formatOptionalFixedMoney(lendingAmount)}\n`;
+        msg += `  └─ 進行中: 掛單 ${offersCount ?? '—'} 筆 (${formatOptionalFixedMoney(offersAmount)}) | 貸款中 ${creditsCount ?? '—'} 筆 (${creditDetails})\n`;
     }
 
     return msg;
@@ -571,6 +588,12 @@ async function buildGlobalSummaryMessage(strategy, publicWs, db, marketSummary =
     msg += `\n${formatPrivateAccountSection(adminAccountStatus)}`;
     msg += `👥 Telegram 帳戶綁定: ${userBots.size} 個`;
     return msg;
+}
+
+function formatOptionalFixedMoney(value) {
+    return value === null || value === undefined || !Number.isFinite(Number(value))
+        ? '$—'
+        : formatFixedMoney(value);
 }
 
 function formatPrivateAccountSection(snapshot) {

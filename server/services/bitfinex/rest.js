@@ -23,6 +23,7 @@ function fromBfxSymbol(bfxSymbol) {
 }
 
 let lastNonce = 0;
+const privateRequestQueues = new Map();
 function getNextNonce() {
     const now = Date.now() * 1000;
     lastNonce = Math.max(now, lastNonce + 1);
@@ -65,8 +66,24 @@ function createAuthHeaders(path, body = {}, credentials = null) {
 async function authRequest(path, body = {}, credentials = null) {
     const metrics = require('../metrics');
     const start = Date.now();
+    const apiKey = credentials?.apiKey || config.bitfinex.apiKey;
+    const apiSecret = credentials?.apiSecret || config.bitfinex.apiSecret;
+    if (!apiKey || !apiSecret) {
+        throw new Error('Bitfinex API key or secret is not configured.');
+    }
+
+    // Bitfinex requires nonces to arrive in strictly increasing order for each
+    // API key. Serialize the full request/response, not just nonce generation,
+    // because concurrent HTTP requests can reach Bitfinex out of order.
+    const queueKey = crypto.createHash('sha256').update(apiKey).digest('hex');
+    const previousRequest = privateRequestQueues.get(queueKey) || Promise.resolve();
+    let releaseRequest;
+    const queuedRequest = new Promise(resolve => { releaseRequest = resolve; });
+    privateRequestQueues.set(queueKey, queuedRequest);
+    await previousRequest;
+
     try {
-        const { headers, bodyStr } = createAuthHeaders(path, body, credentials);
+        const { headers, bodyStr } = createAuthHeaders(path, body, { apiKey, apiSecret });
         const response = await fetch(`${BASE_URL}${path}`, {
             method: 'POST',
             headers,
@@ -90,6 +107,11 @@ async function authRequest(path, body = {}, credentials = null) {
             metrics.recordApiError('POST', path, err.name || 'NetworkError');
         }
         throw err;
+    } finally {
+        releaseRequest();
+        if (privateRequestQueues.get(queueKey) === queuedRequest) {
+            privateRequestQueues.delete(queueKey);
+        }
     }
 }
 

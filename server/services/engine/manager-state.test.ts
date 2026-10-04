@@ -64,7 +64,7 @@ moduleMock('./strategy', { getStrategyEngine: () => ({ calculateOptimalRate: vi.
 moduleMock('./lending', { LendingBot: MockLendingBot });
 moduleMock('../../utils/crypto', { decryptWithFallback: (value: string) => value });
 
-const { getBot, startBot, restartBotPreservingState, shutdownAll } = require('./manager');
+const { getBot, startBot, restartBotPreservingState, shutdownAll, getEngineStateCounts } = require('./manager');
 
 describe('Engine manager persisted state', () => {
   beforeEach(() => {
@@ -85,6 +85,7 @@ describe('Engine manager persisted state', () => {
     expect(bot).toBe(getBot(userId));
     expect(bot.paused).toBe(true);
     expect(bot.pauseReason).toBe('手動暫停');
+    expect(getEngineStateCounts().paused).toBeGreaterThanOrEqual(1);
 
     saveUserSettings.mockClear();
     const restartedBot = await restartBotPreservingState(userId);
