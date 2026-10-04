@@ -49,15 +49,17 @@ describe('Telegram daily summary currency display', () => {
       stale: false,
     });
     getEarnings.mockImplementation(async (currency: string | null, from: string | null, to: string | null) => {
-      if (to) return [{ amount: 2.0223, currency: 'USD' }];
+      let rows: Array<{ amount: number; currency: string }>;
+      if (to) rows = [{ amount: 2.0223, currency: 'USD' }];
       if (from && Date.now() - Date.parse(from) > 20 * 24 * 60 * 60 * 1000) {
-        return [{ amount: 10, currency: 'USD' }];
+        rows = [{ amount: 10, currency: 'USD' }];
       }
-      if (from) return [{ amount: 2.1649, currency: 'USD' }, { amount: 1, currency: 'USDT' }];
-      return [
+      if (!rows && from) rows = [{ amount: 2.1649, currency: 'USD' }, { amount: 1, currency: 'USDT' }];
+      if (!rows) rows = [
         { amount: 127.2498, currency: 'USD' },
         { amount: 1, currency: 'USDT' },
       ];
+      return currency ? rows.filter(row => row.currency === currency) : rows;
     });
   });
 
@@ -68,13 +70,17 @@ describe('Telegram daily summary currency display', () => {
   it('shows wallet conversion in parentheses and reports earnings in TWD', async () => {
     const engine = {
       getDetailedStatus: () => ({
-        wallets: { USD: { balance: '6048.57', available: '5000' } },
-        activeOffers: { USD: [{ amount: '500' }] },
+        wallets: {
+          USD: { balance: '6048.57', available: '5000' },
+          USDT: { balance: '999', available: '999' },
+        },
+        activeOffers: { USD: [{ amount: '500' }], USDT: [{ amount: '99' }] },
         activeCredits: {
           USD: [
             { amount: '548.57', period: 2, openedAt: '2026-08-28T04:00:00.000Z' },
             { amount: '100', period: 30, openedAt: '2026-08-01T04:00:00.000Z' },
           ],
+          USDT: [{ amount: '99', period: 2, openedAt: '2026-08-28T04:00:00.000Z' }],
         },
       }),
     };
@@ -91,12 +97,15 @@ describe('Telegram daily summary currency display', () => {
     expect(message).toContain('錢包總額: $6,048.57（約 NT$190,529.96）');
     expect(message).toContain('貸款中 2 筆 ($548.57(8/30)、$100.00(8/31))');
     expect(message).toContain('量化收益回報（TWD，已扣稅）');
-    expect(message).toContain('來源：<a href="https://www.exchangerate-api.com">ExchangeRate-API</a>');
-    expect(message).toContain('今日收益: <b>NT$99.6944</b>');
+    expect(message).toContain('今日收益: <b>NT$68.1944</b>');
     expect(message).toContain('昨日收益: <b>NT$63.7025</b>');
     expect(message).toContain('本月收益: <b>NT$315.0000</b>');
-    expect(message).toContain('累計收益: <b>NT$4,039.8687</b>');
+    expect(message).toContain('累計收益: <b>NT$4,008.3687</b>');
     expect(message).not.toContain('今日收益: <b>$');
+    expect(message).not.toContain('USDT');
+    expect(message).not.toContain('換算匯率');
+    expect(getEarnings).toHaveBeenCalledTimes(4);
+    expect(getEarnings.mock.calls.every(([currency]) => currency === 'USD')).toBe(true);
   });
 
   it('keeps the loan amount readable when repayment fields are unavailable', async () => {
@@ -193,9 +202,9 @@ describe('Telegram daily summary currency display', () => {
     );
 
     expect(message).toContain('USD 市場</b>: FRR 0.0000%/天 | 7d 均值 0.0000%/天（2/7 日有資料');
-    expect(message).toContain('USDT 市場</b>: FRR 0.0200%/天 | 7d 均值 0.0262%/天（2/7 日有資料');
+    expect(message).not.toContain('USDT');
     expect(getRateHistory).toHaveBeenCalledWith('USD', 168, 'recorded_at,frr');
-    expect(getRateHistory).toHaveBeenCalledWith('USDT', 168, 'recorded_at,frr');
+    expect(getRateHistory).toHaveBeenCalledTimes(1);
   });
 
   it('does not reuse a stale strategy FRR when the seven-day history has no rows', async () => {
@@ -210,7 +219,7 @@ describe('Telegram daily summary currency display', () => {
     );
 
     expect(message).toContain('USD 市場</b>: FRR 0.0300%/天 | 7d 均值 —');
-    expect(message).toContain('USDT 市場</b>: FRR 0.0200%/天 | 7d 均值 —');
+    expect(message).not.toContain('USDT');
   });
 
   it('shows stale ticker FRR as unavailable rather than displaying old values', async () => {
@@ -229,6 +238,7 @@ describe('Telegram daily summary currency display', () => {
     expect(message).toContain('USD 市場</b>: FRR — | 7d 均值 —');
     expect(message).toContain('FRR 來源: Bitfinex 公開 Funding Ticker（尚無新資料）');
     expect(message).not.toContain('FRR 0.0300%/天');
+    expect(message).not.toContain('USDT');
   });
 
   it('renders all 24 hourly buckets, including hours with no fills', () => {
@@ -253,6 +263,29 @@ describe('Telegram daily summary currency display', () => {
     expect((message.match(/筆/g) || []).length).toBe(24);
     expect(message).toContain('無成交');
     expect(message).toContain('歷史覆蓋: 24/30 日（2026-09-09 至 2026-10-02）');
+  });
+
+  it('keeps the daily Telegram market section concise and omits hourly diagnostics', () => {
+    const message = formatFundingMarketSection({
+      currentApy: 6.53,
+      currentRateSource: 'funding_trades_24h_vwap',
+      low24hApy: 0.04,
+      high24hApy: 11.18,
+      volume24h: 89066621,
+      average30dApy: 7.74,
+      high30dApy: 13,
+      low30dApy: 0.02,
+      historyCoverageDays: 24,
+      marketDataSources: { rateHistory: 'Bitfinex candles' },
+      hourlyMatches24: [{ timestamp: Date.now(), amount: 100, count: 1 }],
+    }, { concise: true });
+
+    expect(message).toContain('近 24H 成交加權均值: <b>6.53%</b>');
+    expect(message).toContain('24H 成交額: $89,066,621');
+    expect(message).toContain('30 日最低: 0.02%');
+    expect(message).not.toContain('逐時撮合');
+    expect(message).not.toContain('歷史覆蓋');
+    expect(message).not.toContain('歷史來源');
   });
 
   it('does not report unavailable public trades as an empty market', () => {

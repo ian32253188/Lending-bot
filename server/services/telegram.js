@@ -287,10 +287,10 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, m
     monthStart.setTime(monthStart.getTime() - taipeiOffset);
 
     const [todayEarnings, yesterdayEarnings, monthEarnings, allEarnings] = await Promise.all([
-        db.getEarnings(null, todayStart.toISOString(), null, userId),
-        db.getEarnings(null, yesterdayStart.toISOString(), todayStart.toISOString(), userId),
-        db.getEarnings(null, monthStart.toISOString(), null, userId),
-        db.getEarnings(null, null, null, userId),
+        db.getEarnings('USD', todayStart.toISOString(), null, userId),
+        db.getEarnings('USD', yesterdayStart.toISOString(), todayStart.toISOString(), userId),
+        db.getEarnings('USD', monthStart.toISOString(), null, userId),
+        db.getEarnings('USD', null, null, userId),
     ]);
 
     function sumTwdAmount(rows) {
@@ -344,19 +344,18 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, m
     msg += `\n`;
 
     // 1. fUSD 市場行情
-    msg += formatFundingMarketSection(marketSummary);
+    msg += formatFundingMarketSection(marketSummary, { concise: true });
 
     // 2. 收益回報統計
     msg += `💰 <b>量化收益回報（TWD，已扣稅）</b>\n`;
-    msg += `  ├─ 換算匯率: <code>${formatExchangeRate(exchangeQuote)}</code>${formatExchangeRateSource(exchangeQuote)}\n`;
     msg += `  ├─ 今日收益: <b>${formatTwdAmount(todayTotal, 4)}</b>${changeText}\n`;
     msg += `  ├─ 昨日收益: <b>${formatTwdAmount(yesterdayTotal, 4)}</b>\n`;
     msg += `  ├─ 本月收益: <b>${formatTwdAmount(monthTotal, 4)}</b>\n`;
     msg += `  └─ 累計收益: <b>${formatTwdAmount(allTimeTotal, 4)}</b>\n\n`;
 
-    // 3. 各幣種錢包與放貸水位
+    // 3. USD 錢包與放貸水位
     msg += `💳 <b>資產與放貸水位</b>\n`;
-    for (const cur of Object.keys(status.wallets)) {
+    for (const cur of ['USD']) {
         const wallet = status.wallets[cur] || { balance: null, available: null };
         const activeOffers = Array.isArray(status.activeOffers[cur]) ? status.activeOffers[cur] : [];
         const activeCredits = Array.isArray(status.activeCredits[cur]) ? status.activeCredits[cur] : [];
@@ -466,37 +465,12 @@ function formatTwdAmount(value, fractionDigits = 2) {
         : 'NT$—';
 }
 
-function formatExchangeRate(quote) {
-    if (!quote || !Number.isFinite(Number(quote.rate))) return '暫時無法取得';
-
-    const rate = Number(quote.rate).toLocaleString('zh-TW', {
-        minimumFractionDigits: 3,
-        maximumFractionDigits: 5,
-    });
-    const quoteDate = quote.quoteDate
-        ? new Intl.DateTimeFormat('zh-TW', {
-            timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit',
-        }).format(new Date(quote.quoteDate))
-        : '';
-    const staleLabel = quote.stale ? '，沿用上次成功值' : '';
-    const dateLabel = quoteDate ? `，資料日 ${quoteDate}` : '';
-    return `1 USD ≈ NT$${rate}${dateLabel}${staleLabel}`;
-}
-
-function formatExchangeRateSource(quote) {
-    if (quote?.source === 'ExchangeRate-API') {
-        return `（來源：<a href="https://www.exchangerate-api.com">ExchangeRate-API</a>）`;
-    }
-    if (quote?.source === 'Frankfurter') {
-        return `（來源：<a href="https://frankfurter.dev/">Frankfurter</a>）`;
-    }
-    return '';
-}
-
-function formatFundingMarketSection(summary) {
+function formatFundingMarketSection(summary, { concise = false } = {}) {
     if (!summary) return `📈 <b>fUSD 市場行情</b>\n  └─ 公開市場資料暫時無法取得\n\n`;
 
-    let msg = `📈 <b>fUSD 市場行情</b>（Bitfinex 公開資料）\n`;
+    let msg = concise
+        ? `📈 <b>fUSD 市場行情</b>\n`
+        : `📈 <b>fUSD 市場行情</b>（Bitfinex 公開資料）\n`;
     const currentRateLabel = summary.currentRateSource === 'funding_trades_24h_vwap'
         ? '近 24H 成交加權均值'
         : summary.currentRateSource === 'bitfinex_public_ticker_last_price'
@@ -511,23 +485,27 @@ function formatFundingMarketSection(summary) {
     msg += `  ├─ 30 日平均: ${formatPercent(summary.average30dApy)}\n`;
     msg += `  ├─ 30 日最高: ${formatPercent(summary.high30dApy)}\n`;
     msg += `  ├─ 30 日最低: ${formatPercent(summary.low30dApy)}\n`;
-    if (summary.currentRateSource) {
+    if (!concise && summary.currentRateSource) {
         msg += `  ├─ 成交均值來源: ${summary.currentRateSource}${summary.currentRateObservedAt ? `（截至 ${new Date(summary.currentRateObservedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}）` : ''}\n`;
     }
-    if (summary.historyCoverageDays != null) {
+    if (!concise && summary.historyCoverageDays != null) {
         const start = summary.historyCoverageStartDate || '—';
         const end = summary.historyCoverageEndDate || '—';
         msg += `  ├─ 歷史覆蓋: ${summary.historyCoverageDays}/${summary.historyWindowDays || 30} 日（${start} 至 ${end}）\n`;
     }
-    if (summary.marketDataSources?.rateHistory) {
+    if (!concise && summary.marketDataSources?.rateHistory) {
         msg += `  ├─ 歷史來源: ${summary.marketDataSources.rateHistory}\n`;
     }
 
-    if (summary.tradeDataAvailable === false) {
+    if (!concise && summary.tradeDataAvailable === false) {
         msg += `  └─ 近 24H 撮合: 資料來源暫不可用（不等同無成交）\n`;
         if (summary.marketDataSources?.trades) msg += `      來源: ${summary.marketDataSources.trades}\n`;
         msg += `\n`;
         return msg;
+    }
+
+    if (concise) {
+        return `${msg}\n`;
     }
 
     const hasFullHourlyWindow = Array.isArray(summary.hourlyMatches24) && summary.hourlyMatches24.length > 0;
@@ -562,9 +540,9 @@ async function buildGlobalSummaryMessage(strategy, publicWs, db, marketSummary =
     let msg = `🌌 <b>3D Hybrid 系統管理員每日摘要</b>\n`;
     msg += `📅 統計時間: <code>${now}</code>\n\n`;
 
-    msg += formatFundingMarketSection(marketSummary);
+    msg += formatFundingMarketSection(marketSummary, { concise: true });
 
-    for (const cur of ['USD', 'USDT']) {
+    for (const cur of ['USD']) {
         const md = publicWs.getMarketData(cur);
         if (!md) continue;
         const tickerFresh = isPublicTickerFresh(md);
@@ -625,7 +603,7 @@ function formatPrivateAccountSection(snapshot) {
         })
         : '時間未知';
     let message = `🔐 <b>Bitfinex 個人放貸部位</b>（${snapshot.accountDataSource || '私有 API'}，${updatedAt} 更新）\n`;
-    for (const currency of ['USD', 'USDT']) {
+    for (const currency of ['USD']) {
         const wallet = snapshot.wallets?.[currency] || {};
         const offers = Array.isArray(snapshot.activeOffers?.[currency]) ? snapshot.activeOffers[currency] : [];
         const credits = Array.isArray(snapshot.activeCredits?.[currency]) ? snapshot.activeCredits[currency] : [];
@@ -694,7 +672,7 @@ function setupAdminBotHandlers(bot) {
         const helpText = `📖 <b>放貸機器人操作指南</b>\n\n` +
             `🤖 <b>指令清單</b>:\n` +
             `• <code>/control</code> - 開啟視覺化控制面板。您可以一鍵切換複利、自動劃轉、暫停或恢復放貸，或者執行緊急避險撤單。\n` +
-            `• <code>/status</code> - 即時查詢當前各幣種餘額、放貸中合約筆數、最新年化利率、以及今日/昨日/累計淨收益。\n\n` +
+            `• <code>/status</code> - 即時查詢 USD 餘額、放貸中合約筆數、最新年化利率、以及今日/昨日/累計淨收益。\n\n` +
             `🛡️ <b>安全提示</b>:\n` +
             `• 本終端僅限管理員 Chat ID 操控，其他任何人均無法存取，請放心使用。`;
         bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'HTML' }).catch(() => {});
