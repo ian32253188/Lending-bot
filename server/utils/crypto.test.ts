@@ -25,4 +25,20 @@ describe('credential encryption helpers', () => {
     expect(decryptWithFallback('legacy-secret')).toBe('legacy-secret');
     expect(decryptWithFallback(ciphertext)).toBe('secret');
   });
+
+  it('fails clearly when an encrypted credential uses a different server secret', () => {
+    const originalJwtSecret = process.env.JWT_SECRET;
+    process.env.JWT_SECRET = 'source-encryption-key';
+    const ciphertext = encrypt('bitfinex-secret');
+    process.env.JWT_SECRET = 'different-deployment-key';
+
+    try {
+      expect(() => decryptWithFallback(ciphertext)).toThrow(expect.objectContaining({
+        code: 'CREDENTIAL_DECRYPTION_FAILED',
+      }));
+    } finally {
+      if (originalJwtSecret === undefined) delete process.env.JWT_SECRET;
+      else process.env.JWT_SECRET = originalJwtSecret;
+    }
+  });
 });

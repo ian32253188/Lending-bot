@@ -151,6 +151,37 @@ describe('Telegram daily summary currency display', () => {
     expect(message).not.toContain('錢包總額: $0.00');
   });
 
+  it('does not label an engine as operating when Bitfinex rejects its credentials', async () => {
+    const engine = {
+      getDetailedStatus: () => ({
+        running: true,
+        paused: false,
+        authenticated: false,
+        accountDataAvailable: false,
+        accountDataComplete: false,
+        accountDataErrorCode: 'BITFINEX_SIGNATURE_INVALID',
+        accountDataError: 'Bitfinex 拒絕 API 簽章；請核對 API Key 與 Secret 是否配對且仍有效。',
+        wallets: { USD: { balance: null, available: null } },
+        activeOffers: { USD: null },
+        activeCredits: { USD: null },
+      }),
+    };
+
+    const message = await buildUserSummaryMessage(
+      'user-a',
+      engine,
+      {},
+      { getMarketData: () => null },
+      { getEarnings },
+      null,
+    );
+
+    expect(message).toContain('放貸引擎</b>: 程序已啟動，但Bitfinex API 簽章驗證失敗');
+    expect(message).toContain('掛單 — 筆');
+    expect(message).toContain('貸款中 — 筆');
+    expect(message).not.toContain('放貸引擎</b>: 運作中');
+  });
+
   it('reads the admin seven-day FRR average from history even with no strategy cache', async () => {
     const message = await buildGlobalSummaryMessage(
       { historicalFRR: {} },

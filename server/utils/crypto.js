@@ -45,7 +45,14 @@ function decryptWithFallback(text) {
         return text;
     }
     const decrypted = decrypt(text);
-    return decrypted !== null ? decrypted : text;
+    if (decrypted !== null) return decrypted;
+
+    // Never send an encrypted credential blob to Bitfinex as if it were a
+    // plaintext API key. This commonly happens when JWT_SECRET or
+    // ENCRYPTION_SALT changed after credentials were saved.
+    const error = new Error('無法解密已儲存的 Bitfinex API 憑證；請在網站設定重新輸入並儲存 API Key 與 Secret。');
+    error.code = 'CREDENTIAL_DECRYPTION_FAILED';
+    throw error;
 }
 
 module.exports = { encrypt, decrypt, decryptWithFallback };

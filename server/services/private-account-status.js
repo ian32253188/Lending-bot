@@ -29,6 +29,13 @@ function unavailableSnapshot(error, errorCode = null) {
 
 function classifyPrivateApiError(error) {
     const message = String(error?.message || error || '');
+    if (error?.code === 'CREDENTIAL_DECRYPTION_FAILED') {
+        return {
+            code: 'BITFINEX_CREDENTIAL_DECRYPTION_FAILED',
+            status: null,
+            message: '無法解密已儲存的 Bitfinex API 憑證；請在網站設定重新輸入並儲存 API Key 與 Secret。',
+        };
+    }
     const responseMatch = message.match(/Bitfinex API 錯誤 \((\d{3})\):\s*([\s\S]*)/);
     const status = responseMatch ? Number(responseMatch[1]) : null;
     const responseBody = responseMatch?.[2] || '';

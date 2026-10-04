@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getActiveFundingOffers: vi.fn(),
   getActiveFundingCredits: vi.fn(),
   getActiveFundingLoans: vi.fn(),
+  decryptWithFallback: vi.fn((value: string) => `decrypted:${value}`),
   parseWallet: vi.fn((row: any) => row),
   parseFundingOffer: vi.fn((row: any) => row),
   parseFundingCredit: vi.fn((row: any) => row),
@@ -20,7 +21,7 @@ const mockModule = (modulePath: string, exports: unknown) => {
 
 mockModule('../config', { bitfinex: { apiKey: 'server-key', apiSecret: 'server-secret' } });
 mockModule('../utils/logger', mocks.logger);
-mockModule('../utils/crypto', { decryptWithFallback: (value: string) => `decrypted:${value}` });
+mockModule('../utils/crypto', { decryptWithFallback: mocks.decryptWithFallback });
 mockModule('./database', { getUserSettings: mocks.getUserSettings });
 mockModule('./bitfinex/rest', {
   getWallets: mocks.getWallets,
@@ -122,6 +123,19 @@ describe('read-only private Bitfinex account snapshot', () => {
       errorCode: 'BITFINEX_SIGNATURE_INVALID',
       httpStatus: 500,
     }));
+  });
+
+  it('reports a saved credential decryption failure without contacting Bitfinex', async () => {
+    const error = Object.assign(new Error('stored encrypted credential cannot be decrypted'), {
+      code: 'CREDENTIAL_DECRYPTION_FAILED',
+    });
+    mocks.decryptWithFallback.mockImplementationOnce(() => { throw error; });
+
+    const snapshot = await getReadOnlyAccountSnapshot('user-a');
+
+    expect(snapshot.accountDataErrorCode).toBe('BITFINEX_CREDENTIAL_DECRYPTION_FAILED');
+    expect(snapshot.accountDataError).toContain('重新輸入並儲存 API Key 與 Secret');
+    expect(mocks.getWallets).not.toHaveBeenCalled();
   });
 
   it('classifies an out-of-order Bitfinex nonce as a retryable account sync error', async () => {

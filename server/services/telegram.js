@@ -312,11 +312,22 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, m
 
     let msg = `📊 <b>每日放貸營運總結</b>\n`;
     msg += `📅 統計時間: <code>${now}</code>\n\n`;
+    const credentialFailure = status.accountDataErrorCode === 'BITFINEX_SIGNATURE_INVALID'
+        ? 'Bitfinex API 簽章驗證失敗'
+        : status.accountDataErrorCode === 'BITFINEX_CREDENTIAL_DECRYPTION_FAILED'
+            ? 'Bitfinex 憑證無法解密'
+            : null;
     const engineLabel = !status.running
         ? '已停止'
         : status.paused
             ? `已暫停（${status.pauseReason || '未提供原因'}）`
-            : '運作中';
+            : credentialFailure
+                ? `程序已啟動，但${credentialFailure}`
+                : status.accountDataError
+                    ? '程序已啟動，但帳戶資料同步異常'
+                    : status.authenticated === false
+                        ? '程序已啟動，等待 Bitfinex 私有連線認證'
+                        : '運作中';
     msg += `🤖 <b>放貸引擎</b>: ${engineLabel}\n`;
     if (status.accountDataError) {
         msg += `⚠️ <b>Bitfinex 帳戶同步</b>: ${status.accountDataError}\n`;
