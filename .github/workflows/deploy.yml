@@ -106,6 +106,27 @@ jobs:
             fi
             
             cd deploy
+
+            # Replace the former Compose fallback (or blank/template values) with
+            # a server-only random password. The DB role is synchronized below.
+            if [ ! -f ../.env ]; then
+              echo "Missing server .env file; configure it before deployment"
+              exit 1
+            fi
+            current_db_password="$(sed -n 's/^POSTGRES_PASSWORD=//p' ../.env | head -n 1)"
+            case "$(printf '%s' "$current_db_password" | tr '[:upper:]' '[:lower:]')" in
+              *your_*|*change_me*|*default*|*example*|*lending_bot_db_password*) current_db_password="" ;;
+            esac
+            if [ "${#current_db_password}" -lt 32 ]; then
+              new_db_password="$(openssl rand -hex 32)"
+              if grep -q '^POSTGRES_PASSWORD=' ../.env; then
+                sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${new_db_password}/" ../.env
+              else
+                printf '%s=%s\n' POSTGRES_PASSWORD "$new_db_password" >> ../.env
+              fi
+              chmod 600 ../.env
+              echo "Generated a strong PostgreSQL password in the server .env"
+            fi
             
             # 3. 登入 GHCR 以便拉取映像檔
             echo "${{ secrets.GITHUB_TOKEN }}" | sudo docker login ghcr.io -u ${{ github.actor }} --password-stdin

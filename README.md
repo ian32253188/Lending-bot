@@ -67,7 +67,7 @@ sudo bash deploy/setup.sh
 
 GitHub Actions 部署流程需要 repo secrets：`OCI_VM_IP`、`OCI_VM_USER`、`OCI_SSH_PRIVATE_KEY`。部署主機需有專案 checkout 與已設定好的 `.env`，且能讀取 workflow 推送的 GHCR 映像。
 
-手動使用 `deploy/setup.sh` 前，先以有 `read:packages` 權限的 GitHub token 執行 `docker login ghcr.io`；套件目前不接受匿名拉取。部署流程會先檢查必要設定，再套用 PostgreSQL 密碼並啟動應用程式。
+目前 GHCR 不允許匿名拉取，手動部署與 `setup.sh` 都需要有 `read:packages` 權限的 GitHub token。使用 `setup.sh` 時必須以 root 的 Docker 設定登入（上方指令）；部署流程會先檢查必要設定，再套用 PostgreSQL 密碼並啟動應用程式。GitHub Actions 會在伺服器 `.env` 缺少資料庫密碼或仍用舊範本時產生隨機值。
 
 ## 資料與維護
 
