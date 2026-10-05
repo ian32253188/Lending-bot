@@ -5,7 +5,7 @@
 # ==============================================================================
 # 此腳本專為 Oracle Cloud Infrastructure (OCI) 的 VM 設計。
 # 支援作業系統：Ubuntu 20.04/22.04+ 及 Oracle Linux 8+。
-# 功能：自動安裝 Docker、Docker Compose、開放作業系統防火牆 Port 3000、生成並啟動服務。
+# 功能：自動安裝 Docker、產生初始密鑰並啟動應用程式與 PostgreSQL。
 # ==============================================================================
 
 set -e
@@ -47,7 +47,7 @@ install_docker() {
   
   if [ "$OS_TYPE" = "ubuntu" ] || [ "$OS_TYPE" = "debian" ]; then
     apt-get update -y
-    apt-get install -y ca-certificates curl gnupg lsb-release
+    apt-get install -y ca-certificates curl gnupg lsb-release openssl
     
     mkdir -p /etc/apt/keyrings
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg --yes
@@ -63,7 +63,7 @@ install_docker() {
     dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo || \
     yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
     
-    dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin openssl
     systemctl enable --now docker
   else
     echo -e "${RED}不支援的作業系統！請手動安裝 Docker 與 Docker Compose 後再執行此腳本。${NC}"
@@ -75,48 +75,8 @@ install_docker() {
 
 install_docker
 
-# 3. 處理 Oracle Cloud 防火牆限制 (開通 Port 3000)
-configure_firewall() {
-  echo -e "${YELLOW}正在設定伺服器防火牆，開放 Port 80 與 443...${NC}"
-  
-  # 方法 A: Ubuntu 預設的 iptables (OCI Ubuntu 映像檔專屬痛點解決方案)
-  if [ "$OS_TYPE" = "ubuntu" ] || [ "$OS_TYPE" = "debian" ]; then
-    if command -v iptables &> /dev/null; then
-      # 插入規則至 INPUT 第 6 行 (通常在 REJECT 之前)
-      # 開放 80 (HTTP) 與 443 (HTTPS)
-      iptables -I INPUT 6 -p tcp --dport 80 -j ACCEPT || iptables -I INPUT -p tcp --dport 80 -j ACCEPT
-      iptables -I INPUT 6 -p tcp --dport 443 -j ACCEPT || iptables -I INPUT -p tcp --dport 443 -j ACCEPT
-      
-      # 存檔以確保重開機後依然有效
-      if command -v netfilter-persistent &> /dev/null; then
-        netfilter-persistent save
-      elif apt-get install -y netfilter-persistent iptables-persistent < /dev/null; then
-        netfilter-persistent save
-      fi
-      echo -e "${GREEN}已成功通過 iptables 開放 Port 80 與 443。${NC}"
-    fi
-    
-    # 若有啟用 ufw，也一併放行
-    if command -v ufw &> /dev/null && ufw status | grep -q "active"; then
-      ufw allow 80/tcp
-      ufw allow 443/tcp
-      echo -e "${GREEN}已通過 ufw 開放 Port 80 與 443。${NC}"
-    fi
-
-  # 方法 B: Oracle Linux / Centos 的 firewalld
-  elif [ "$OS_TYPE" = "ol" ] || [ "$OS_TYPE" = "rhel" ] || [ "$OS_TYPE" = "centos" ]; then
-    if systemctl is-active --quiet firewalld; then
-      firewall-cmd --zone=public --add-port=80/tcp --permanent
-      firewall-cmd --zone=public --add-port=443/tcp --permanent
-      firewall-cmd --reload
-      echo -e "${GREEN}已成功通過 firewalld 開放 Port 80 與 443。${NC}"
-    else
-      echo -e "${YELLOW}firewalld 未啟用，跳過此防火牆設定。${NC}"
-    fi
-  fi
-}
-
-configure_firewall
+# 3. 防火牆與 TLS 由主機既有的反向代理管理；本腳本不開放公網連接埠。
+echo -e "${YELLOW}本腳本不修改防火牆。正式對外服務請設定 TLS 反向代理，並限制應用程式連接埠的來源。${NC}"
 
 # 4. 初始化環境變數設定 (.env)
 setup_env() {
@@ -132,20 +92,43 @@ setup_env() {
     if [ -f "$ENV_EXAMPLE" ]; then
       cp "$ENV_EXAMPLE" "$ENV_FILE"
       
-      # 自動隨機生成安全 JWT Secret
-      RANDOM_JWT=$(openssl rand -hex 24 2>/dev/null || echo "lendingbot_secret_$(date +%s)")
-      # 替換範本中的預設值
-      sed -i "s/your_jwt_secret_change_this/$RANDOM_JWT/g" "$ENV_FILE" 2>/dev/null || \
-      sed -i "" "s/your_jwt_secret_change_this/$RANDOM_JWT/g" "$ENV_FILE"
-      
-      echo -e "${GREEN}已成功建立 .env 檔案並為您自動生成了隨機的 JWT_SECRET！${NC}"
+      echo -e "${GREEN}已建立 .env 範本。${NC}"
     else
       echo -e "${RED}錯誤: 找不到 .env.example 範本檔，無法自動初始化！${NC}"
       exit 1
     fi
   fi
 
-  echo -e "\n${YELLOW}請注意：系統已全面改用 Oracle VM 本機 PostgreSQL 資料庫，無雲端磁碟 IO 限制。請確認 .env 內的 Bitfinex API 金鑰與管理員密碼 (ADMIN_PASSWORD) 正確！${NC}"
+  if ! command -v openssl &> /dev/null; then
+    echo -e "${RED}錯誤: 找不到 openssl，無法安全產生服務密鑰。${NC}"
+    exit 1
+  fi
+
+  write_secret_if_missing() {
+    local key="$1"
+    local min_length="$2"
+    local current
+    current="$(sed -n "s/^${key}=//p" "$ENV_FILE" | head -n 1)"
+    case "${current,,}" in
+      *your_*|*change_me*|*default*|*example*|*lending_bot_db_password*) current="" ;;
+      *) if [ "${#current}" -ge "$min_length" ]; then return; fi ;;
+    esac
+
+    local value
+    value="$(openssl rand -hex 32)"
+    if grep -q "^${key}=" "$ENV_FILE"; then
+      sed -i "s/^${key}=.*/${key}=${value}/" "$ENV_FILE"
+    else
+      printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+    fi
+  }
+
+  write_secret_if_missing POSTGRES_PASSWORD 32
+  write_secret_if_missing ADMIN_PASSWORD 12
+  write_secret_if_missing JWT_SECRET 32
+  chmod 600 "$ENV_FILE"
+
+  echo -e "\n${YELLOW}請確認 .env 內的管理員密碼，並在儀表板設定 Bitfinex API 金鑰。資料庫與 JWT 密鑰已在空值時隨機產生。${NC}"
   read -p "您是否要現在編輯 .env 檔案？ (y/n): " EDIT_NOW
   if [ "$EDIT_NOW" = "y" ] || [ "$EDIT_NOW" = "Y" ]; then
     if command -v nano &> /dev/null; then
@@ -156,26 +139,46 @@ setup_env() {
       echo -e "${RED}未找到編輯器 (nano/vi)，請稍後手動使用命令 'nano .env' 編輯。${NC}"
     fi
   else
-    echo -e "${YELLOW}跳過編輯，請記得稍後手動編輯位於專案根目錄的 .env 檔案！${NC}"
+    echo -e "${YELLOW}已跳過編輯；請確認根目錄 .env 中的 ADMIN_PASSWORD，之後使用它登入儀表板。${NC}"
   fi
 }
 
 setup_env
 
-# 5. 構建並啟動 Docker 容器
+# 5. 拉取並啟動 Docker 容器
 start_container() {
-  echo -e "${YELLOW}正在透過 Docker Compose 構建並啟動 Lending Bot, Nginx 與 SSL 精靈...${NC}"
+  echo -e "${YELLOW}正在透過 Docker Compose 啟動 Lending Bot 與 PostgreSQL...${NC}"
   
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
   cd "$SCRIPT_DIR"
-  
-  docker compose -f docker-compose.prod.yml up -d --build
+
+  docker compose --env-file ../.env -f docker-compose.prod.yml pull
+  docker compose --env-file ../.env -f docker-compose.prod.yml run --rm --no-deps lending-bot node -e 'require("./server/config")'
+  docker compose --env-file ../.env -f docker-compose.prod.yml up -d postgres
+
+  attempts=0
+  until docker compose --env-file ../.env -f docker-compose.prod.yml exec -T postgres sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' > /dev/null; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 30 ]; then
+      echo -e "${RED}錯誤: PostgreSQL 未能在 60 秒內就緒。${NC}"
+      exit 1
+    fi
+    sleep 2
+  done
+
+  docker compose --env-file ../.env -f docker-compose.prod.yml exec -T postgres sh -c 'exec psql -X -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1' <<'SQL'
+\getenv db_user POSTGRES_USER
+\getenv db_password POSTGRES_PASSWORD
+ALTER ROLE :"db_user" WITH PASSWORD :'db_password';
+\unset db_password
+\unset db_user
+SQL
+  docker compose --env-file ../.env -f docker-compose.prod.yml up -d lending-bot
   
   echo -e "${GREEN}======================================================================${NC}"
-  echo -e "${GREEN}🎉 部署完成！機器人與 Nginx 安全反向代理已成功運行。${NC}"
-  echo -e "${GREEN}👉 安全存取網址：https://您的網域 (需已完成 DNS 解析)${NC}"
-  echo -e "${GREEN}👉 臨時 HTTP 網址：http://您的主機公網IP (SSL 證書申請中/或未配置網域時)${NC}"
-  echo -e "${GREEN}🔧 您可以執行 'docker compose -f docker-compose.prod.yml logs -f' 來查看實時日誌。${NC}"
+  echo -e "${GREEN}🎉 部署完成！Lending Bot 與 PostgreSQL 已啟動。${NC}"
+  echo -e "${GREEN}👉 應用程式監聽 Port 3000；請透過已設定 TLS 的反向代理對外提供服務。${NC}"
+  echo -e "${GREEN}🔧 您可以執行 'docker compose --env-file ../.env -f docker-compose.prod.yml logs -f' 來查看即時日誌。${NC}"
   echo -e "${GREEN}======================================================================${NC}"
 }
 

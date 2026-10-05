@@ -1,5 +1,8 @@
 require('dotenv').config();
 
+const isTestEnvironment = process.env.NODE_ENV !== 'production'
+    && Boolean(process.env.VITEST || process.env.JEST_WORKER_ID || process.env.NODE_ENV === 'test');
+
 const config = {
     port: parseInt(process.env.PORT, 10) || 3000,
     nodeEnv: process.env.NODE_ENV || 'development',
@@ -20,13 +23,14 @@ const config = {
             || (process.env.NODE_ENV === 'production' ? 'postgres' : 'localhost'),
         port: parseInt(process.env.PGPORT || process.env.POSTGRES_PORT, 10) || 5432,
         user: process.env.PGUSER || process.env.POSTGRES_USER || 'postgres',
-        password: process.env.PGPASSWORD || process.env.POSTGRES_PASSWORD
-            || (process.env.NODE_ENV === 'production' ? 'lending_bot_db_password' : ''),
+        password: process.env.PGPASSWORD || process.env.POSTGRES_PASSWORD,
         database: process.env.PGDATABASE || process.env.POSTGRES_DB || 'lending_bot',
     },
 
     admin: {
-        password: process.env.ADMIN_PASSWORD || 'admin',
+        // Test-only credentials keep automated tests self-contained. Real
+        // instances must provide their own credentials through the environment.
+        password: process.env.ADMIN_PASSWORD || (isTestEnvironment ? 'test-only-admin-password' : undefined),
     },
 
     supabase: {
@@ -36,7 +40,7 @@ const config = {
     },
 
     jwt: {
-        secret: process.env.JWT_SECRET || 'lending_bot_default_jwt_secret_change_me_32chars',
+        secret: process.env.JWT_SECRET || (isTestEnvironment ? 'test-only-jwt-secret-not-for-runtime-32chars' : undefined),
         expiresIn: '24h',
     },
 
@@ -88,16 +92,26 @@ const config = {
 
 // 驗證必要設定
 function validateConfig() {
-    // JWT Secret 缺失是安全漏洞，必須強制停止（測試環境除外）
-    if (!config.jwt.secret) {
-        console.error('❌ 致命錯誤：JWT_SECRET 環境變數未設定！請在 .env 中設定一個強隨機字串。');
-        if (config.nodeEnv === 'production' && !process.env.VITEST && !process.env.JEST_WORKER_ID) {
-            process.exit(1);
+    if (isTestEnvironment) return;
+
+    const missingSettings = [];
+    if (!config.admin.password || config.admin.password.length < 12 || /your_|change_me|default|example/i.test(config.admin.password)) {
+        missingSettings.push('ADMIN_PASSWORD (至少 12 個字元)');
+    }
+    if (!config.jwt.secret || config.jwt.secret.length < 32 || /your_|change_me|default|example/i.test(config.jwt.secret)) {
+        missingSettings.push('JWT_SECRET (至少 32 個隨機字元，且不可使用範本值)');
+    }
+    const hasSupabase = Boolean(config.supabase.url && config.supabase.key);
+    if (!config.database.url && !hasSupabase) {
+        if (!config.database.password || config.database.password.length < 32 || /your_|change_me|default|example|lending_bot_db_password/i.test(config.database.password)) {
+            missingSettings.push('POSTGRES_PASSWORD (至少 32 個隨機字元) 或 DATABASE_URL／Supabase 設定');
         }
+    }
+    if (missingSettings.length) {
+        throw new Error(`缺少安全設定：${missingSettings.join('、')}。請更新 .env 後重新啟動。`);
     }
 
     const hasPostgres = Boolean(config.database.url || (config.database.host && config.database.user));
-    const hasSupabase = Boolean(config.supabase.url && config.supabase.key);
 
     if (!hasPostgres && !hasSupabase) {
         console.warn('⚠️ 缺少資料庫連線設定 (未提供 DATABASE_URL 或 SUPABASE_URL)');

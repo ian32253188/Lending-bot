@@ -3,7 +3,10 @@ const crypto = require('crypto');
 const ALGORITHM = 'aes-256-gcm';
 
 function getEncryptionKey() {
-    const secret = process.env.JWT_SECRET || 'default-secret-key-change-me';
+    const secret = process.env.JWT_SECRET || (process.env.NODE_ENV === 'test' ? 'vitest-only-encryption-secret-32chars' : '');
+    if (secret.length < 16 || /your_|change_me|default|example/i.test(secret)) {
+        throw new Error('JWT_SECRET 必須設定為至少 32 個隨機字元，才能加密帳戶憑證。');
+    }
     const salt = process.env.ENCRYPTION_SALT || 'lending-bot-secured-default-salt-2026';
     return crypto.scryptSync(secret, salt, 32);
 }

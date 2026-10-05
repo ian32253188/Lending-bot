@@ -30,7 +30,10 @@ router.post('/login', (req, res) => {
             return res.status(400).json({ error: '請輸入密碼' });
         }
 
-        const adminPassword = config.admin?.password || 'admin';
+        const adminPassword = config.admin?.password;
+        if (!adminPassword) {
+            return res.status(503).json({ error: '管理員登入尚未設定，請聯絡系統管理員' });
+        }
         if (password !== adminPassword) {
             return res.status(401).json({ error: '密碼錯誤' });
         }

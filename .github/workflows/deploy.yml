@@ -57,6 +57,9 @@ jobs:
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -108,15 +111,38 @@ jobs:
             echo "${{ secrets.GITHUB_TOKEN }}" | sudo docker login ghcr.io -u ${{ github.actor }} --password-stdin
             
             # 4. 拉取最新的 Docker Image
-            sudo docker compose -f docker-compose.prod.yml pull
+            sudo docker compose --env-file ../.env -f docker-compose.prod.yml pull
+
+            # Validate required secrets before changing any running containers.
+            sudo docker compose --env-file ../.env -f docker-compose.prod.yml run --rm --no-deps lending-bot node -e 'require("./server/config")'
 
             # 5. Confirm this exact compose file defines PostgreSQL before applying it.
-            compose_services="$(sudo docker compose -f docker-compose.prod.yml config --services)"
+            compose_services="$(sudo docker compose --env-file ../.env -f docker-compose.prod.yml config --services)"
             printf 'Compose services: %s\n' "$compose_services"
             printf '%s\n' "$compose_services" | grep -qx postgres
 
-            # 6. Explicitly start both services; `set -e` makes any failure fatal.
-            sudo docker compose -f docker-compose.prod.yml up -d postgres lending-bot
+            # 6. Start PostgreSQL first, then synchronize its role password from the
+            # container environment. This also migrates existing named volumes.
+            sudo docker compose --env-file ../.env -f docker-compose.prod.yml up -d postgres
+            attempts=0
+            until sudo docker exec lending-bot-postgres sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null; do
+              attempts=$((attempts + 1))
+              if [ "$attempts" -ge 30 ]; then
+                echo "PostgreSQL did not become ready within 60 seconds"
+                exit 1
+              fi
+              sleep 2
+            done
+            sudo docker exec -i lending-bot-postgres sh -c 'exec psql -X -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1' <<'SQL'
+            \getenv db_user POSTGRES_USER
+            \getenv db_password POSTGRES_PASSWORD
+            ALTER ROLE :"db_user" WITH PASSWORD :'db_password';
+            \unset db_password
+            \unset db_user
+            SQL
+
+            # Start the app after the database password is aligned.
+            sudo docker compose --env-file ../.env -f docker-compose.prod.yml up -d lending-bot
 
             # 7. 驗證應用容器確實能解析並登入同一 Compose 網路中的 PostgreSQL 服務。
             # 不能只以 SSH/Compose 指令成功判定部署完成。

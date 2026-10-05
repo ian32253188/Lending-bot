@@ -335,11 +335,11 @@ skip_nonce_check = false
 email_optional = false
 
 [auth.external.google]
-enabled = true
-client_id = "477474984932-c9915q7ip6a14p5mbmu5dk1ublb1fjpf.apps.googleusercontent.com"
-secret = "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"
+enabled = false
+client_id = ""
+secret = ""
 redirect_uri = ""
-skip_nonce_check = true
+skip_nonce_check = false
 email_optional = false
 
 # Allow Solana wallet holders to sign in to your project via the Sign in with Solana (SIWS, EIP-4361) standard.

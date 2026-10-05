@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lending_bot_db_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in ../.env}
       POSTGRES_DB: ${POSTGRES_DB:-lending_bot}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -30,7 +30,7 @@ services:
     container_name: bitfinex-lending-bot
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -39,12 +39,12 @@ services:
     environment:
       # Use explicit PG* settings below. A URI can break when the password
       # contains reserved URL characters, even though PGHOST resolves correctly.
-      - DATABASE_URL=
-      - PGHOST=postgres
-      - PGPORT=5432
-      - PGUSER=${POSTGRES_USER:-postgres}
-      - PGPASSWORD=${POSTGRES_PASSWORD:-lending_bot_db_password}
-      - PGDATABASE=${POSTGRES_DB:-lending_bot}
+      DATABASE_URL: ''
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: ${POSTGRES_USER:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in ../.env}
+      PGDATABASE: ${POSTGRES_DB:-lending_bot}
     logging:
       driver: "json-file"
       options:
