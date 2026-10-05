@@ -101,6 +101,9 @@ app.get('/api/health', async (req, res) => {
             ? getTelegramRoutingStats()
             : { sharedBotActive: false, registeredUsers: 0 },
         userSettingsTableReady,
+        userSettingsSchemaErrorCode: userSettingsTableReady === false
+            ? db.getUserSettingsSchemaErrorCode()
+            : null,
         applicationDataTablesReady,
         fundingTradeBackfill: typeof getFundingTradeBackfillStatus === 'function'
             ? getFundingTradeBackfillStatus()

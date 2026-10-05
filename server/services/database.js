@@ -13,6 +13,7 @@ const RATE_HISTORY_CACHE_TTL_MS = 60 * 60 * 1000;
 let fundingTradesSchemaPromise = null;
 let fundingTradesSchemaErrorCode = null;
 let userSettingsSchemaPromise = null;
+let userSettingsSchemaErrorCode = null;
 let applicationDataSchemaPromise = null;
 
 /**
@@ -153,8 +154,12 @@ async function ensureUserBotSettingsTable() {
             WHERE telegram_chat_id IS NOT NULL AND btrim(telegram_chat_id) <> '';
         CREATE INDEX IF NOT EXISTS user_bot_settings_telegram_chat_id_lookup
             ON user_bot_settings (telegram_chat_id);
-    `).then(() => true).catch(error => {
+    `).then(() => {
+        userSettingsSchemaErrorCode = null;
+        return true;
+    }).catch(error => {
         userSettingsSchemaPromise = null;
+        userSettingsSchemaErrorCode = error.code || 'UNKNOWN';
         console.error('ensureUserBotSettingsTable error:', error);
         return false;
     });
@@ -1414,6 +1419,7 @@ module.exports = {
     query,
     isPostgresConfigured,
     ensureUserBotSettingsTable,
+    getUserSettingsSchemaErrorCode: () => userSettingsSchemaErrorCode,
     ensureApplicationDataTables,
     saveOffer, closeOffer, getActiveOffers,
     saveLoan, closeLoan, getActiveLoans,
