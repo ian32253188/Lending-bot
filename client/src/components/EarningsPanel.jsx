@@ -68,7 +68,7 @@ export default function EarningsPanel({ token, embedded = false }) {
         收益統計暫不可用：{error || '尚未取得資料'} <button type="button" className="btn btn-sm btn-outline" onClick={fetchStats}>重新載入</button>
     </div>;
 
-    const accumulated = stats.allTime || { total: 0, byCurrency: {} };
+    const usdUtilization = Object.entries(stats.utilization || {}).find(([cur]) => cur === 'USD');
     const formatEarnings = value => `$${Number(value || 0).toFixed(4)}`;
 
     return (
@@ -94,49 +94,43 @@ export default function EarningsPanel({ token, embedded = false }) {
                 ))}
             </div>
 
-            <div className="earnings-grid">
-                <div className="earnings-main">
-                    <div className="earnings-label">累積收益明細</div>
-                    <div className="earnings-breakdown">
-                        {Object.entries(accumulated.byCurrency || {}).filter(([cur]) => cur === 'USD').map(([cur, amount]) => (
-                            <div key={cur} className="earnings-currency">
-                                <span className="badge">{cur}</span>
-                                <span>{formatEarnings(amount)}</span>
-                            </div>
-                        ))}
-                        {Object.keys(accumulated.byCurrency || {}).length === 0 && (
-                            <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                                目前暫無收益紀錄
-                            </div>
+            <div className="earnings-support">
+                <div className="utilization-panel">
+                    <div className="utilization-summary">
+                        <span className="panel-label">資金利用率 <span className="utilization-currency">USD</span></span>
+                        {usdUtilization && (
+                            <strong>{(usdUtilization[1] * 100).toFixed(1)}%</strong>
                         )}
                     </div>
-                </div>
-
-                {/* 資金利用率 */}
-                <div className="utilization-panel">
-                    <div className="panel-label">資金利用率</div>
-                        {Object.entries(stats.utilization || {}).filter(([cur]) => cur === 'USD').map(([cur, rate]) => (
-                        <div key={cur} className="utilization-item">
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                                <span>{cur}</span>
-                                <span>{(rate * 100).toFixed(1)}%</span>
-                            </div>
-                            <div className="progress-bar">
-                                <div
-                                    className="progress-fill"
-                                    style={{
-                                        width: `${Math.min(100, rate * 100)}%`,
-                                        background: rate > 0.8 ? 'var(--success)' : rate > 0.5 ? 'var(--warning)' : 'var(--accent)',
-                                    }}
-                                />
-                            </div>
+                    {usdUtilization && (
+                        <div
+                            className="progress-bar"
+                            role="meter"
+                            aria-label="USD 資金利用率"
+                            aria-valuemin="0"
+                            aria-valuemax="100"
+                            aria-valuenow={Math.min(100, Math.max(0, usdUtilization[1] * 100))}
+                        >
+                            <div
+                                className="progress-fill"
+                                style={{
+                                    width: `${Math.min(100, Math.max(0, usdUtilization[1] * 100))}%`,
+                                    background: usdUtilization[1] > 0.8 ? 'var(--success)' : usdUtilization[1] > 0.5 ? 'var(--warning)' : 'var(--accent)',
+                                }}
+                            />
                         </div>
-                    ))}
-                    {stats.utilizationDataAvailable && <div style={{ color: 'var(--text-tertiary)', fontSize: '0.72rem', marginTop: 6 }}>來源：{stats.utilizationDataSource}</div>}
-                    {!stats.utilizationDataAvailable && <div role="status" style={{ color: 'var(--text-secondary)', fontSize: '0.78rem' }}>{stats.utilizationError || '個人帳戶資料不可用；利用率不顯示為 0。'}</div>}
+                    )}
+                    {!stats.utilizationDataAvailable && (
+                        <div role="status" className="utilization-error">
+                            {stats.utilizationError || '個人帳戶資料不可用；利用率不顯示為 0。'}
+                        </div>
+                    )}
+                </div>
+                <div className="earnings-source-notes">
+                    {stats.utilizationDataAvailable && <span>利用率來源：{stats.utilizationDataSource}</span>}
+                    {stats.dataSource && <span>收益來源：{stats.dataSource}</span>}
                 </div>
             </div>
-            {stats.dataSource && <div style={{ color: 'var(--text-tertiary)', fontSize: '0.72rem', marginTop: 8 }}>收益來源：{stats.dataSource}</div>}
         </div>
     );
 }

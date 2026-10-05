@@ -9,57 +9,34 @@ export default function StatusPanel({ status }) {
     const privateValue = value => privateDataAvailable && value != null ? value : '—';
 
     return (
-        <div className="status-panel-content">
-            {/* 統計卡片 */}
-            <div className="grid grid-4">
-                {/* 錢包餘額 */}
-                {usdWallet && ([['USD', usdWallet]]).map(([cur, w]) => (
-                    <div className="card" key={cur}>
-                        <div className="card-header">
-                            <span className="card-title">{cur} Funding 錢包</span>
-                        </div>
-                        <div className="stat-value green">
-                            {privateDataAvailable && w.balance != null ? Number(w.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}
-                        </div>
-                        <div className="stat-label">
-                            可用: {privateDataAvailable
-                                ? w.available != null
-                                    ? Number(w.available).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-                                    : '—'
-                                : '尚未連接 Bitfinex 私有 API'}
-                        </div>
+        <div className={`status-panel-content ${usdWallet ? '' : 'status-without-wallet'}`}>
+            {usdWallet && (
+                <div className="status-wallet">
+                    <span className="card-title">USD Funding 錢包</span>
+                    <div className="stat-value green">
+                        {privateDataAvailable && usdWallet.balance != null ? Number(usdWallet.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}
                     </div>
-                ))}
+                    <div className="stat-label">
+                        可用：{privateDataAvailable
+                            ? usdWallet.available != null
+                                ? Number(usdWallet.available).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                                : '—'
+                            : '尚未連接 Bitfinex 私有 API'}
+                    </div>
+                </div>
+            )}
 
+            <div className="status-summary-grid" aria-label="USD 放貸概覽">
+                <div className="status-metric">
+                    <span className="card-title">活躍掛單 · USD</span>
+                    <div className="status-metric-value">{privateValue(usdOffers)}</div>
+                </div>
+                <div className="status-metric">
+                    <span className="card-title">放貸中 · USD</span>
+                    <div className="status-metric-value cyan">{privateValue(usdCredits)}</div>
+                </div>
             </div>
 
-            {/* 放貸概覽 */}
-            <div className="grid grid-2 status-summary-grid" style={{ marginTop: 20 }}>
-                <div className="card">
-                    <div className="card-header">
-                        <span className="card-title">活躍掛單</span>
-                    </div>
-                    {([['USD', usdOffers]]).map(([cur, count]) => (
-                        <div key={cur} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                            <span style={{ color: 'var(--text-secondary)' }}>{cur}</span>
-                            <span className="stat-value" style={{ fontSize: 20 }}>{privateValue(count)}</span>
-                        </div>
-                    ))}
-                </div>
-
-                <div className="card">
-                    <div className="card-header">
-                        <span className="card-title">放貸中</span>
-                    </div>
-                    {([['USD', usdCredits]]).map(([cur, count]) => (
-                        <div key={cur} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                            <span style={{ color: 'var(--text-secondary)' }}>{cur}</span>
-                            <span className="stat-value cyan" style={{ fontSize: 20 }}>{privateValue(count)}</span>
-                        </div>
-                    ))}
-                </div>
-
-            </div>
             {privateDataAvailable ? (
                 <div className="status-data-note">
                     {status.accountDataStale
