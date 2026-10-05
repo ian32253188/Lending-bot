@@ -110,7 +110,7 @@ setup_env() {
     local current
     current="$(sed -n "s/^${key}=//p" "$ENV_FILE" | head -n 1)"
     case "${current,,}" in
-      *your_*|*change_me*|*default*|*example*|*lending_bot_db_password*) current="" ;;
+      *your_*|*change_me*|*default*|*example*|*admin*|*password*|*lending_bot_db_password*) current="" ;;
       *) if [ "${#current}" -ge "$min_length" ]; then return; fi ;;
     esac
 
@@ -126,6 +126,10 @@ setup_env() {
   write_secret_if_missing POSTGRES_PASSWORD 32
   write_secret_if_missing ADMIN_PASSWORD 12
   write_secret_if_missing JWT_SECRET 32
+  env_owner="${SUDO_USER:-$(stat -c '%U' "$ROOT_DIR")}"
+  if [ "$env_owner" != "root" ] && id "$env_owner" &> /dev/null; then
+    chown "$env_owner" "$ENV_FILE"
+  fi
   chmod 600 "$ENV_FILE"
 
   echo -e "\n${YELLOW}請確認 .env 內的管理員密碼，並在儀表板設定 Bitfinex API 金鑰。資料庫與 JWT 密鑰已在空值時隨機產生。${NC}"

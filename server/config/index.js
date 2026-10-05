@@ -95,7 +95,7 @@ function validateConfig() {
     if (isTestEnvironment) return;
 
     const missingSettings = [];
-    if (!config.admin.password || config.admin.password.length < 12 || /your_|change_me|default|example/i.test(config.admin.password)) {
+    if (!config.admin.password || config.admin.password.length < 12 || /your_|change_me|default|example|admin|password/i.test(config.admin.password)) {
         missingSettings.push('ADMIN_PASSWORD (至少 12 個字元)');
     }
     if (!config.jwt.secret || config.jwt.secret.length < 32 || /your_|change_me|default|example/i.test(config.jwt.secret)) {

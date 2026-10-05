@@ -127,6 +127,21 @@ jobs:
               chmod 600 ../.env
               echo "Generated a strong PostgreSQL password in the server .env"
             fi
+
+            current_admin_password="$(sed -n 's/^ADMIN_PASSWORD=//p' ../.env | head -n 1)"
+            case "$(printf '%s' "$current_admin_password" | tr '[:upper:]' '[:lower:]')" in
+              *your_*|*change_me*|*default*|*example*|*admin*|*password*) current_admin_password="" ;;
+            esac
+            if [ "${#current_admin_password}" -lt 12 ]; then
+              new_admin_password="$(openssl rand -hex 32)"
+              if grep -q '^ADMIN_PASSWORD=' ../.env; then
+                sed -i "s/^ADMIN_PASSWORD=.*/ADMIN_PASSWORD=${new_admin_password}/" ../.env
+              else
+                printf '%s=%s\n' ADMIN_PASSWORD "$new_admin_password" >> ../.env
+              fi
+              chmod 600 ../.env
+              echo "Generated a new administrator password in the server .env; it is not included in deployment logs"
+            fi
             
             # 3. 登入 GHCR 以便拉取映像檔
             echo "${{ secrets.GITHUB_TOKEN }}" | sudo docker login ghcr.io -u ${{ github.actor }} --password-stdin
