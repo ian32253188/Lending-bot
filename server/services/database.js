@@ -124,6 +124,19 @@ async function ensureUserBotSettingsTable() {
     if (userSettingsSchemaPromise) return userSettingsSchemaPromise;
 
     userSettingsSchemaPromise = query(`
+        CREATE TABLE IF NOT EXISTS bot_settings (
+            id SERIAL PRIMARY KEY,
+            key VARCHAR(100) UNIQUE NOT NULL,
+            value JSONB NOT NULL,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        ALTER TABLE bot_settings
+            ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+        INSERT INTO bot_settings (key, value) VALUES
+            ('strategy', '{"mode": "balanced", "frrDelta": 0.0001, "minRate": 0.0001, "maxRate": 0.01}'),
+            ('risk', '{"reserveRatio": 0.1, "maxSingleAmount": 10000, "pauseOnVolatility": true}'),
+            ('general', '{"currencies": ["USD"], "minOfferAmount": 150, "enabled": true}')
+        ON CONFLICT (key) DO NOTHING;
         CREATE TABLE IF NOT EXISTS user_bot_settings (
             user_id UUID PRIMARY KEY,
             bitfinex_api_key TEXT,
