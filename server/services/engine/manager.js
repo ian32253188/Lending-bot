@@ -72,10 +72,11 @@ async function startBot(userId) {
         // 整合用戶設定
         const botSettings = {
             compoundingEnabled: settings.compounding_enabled !== false,
+            compoundingHoldAmount: settings.compounding_hold_amount || 0,
             autoTransferEnabled: settings.auto_transfer_enabled || false,
             autoTransferThreshold: settings.auto_transfer_threshold || 500,
             minOfferAmount: settings.min_offer_amount || 150,
-            currencies: settings.lending_currencies || ['USD', 'USDT'],
+            currencies: ['USD'],
             strategyConfig: settings.strategy_config || { mode: 'simplified' },
         };
 
@@ -282,7 +283,7 @@ async function collectGlobalRateData() {
         const strategy = getStrategyEngine();
         const snapshots = [];
 
-        for (const currency of ['USD', 'USDT']) {
+    for (const currency of ['USD']) {
             try {
                 const marketData = publicWs.getMarketData(currency);
                 if (!isPublicTickerFresh(marketData)) continue;
@@ -330,7 +331,7 @@ async function collectGlobalRateData() {
 
 async function updateGlobalHistoricalFRR() {
     const strategy = getStrategyEngine();
-    for (const currency of ['USD', 'USDT']) {
+        for (const currency of ['USD']) {
         try {
             // 動態計算 24h/168h(7d) 的 FRR 平均值並寫入策略快取
             const [avg24h, avg7d] = await Promise.all([

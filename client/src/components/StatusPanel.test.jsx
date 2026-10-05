@@ -13,15 +13,14 @@ describe('StatusPanel private account data', () => {
             accountDataError: 'Bitfinex 私有 API 讀取失敗；請確認 Funding Read 權限。',
             wallets: {
                 USD: { balance: null, available: null },
-                USDT: { balance: null, available: null },
             },
-            activeOffers: { USD: null, USDT: null },
-            activeCredits: { USD: null, USDT: null },
+            activeOffers: { USD: null },
+            activeCredits: { USD: null },
         }} />);
 
         expect(screen.getByText(/私有帳戶資料無法讀取/)).toBeInTheDocument();
         expect(screen.getByText(/請確認 Funding Read 權限/)).toBeInTheDocument();
         expect(screen.queryByText('0.00')).not.toBeInTheDocument();
-        expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(4);
+        expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(3);
     });
 });

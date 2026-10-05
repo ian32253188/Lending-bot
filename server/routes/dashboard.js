@@ -68,8 +68,10 @@ router.get('/funding-market', async (req, res) => {
 router.get('/rate-history/:currency', async (req, res) => {
     try {
         const { currency } = req.params;
-        const hours = parseInt(req.query.hours) || 24;
-        const data = await db.getRateHistory(currency, hours, 'recorded_at,frr');
+        if (currency !== 'USD') {
+            return res.status(400).json({ error: '僅提供 USD FRR 歷史資料。' });
+        }
+        const data = await db.getRateHistory('USD', 30 * 24, 'recorded_at,frr');
         res.json(data);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -109,11 +111,11 @@ router.get('/earnings/stats', async (req, res) => {
         yearStart.setTime(yearStart.getTime() - taipeiOffset);
 
         const [today, week, month, year, all] = await Promise.all([
-            db.getEarnings(null, todayStart.toISOString(), null, userId),
-            db.getEarnings(null, weekStart.toISOString(), null, userId),
-            db.getEarnings(null, monthStart.toISOString(), null, userId),
-            db.getEarnings(null, yearStart.toISOString(), null, userId),
-            db.getEarnings(null, null, null, userId),
+            db.getEarnings('USD', todayStart.toISOString(), null, userId),
+            db.getEarnings('USD', weekStart.toISOString(), null, userId),
+            db.getEarnings('USD', monthStart.toISOString(), null, userId),
+            db.getEarnings('USD', yearStart.toISOString(), null, userId),
+            db.getEarnings('USD', null, null, userId),
         ]);
 
         const engine = getBot(userId);
@@ -193,7 +195,10 @@ router.get('/earnings', async (req, res) => {
         const { syncUserEarnings } = require('../services/engine/sync');
         await syncUserEarnings(userId);
         const { currency, from, to } = req.query;
-        const data = await db.getEarnings(currency || null, from || null, to || null, userId);
+        if (currency && currency !== 'USD') {
+            return res.status(400).json({ error: '僅提供 USD 收益紀錄。' });
+        }
+        const data = await db.getEarnings('USD', from || null, to || null, userId);
         res.json(data);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -205,17 +210,14 @@ router.post('/earnings/reset', async (req, res) => {
     try {
         const userId = req.user.id;
         const { currency } = req.body;
-        const success = await db.deleteEarnings(currency || null, userId);
+        if (currency && currency !== 'USD') {
+            return res.status(400).json({ error: '僅提供 USD 收益紀錄。' });
+        }
+        const success = await db.deleteEarnings('USD', userId);
         if (success) {
             const engine = getBot(userId);
             if (engine && engine.state && engine.state.stats && engine.state.stats.totalEarned) {
-                if (currency) {
-                    engine.state.stats.totalEarned[currency] = 0;
-                } else {
-                    for (const cur of Object.keys(engine.state.stats.totalEarned)) {
-                        engine.state.stats.totalEarned[cur] = 0;
-                    }
-                }
+                engine.state.stats.totalEarned.USD = 0;
             }
             res.json({ message: '收益紀錄已清除' });
         } else {
@@ -232,7 +234,7 @@ router.get('/earnings/heatmap', async (req, res) => {
         const userId = req.user.id;
         const days = parseInt(req.query.days) || 365;
         const fromDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-        const rows = await db.getEarnings(null, fromDate, null, userId);
+        const rows = await db.getEarnings('USD', fromDate, null, userId);
 
         const byDate = {};
         for (const row of rows) {
@@ -255,10 +257,12 @@ router.get('/earnings/heatmap', async (req, res) => {
 router.get('/history/offers', async (req, res) => {
     try {
         const userId = req.user.id;
-        const { currency } = req.query;
+        if (req.query.currency && req.query.currency !== 'USD') {
+            return res.status(400).json({ error: '僅提供 USD 掛單紀錄。' });
+        }
         res.setHeader('X-Data-Source', db.isPostgresConfigured() ? 'Oracle PostgreSQL' : 'Supabase');
         res.setHeader('X-Record-Scope', 'Bot-tracked active offers');
-        const data = await db.getActiveOffers(currency || null, userId);
+        const data = await db.getActiveOffers('USD', userId);
         res.json(data);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -269,10 +273,12 @@ router.get('/history/offers', async (req, res) => {
 router.get('/history/loans', async (req, res) => {
     try {
         const userId = req.user.id;
-        const { currency } = req.query;
+        if (req.query.currency && req.query.currency !== 'USD') {
+            return res.status(400).json({ error: '僅提供 USD 放貸紀錄。' });
+        }
         res.setHeader('X-Data-Source', db.isPostgresConfigured() ? 'Oracle PostgreSQL' : 'Supabase');
         res.setHeader('X-Record-Scope', 'Bot-tracked active loans');
-        const data = await db.getActiveLoans(currency || null, userId);
+        const data = await db.getActiveLoans('USD', userId);
         res.json(data);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -303,49 +309,6 @@ router.get('/logs', async (req, res) => {
         }
 
         res.json(logs.slice(0, limit));
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// 取得幣種輪動建議
-router.get('/suggestions', async (req, res) => {
-    try {
-        const { getBitfinexPublicWS, isPublicTickerFresh } = require('../services/bitfinex/ws');
-        const publicWs = getBitfinexPublicWS();
-        const usdData = publicWs.getMarketData('USD');
-        const usdtData = publicWs.getMarketData('USDT');
-        const usdRate = isPublicTickerFresh(usdData) ? Number(usdData.frr) : null;
-        const usdtRate = isPublicTickerFresh(usdtData) ? Number(usdtData.frr) : null;
-        const available = usdRate !== null && usdtRate !== null;
-        const updatedAt = available
-            ? new Date(Math.min(usdData.tickerLastUpdate, usdtData.tickerLastUpdate)).toISOString()
-            : null;
-
-        const suggestions = [];
-        if (available) {
-            const diff = usdRate - usdtRate;
-            if (Math.abs(diff) > 0.00005) { // 利率相差超過萬分之 0.5 (0.005%)
-                const better = diff > 0 ? 'USD' : 'USDT';
-                const worse = diff > 0 ? 'USDT' : 'USD';
-                const diffPct = (Math.abs(diff) * 100).toFixed(4);
-                suggestions.push({
-                    reason: `💡 當前 ${better} FRR 比 ${worse} 高出約 ${diffPct}%/天；這是公開市場參考值，不代表實際成交收益。`
-                });
-            }
-        }
-
-        res.json({
-            available,
-            source: 'Bitfinex 公開 Funding Ticker（FRR）',
-            updatedAt,
-            error: available ? null : 'USD 或 USDT 的公開行情尚未更新或已超過 5 分鐘，暫不能比較。',
-            rates: {
-                USD: usdRate,
-                USDT: usdtRate
-            },
-            suggestions
-        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

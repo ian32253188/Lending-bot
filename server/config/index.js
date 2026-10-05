@@ -54,7 +54,7 @@ const config = {
     },
 
     lending: {
-        currencies: ['USD', 'USDT'],
+        currencies: ['USD'],
         minOfferAmount: 150,
         decisionIntervalMs: 10000, // 10 秒決策週期
         maxRetries: 3,
@@ -62,13 +62,11 @@ const config = {
         // Bitfinex Funding 市場幣種代碼映射
         // 部分幣種在 Funding 市場的 symbol 與常見名稱不同
         currencyMap: {
-            'USD': 'USD',    // fUSD
-            'USDT': 'UST',   // fUST（不是 fUSDT！）
+            'USD': 'USD',
         },
         // 反向映射（Bitfinex symbol → 內部代碼）
         symbolToCurrency: {
             'USD': 'USD',
-            'UST': 'USDT',
         },
     },
 

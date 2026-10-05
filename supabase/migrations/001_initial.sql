@@ -85,5 +85,5 @@ CREATE TABLE IF NOT EXISTS bot_settings (
 INSERT INTO bot_settings (key, value) VALUES
   ('strategy', '{"mode": "balanced", "frrDelta": 0.0001, "minRate": 0.0001, "maxRate": 0.01}'),
   ('risk', '{"reserveRatio": 0.1, "maxSingleAmount": 10000, "pauseOnVolatility": true}'),
-  ('general', '{"currencies": ["USD", "USDT"], "minOfferAmount": 150, "enabled": true}')
+  ('general', '{"currencies": ["USD"], "minOfferAmount": 150, "enabled": true}')
 ON CONFLICT (key) DO NOTHING;

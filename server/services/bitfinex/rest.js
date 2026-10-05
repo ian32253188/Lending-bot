@@ -7,19 +7,20 @@ const BASE_URL = config.bitfinex.restUrl;
 
 /**
  * 內部幣種代碼 → Bitfinex Funding symbol
- * 例如: 'USDT' → 'UST'
+ * USD → USD
  */
 function toBfxSymbol(currency) {
-    return config.lending.currencyMap?.[currency] || currency;
+    if (currency !== 'USD') throw new Error('目前僅支援 USD Funding。');
+    return 'USD';
 }
 
 /**
  * Bitfinex Funding symbol → 內部幣種代碼
- * 例如: 'UST' → 'USDT', 'fUST' → 'USDT'
+ * 去除 funding symbol 的 f 前綴並轉為內部代碼
  */
 function fromBfxSymbol(bfxSymbol) {
     const sym = bfxSymbol?.startsWith('f') ? bfxSymbol.slice(1) : bfxSymbol;
-    return config.lending.symbolToCurrency?.[sym] || sym;
+    return sym === 'USD' ? 'USD' : null;
 }
 
 let lastNonce = 0;
@@ -146,7 +147,7 @@ async function publicRequest(path) {
 
 /**
  * 提交 Funding Offer
- * @param {string} currency - 'USD' 或 'USDT'
+ * @param {string} currency - USD
  * @param {number} amount - 金額
  * @param {number} rate - 日利率（例如 0.001 = 0.1%/天）
  * @param {number} period - 天數 (2-120)
@@ -181,7 +182,7 @@ async function cancelFundingOffer(offerId, credentials = null) {
 
 /**
  * 取消所有指定幣種的 Funding Offers
- * @param {string} currency - 'USD' 或 'USDT'
+ * @param {string} currency - USD
  * @param {object} credentials - 可選用戶金鑰
  */
 async function cancelAllFundingOffers(currency, credentials = null) {
@@ -198,7 +199,7 @@ async function cancelAllFundingOffers(currency, credentials = null) {
 
 /**
  * 取得活躍的 Funding Offers
- * @param {string} currency - 'USD' 或 'USDT'
+ * @param {string} currency - USD
  * @param {object} credentials - 可選用戶金鑰
  */
 async function getActiveFundingOffers(currency, credentials = null) {
@@ -211,7 +212,7 @@ async function getActiveFundingOffers(currency, credentials = null) {
 
 /**
  * 取得活躍的 Funding Credits（已成交放貸）
- * @param {string} currency - 'USD' 或 'USDT'
+ * @param {string} currency - USD
  * @param {object} credentials - 可選用戶金鑰
  */
 async function getActiveFundingCredits(currency, credentials = null) {
@@ -224,7 +225,7 @@ async function getActiveFundingCredits(currency, credentials = null) {
 
 /**
  * 取得 Funding Loans
- * @param {string} currency - 'USD' 或 'USDT'
+ * @param {string} currency - USD
  * @param {object} credentials - 可選用戶金鑰
  */
 async function getActiveFundingLoans(currency, credentials = null) {
@@ -248,7 +249,7 @@ async function getWallets(credentials = null) {
 
 /**
  * 取得 Funding Info
- * @param {string} currency - 'USD' 或 'USDT'
+ * @param {string} currency - USD
  * @param {object} credentials - 可選用戶金鑰
  */
 async function getFundingInfo(currency, credentials = null) {
@@ -302,7 +303,7 @@ async function getFundingStats(currency) {
 
 /**
  * 取得公開 Funding 成交紀錄
- * @param {string} currency - 'USD' 或 'USDT'
+ * @param {string} currency - USD
  * @param {object} options - Bitfinex 公開 trades endpoint 的查詢參數
  */
 async function getFundingTrades(currency, options = {}) {
@@ -343,10 +344,12 @@ async function getFundingBook(currency, precision = 'P0') {
  */
 function parseFundingOffer(arr) {
     if (!Array.isArray(arr)) return null;
+    const currency = fromBfxSymbol(arr[1]);
+    if (currency !== 'USD') return null;
     return {
         id: arr[0],
         symbol: arr[1],
-        currency: fromBfxSymbol(arr[1]),  // fUST → USDT
+        currency,
         createdAt: new Date(arr[2]),
         updatedAt: new Date(arr[3]),
         amount: arr[4],
@@ -367,10 +370,12 @@ function parseFundingOffer(arr) {
  */
 function parseFundingCredit(arr) {
     if (!Array.isArray(arr)) return null;
+    const currency = fromBfxSymbol(arr[1]);
+    if (currency !== 'USD') return null;
     return {
         id: arr[0],
         symbol: arr[1],
-        currency: fromBfxSymbol(arr[1]),  // fUST → USDT
+        currency,
         side: arr[2],
         createdAt: new Date(arr[3]),
         updatedAt: new Date(arr[4]),
@@ -395,9 +400,11 @@ function parseFundingCredit(arr) {
 function parseWallet(arr) {
     if (!Array.isArray(arr)) return null;
     const rawCurrency = arr[1];
+    const currency = fromBfxSymbol(rawCurrency);
+    if (currency !== 'USD') return null;
     return {
         type: arr[0],       // 'exchange', 'margin', 'funding'
-        currency: fromBfxSymbol(rawCurrency),  // UST → USDT
+        currency,
         rawCurrency,        // 保留原始 Bitfinex 代碼
         balance: arr[2],
         unsettledInterest: arr[3],

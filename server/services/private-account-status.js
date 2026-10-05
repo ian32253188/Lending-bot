@@ -20,10 +20,9 @@ function unavailableSnapshot(error, errorCode = null) {
         accountDataErrorCode: errorCode,
         wallets: {
             USD: { balance: null, available: null },
-            USDT: { balance: null, available: null },
         },
-        activeOffers: { USD: null, USDT: null },
-        activeCredits: { USD: null, USDT: null },
+        activeOffers: { USD: null },
+        activeCredits: { USD: null },
     };
 }
 
@@ -122,7 +121,7 @@ async function fetchAccountSnapshot(userId) {
 
         const rawWallets = await rest.getWallets(credentials);
         const currencyResults = [];
-        for (const currency of ['USD', 'USDT']) {
+        for (const currency of ['USD']) {
             const rawOffers = await rest.getActiveFundingOffers(currency, credentials);
             const rawCredits = await rest.getActiveFundingCredits(currency, credentials);
             const rawLoans = await rest.getActiveFundingLoans(currency, credentials);
@@ -131,7 +130,6 @@ async function fetchAccountSnapshot(userId) {
 
         const wallets = {
             USD: { balance: 0, available: 0 },
-            USDT: { balance: 0, available: 0 },
         };
         for (const row of toArray(rawWallets, 'wallet')) {
             const wallet = rest.parseWallet(row);
@@ -142,8 +140,8 @@ async function fetchAccountSnapshot(userId) {
             };
         }
 
-        const activeOffers = { USD: [], USDT: [] };
-        const activeCredits = { USD: [], USDT: [] };
+        const activeOffers = { USD: [] };
+        const activeCredits = { USD: [] };
         for (const result of currencyResults) {
             const { currency } = result;
             activeOffers[currency] = toArray(result.rawOffers, `${currency} offers`)

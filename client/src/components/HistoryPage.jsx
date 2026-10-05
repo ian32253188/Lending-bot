@@ -7,6 +7,11 @@ function formatDate(str) {
     return new Date(str).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
 }
 
+function formatNumber(value, digits = 2) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number.toFixed(digits) : '-';
+}
+
 function StatusBadge({ status }) {
     const colors = {
         active: { bg: '#26d0a333', color: '#26d0a3', label: '進行中' },
@@ -27,7 +32,6 @@ export default function HistoryPage({ token }) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const [dataSource, setDataSource] = useState('');
-    const [currencyFilter, setCurrencyFilter] = useState('ALL');
 
     useEffect(() => {
         fetchData();
@@ -38,8 +42,8 @@ export default function HistoryPage({ token }) {
         try {
             const headers = { Authorization: `Bearer ${token}` };
             const [offersRes, loansRes] = await Promise.all([
-                fetch('/api/dashboard/history/offers', { headers }),
-                fetch('/api/dashboard/history/loans', { headers }),
+                fetch('/api/dashboard/history/offers?currency=USD', { headers }),
+                fetch('/api/dashboard/history/loans?currency=USD', { headers }),
             ]);
             const [offersData, loansData] = await Promise.all([offersRes.json(), loansRes.json()]);
             if (!offersRes.ok) throw new Error(offersData.error || `掛單記錄讀取失敗（HTTP ${offersRes.status}）`);
@@ -57,9 +61,7 @@ export default function HistoryPage({ token }) {
     }
 
     const currentData = activeTab === 0 ? offers : loans;
-    const filteredData = currencyFilter === 'ALL'
-        ? currentData
-        : currentData.filter(r => r.currency === currencyFilter);
+    const filteredData = currentData;
 
     return (
         <div className="panel">
@@ -80,16 +82,8 @@ export default function HistoryPage({ token }) {
                     ))}
                 </div>
                 <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                    {['ALL', 'USD', 'USDT'].map(c => (
-                        <button
-                            key={c}
-                            className={`btn btn-sm ${currencyFilter === c ? 'btn-primary' : 'btn-ghost'}`}
-                            onClick={() => setCurrencyFilter(c)}
-                        >
-                            {c}
-                        </button>
-                    ))}
-                    <button className="btn btn-sm btn-ghost" onClick={fetchData}>🔄</button>
+                    <span className="badge">USD</span>
+                    <button className="btn btn-sm btn-ghost" onClick={fetchData} aria-label="重新載入歷史資料">重新載入</button>
                 </div>
             </div>
 
@@ -119,9 +113,9 @@ export default function HistoryPage({ token }) {
                                 {filteredData.map(row => (
                                     <tr key={row.id || row.offer_id}>
                                         <td><span className="badge">{row.currency}</span></td>
-                                        <td>{row.amount?.toFixed(2)}</td>
-                                        <td>{row.rate ? `${(row.rate * 100).toFixed(4)}%` : '-'}</td>
-                                        <td>{row.rate ? `${(row.rate * 365 * 100).toFixed(2)}%` : '-'}</td>
+                                        <td>{formatNumber(row.amount)}</td>
+                                        <td>{Number(row.rate) ? `${formatNumber(Number(row.rate) * 100, 4)}%` : '-'}</td>
+                                        <td>{Number(row.rate) ? `${formatNumber(Number(row.rate) * 365 * 100)}%` : '-'}</td>
                                         <td>{row.period}天</td>
                                         <td><StatusBadge status={row.status} /></td>
                                         <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
@@ -150,12 +144,12 @@ export default function HistoryPage({ token }) {
                                 {filteredData.map(row => (
                                     <tr key={row.id || row.loan_id}>
                                         <td><span className="badge">{row.currency}</span></td>
-                                        <td>{row.amount?.toFixed(2)}</td>
-                                        <td>{row.rate ? `${(row.rate * 100).toFixed(4)}%` : '-'}</td>
-                                        <td>{row.rate ? `${(row.rate * 365 * 100).toFixed(2)}%` : '-'}</td>
+                                        <td>{formatNumber(row.amount)}</td>
+                                        <td>{Number(row.rate) ? `${formatNumber(Number(row.rate) * 100, 4)}%` : '-'}</td>
+                                        <td>{Number(row.rate) ? `${formatNumber(Number(row.rate) * 365 * 100)}%` : '-'}</td>
                                         <td>{row.period}天</td>
-                                        <td style={{ color: row.interest_earned > 0 ? 'var(--success)' : 'inherit' }}>
-                                            {row.interest_earned ? `+${row.interest_earned.toFixed(6)}` : '-'}
+                                        <td style={{ color: Number(row.interest_earned) > 0 ? 'var(--success)' : 'inherit' }}>
+                                            {Number(row.interest_earned) ? `+${formatNumber(row.interest_earned, 6)}` : '-'}
                                         </td>
                                         <td><StatusBadge status={row.status} /></td>
                                         <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>

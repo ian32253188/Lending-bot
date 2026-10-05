@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS bot_settings (
 INSERT INTO bot_settings (key, value) VALUES
   ('strategy', '{"mode": "balanced", "frrDelta": 0.0001, "minRate": 0.0001, "maxRate": 0.01}'),
   ('risk', '{"reserveRatio": 0.1, "maxSingleAmount": 10000, "pauseOnVolatility": true}'),
-  ('general', '{"currencies": ["USD", "USDT"], "minOfferAmount": 150, "enabled": true}')
+  ('general', '{"currencies": ["USD"], "minOfferAmount": 150, "enabled": true}')
 ON CONFLICT (key) DO NOTHING;
 
 -- 3. 用戶放貸設定表 (user_bot_settings)
@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS user_bot_settings (
     bitfinex_api_secret TEXT,
     telegram_bot_token TEXT,
     telegram_chat_id TEXT,
-    lending_currencies VARCHAR(10)[] DEFAULT ARRAY['USD', 'USDT'],
+    lending_currencies VARCHAR(10)[] DEFAULT ARRAY['USD'],
+    compounding_hold_amount DECIMAL(20, 8) NOT NULL DEFAULT 0,
     min_offer_amount DECIMAL(20, 8) DEFAULT 150.0,
     status VARCHAR(20) DEFAULT 'stopped',
     strategy_config JSONB DEFAULT '{"mode": "simplified"}',

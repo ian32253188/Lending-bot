@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 
 const LEVELS = ['all', 'info', 'warn', 'error'];
 const LEVEL_COLORS = { info: 'var(--success)', warn: 'var(--warning)', error: 'var(--danger)', debug: 'var(--text-secondary)' };
-const LEVEL_ICONS = { info: '✅', warn: '⚠️', error: '❌', debug: '🔍' };
+const LEVEL_ICONS = { info: 'INFO', warn: 'WARN', error: 'ERROR', debug: 'DEBUG' };
 
 export default function LogViewer({ token }) {
     const [logs, setLogs] = useState([]);
@@ -56,9 +56,9 @@ export default function LogViewer({ token }) {
     return (
         <div className="card">
             <div className="card-header">
-                <span className="card-title">📝 操作日誌</span>
+                <span className="card-title">操作日誌</span>
                 <button className="btn btn-outline btn-sm" onClick={fetchLogs} disabled={loading}>
-                    {loading ? '⏳' : '🔄'}
+                    {loading ? '載入中' : '重新載入'}
                 </button>
             </div>
 
@@ -83,7 +83,7 @@ export default function LogViewer({ token }) {
                         onChange={e => setKeyword(e.target.value)}
                         style={{ flex: 1, fontSize: '0.8rem', padding: '3px 8px' }}
                     />
-                    <button type="submit" className="btn btn-sm btn-ghost">🔍</button>
+                    <button type="submit" className="btn btn-sm btn-ghost">搜尋</button>
                 </form>
             </div>
 

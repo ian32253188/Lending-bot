@@ -37,7 +37,7 @@ async function syncUserEarnings(userId, force = false) {
             apiSecret: decryptWithFallback(settings.bitfinex_api_secret)
         };
 
-        const currencies = settings.lending_currencies || ['USD', 'USDT'];
+        const currencies = ['USD'];
         let syncCount = 0;
 
         // 取得 Bitfinex 分類帳歷史中的所有明細 (Category 28 為放貸利息發放)
@@ -61,9 +61,8 @@ async function syncUserEarnings(userId, force = false) {
             const filteredEntries = ledgerEntries.filter(entry => {
                 const entryCur = entry[1];
                 if (!entryCur) return false;
-                // 去除可能的前綴 'f' (如 fUSD -> USD, fUST -> UST)
+                // 去除 Bitfinex funding symbol 的 f 前綴 (fUSD -> USD)
                 const rawCur = entryCur.startsWith('f') ? entryCur.substring(1) : entryCur;
-                // 轉換為內部標示 (如 UST -> USDT)
                 const curCode = config.lending.symbolToCurrency?.[rawCur] || rawCur;
                 return curCode === cur;
             });

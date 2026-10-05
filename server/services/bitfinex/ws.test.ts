@@ -7,9 +7,9 @@ const configMock = {
     apiSecret: 'global-secret',
   },
   lending: {
-    currencies: ['USD', 'USDT'],
-    currencyMap: { USD: 'USD', USDT: 'UST' },
-    symbolToCurrency: { USD: 'USD', UST: 'USDT' },
+    currencies: ['USD'],
+    currencyMap: { USD: 'USD' },
+    symbolToCurrency: { USD: 'USD' },
   },
 };
 
@@ -30,15 +30,15 @@ mockModule('../../utils/logger', loggerMock);
 const { BitfinexWS, getBitfinexPublicWS, createBitfinexPrivateWS, isPublicTickerFresh } = require('./ws');
 
 describe('Bitfinex public WebSocket adapter', () => {
-  it('updates ticker cache and emits a normalized ticker event', () => {
+  it('updates the USD ticker cache and emits a normalized ticker event', () => {
     const ws = new BitfinexWS({ publicOnly: true });
     const listener = vi.fn();
     ws.on('tickerUpdate', listener);
-    ws._handleEvent({ event: 'subscribed', chanId: 7, channel: 'ticker', symbol: 'fUST' });
+    ws._handleEvent({ event: 'subscribed', chanId: 7, channel: 'ticker', symbol: 'fUSD' });
     ws._handleMessage([7, [0.0003, 0.0004, 1000, 2, 0.0005, 800, 7, 0.00001, 0.02, 1, 250000, 0.0006, 0.0002, 0, 0, 5000]]);
 
-    expect(listener).toHaveBeenCalledWith(expect.objectContaining({ currency: 'USDT' }));
-    expect(ws.getMarketData('USDT')).toMatchObject({
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({ currency: 'USD' }));
+    expect(ws.getMarketData('USD')).toMatchObject({
       frr: 0.0003,
       bid: 0.0004,
       ask: 0.0005,
@@ -48,7 +48,7 @@ describe('Bitfinex public WebSocket adapter', () => {
       frrAmountAvailable: 5000,
       tickerLastUpdate: expect.any(Number),
     });
-    expect(isPublicTickerFresh(ws.getMarketData('USDT'))).toBe(true);
+    expect(isPublicTickerFresh(ws.getMarketData('USD'))).toBe(true);
   });
 
   it('keeps missing ticker rates null and does not treat a funding-book update as a fresh ticker', () => {

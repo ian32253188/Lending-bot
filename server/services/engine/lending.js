@@ -19,10 +19,11 @@ class LendingBot {
 
         // 用戶專屬策略設定
         this.compoundingEnabled = settings.compoundingEnabled !== false;
+        this.compoundingHoldAmount = Math.max(0, Number(settings.compoundingHoldAmount) || 0);
         this.autoTransferEnabled = settings.autoTransferEnabled || false;
         this.autoTransferThreshold = settings.autoTransferThreshold || 500;
         this.minOfferAmount = settings.minOfferAmount || 150;
-        this.currencies = settings.currencies || config.lending.currencies || ['USD', 'USDT'];
+        this.currencies = ['USD'];
         this.strategyConfig = settings.strategyConfig || { mode: 'simplified' };
 
         // 用戶運行狀態快取
@@ -32,9 +33,9 @@ class LendingBot {
             accountDataUpdatedAt: null,
             accountDataError: 'Bitfinex 個人帳戶資料正在同步。',
             accountDataErrorCode: 'BITFINEX_ACCOUNT_DATA_PENDING',
-            wallets: {},       // { USD: { balance, available }, USDT: {...} }
-            activeOffers: {},  // { USD: [...], USDT: [...] }
-            activeCredits: {}, // { USD: [...], USDT: [...] }
+            wallets: {},       // { USD: { balance, available } }
+            activeOffers: {},  // { USD: [...] }
+            activeCredits: {}, // { USD: [...] }
             lastDecision: {},  // 行情診斷快照
             stats: {
                 offersPlaced: 0,
@@ -46,6 +47,7 @@ class LendingBot {
 
         // 事件防抖與緩衝狀態
         this._pendingDecisions = {};
+        this._closedLoanIds = new Set();
         this._tradeBuffer = {};
         this._submitTimers = [];
         this._accountDataLoadState = { wallets: false, offers: {}, credits: {} };
@@ -182,9 +184,19 @@ class LendingBot {
         }
     }
 
-    setCompounding(enabled) {
-        this.compoundingEnabled = enabled;
-        logger.info('engine', `複利模式已${enabled ? '開啟' : '關閉'}`, this.userId);
+    async setCompounding(enabled) {
+        const nextEnabled = Boolean(enabled);
+        const nextHoldAmount = nextEnabled ? 0 : this.compoundingHoldAmount;
+        await db.saveUserSettings(this.userId, {
+            compounding_enabled: nextEnabled,
+            compounding_hold_amount: nextHoldAmount,
+        });
+        this.compoundingEnabled = nextEnabled;
+        this.compoundingHoldAmount = nextHoldAmount;
+        logger.info('engine', `複利模式已${nextEnabled ? '開啟' : '關閉'}`, this.userId);
+        if (nextEnabled && this.running && !this.paused) {
+            for (const currency of this.currencies) this._debouncedDecision(currency, 1000);
+        }
     }
 
     setAutoTransfer(enabled, threshold = 500) {
@@ -233,7 +245,7 @@ class LendingBot {
         try {
             const wallets = await rest.getWallets(this.credentials);
             if (!Array.isArray(wallets)) throw new Error('Invalid wallet response');
-            for (const currency of ['USD', 'USDT']) {
+            for (const currency of this.currencies) {
                 if (!this.state.wallets[currency]) this.state.wallets[currency] = { balance: 0, available: 0 };
             }
             for (const currency of this.currencies) {
@@ -412,7 +424,14 @@ class LendingBot {
         }
 
         const available = this.state.wallets[currency]?.available || 0;
-        const nominalAvailable = available;
+        if (!this.compoundingEnabled && this.state.accountDataComplete && available < this.compoundingHoldAmount) {
+            this.compoundingHoldAmount = available;
+            db.saveUserSettings(this.userId, { compounding_hold_amount: available }).catch(error => {
+                logger.warn('engine', '更新保留利息金額失敗', { userId: this.userId, error: error.message });
+            });
+        }
+        const heldInterest = this.compoundingEnabled ? 0 : Math.min(available, this.compoundingHoldAmount);
+        const nominalAvailable = Math.max(0, available - heldInterest);
 
         // 核心：使用使用者個人的策略設定 (strategyConfig) 計算最佳掛單方案
         const optimalResult = strategy.calculateOptimalRate(marketData, currency, nominalAvailable, this.strategyConfig);
@@ -425,7 +444,7 @@ class LendingBot {
             available,
         };
 
-        if (available < this.minOfferAmount) {
+        if (nominalAvailable < this.minOfferAmount) {
             return; // 餘額不足，在記錄完市場診斷後優雅退場
         }
 
@@ -621,27 +640,7 @@ class LendingBot {
         });
 
         // 貸款關閉 (到期收息)
-        bfxWs.on('fundingCreditClose', (data) => {
-            const credit = rest.parseFundingCredit(data);
-            if (credit) {
-                const cur = credit.currency;
-                if (this.state.activeCredits[cur]) {
-                    this.state.activeCredits[cur] = this.state.activeCredits[cur].filter((c) => c.id !== credit.id);
-                    const rawInterest = Math.abs(credit.amount) * credit.rate * credit.period;
-                    const interestEarned = rawInterest * 0.85; // 扣 15% 手續費
-                    db.closeLoan(credit.id, interestEarned, this.userId);
-
-                    this.state.stats.totalEarned[cur] = (this.state.stats.totalEarned[cur] || 0) + interestEarned;
-                    logger.info('engine', `💰 放貸到期 ${cur}，賺取利息(稅後): ${interestEarned.toFixed(4)}`, this.userId);
-
-                    // 複利重掛
-                    if (this.compoundingEnabled && this.running && !this.paused) {
-                        logger.info('engine', `♻️ 複利重掛：到期資金即刻重掛`, this.userId);
-                        this._debouncedDecision(cur, 2000);
-                    }
-                }
-            }
-        });
+        bfxWs.on('fundingCreditClose', data => this._handleFundingClose(data));
 
         // 未使用貸款快照 (Loans)
         bfxWs.on('fundingLoanSnapshot', (data) => {
@@ -695,19 +694,7 @@ class LendingBot {
             }
         });
 
-        bfxWs.on('fundingLoanClose', (data) => {
-            const loan = rest.parseFundingCredit(data);
-            if (loan && loan.side === 1) {
-                const cur = loan.currency;
-                if (this.state.activeCredits[cur]) {
-                    this.state.activeCredits[cur] = this.state.activeCredits[cur].filter((c) => c.id !== loan.id);
-                    const rawInterest = Math.abs(loan.amount) * loan.rate * loan.period;
-                    const interestEarned = rawInterest * 0.85;
-                    db.closeLoan(loan.id, interestEarned, this.userId);
-                    logger.info('engine', `🔄 放貸合約移轉或結束 #${loan.id}`, this.userId);
-                }
-            }
-        });
+        bfxWs.on('fundingLoanClose', data => this._handleFundingClose(data));
 
         bfxWs.on('reconnectFailed', () => {
             logger.error('engine', '❌ WebSocket 重連失敗，暫停放貸', { userId: this.userId });
@@ -720,6 +707,37 @@ class LendingBot {
             } else {
                 this.resume();
             }
+        });
+    }
+
+    _handleFundingClose(data) {
+        const loan = rest.parseFundingCredit(data);
+        if (!loan || loan.side !== 1 || loan.id === null || loan.id === undefined) return;
+        const loanKey = String(loan.id);
+        if (this._closedLoanIds.has(loanKey)) return;
+        this._closedLoanIds.add(loanKey);
+        if (this._closedLoanIds.size > 1000) this._closedLoanIds.delete(this._closedLoanIds.values().next().value);
+
+        const currency = loan.currency;
+        if (!this.state.activeCredits[currency]) return;
+        this.state.activeCredits[currency] = this.state.activeCredits[currency].filter(row => String(row.id) !== loanKey);
+
+        const principal = Math.abs(Number(loan.amount) || 0);
+        const rawInterest = principal * (Number(loan.rate) || 0) * (Number(loan.period) || 0);
+        const interestEarned = rawInterest * 0.85;
+        void db.closeLoan(loan.id, interestEarned, this.userId);
+        this.state.stats.totalEarned[currency] = (this.state.stats.totalEarned[currency] || 0) + interestEarned;
+        logger.info('engine', `放貸到期 ${currency}，估算稅後利息 ${interestEarned.toFixed(4)}`, this.userId);
+
+        if (this.compoundingEnabled) {
+            if (this.running && !this.paused) this._debouncedDecision(currency, 2000);
+            return;
+        }
+
+        // 關閉複利時，保留利息；到期本金仍可照常重新放貸。
+        this.compoundingHoldAmount += interestEarned;
+        db.saveUserSettings(this.userId, { compounding_hold_amount: this.compoundingHoldAmount }).catch(error => {
+            logger.warn('engine', '儲存保留利息金額失敗', { userId: this.userId, error: error.message });
         });
     }
 
@@ -767,20 +785,20 @@ class LendingBot {
             connected: this.bfxWs ? this.bfxWs.isConnected() : false,
             authenticated: this.bfxWs ? this.bfxWs.isAuthenticated() : false,
             stats: this.state.stats,
-            wallets: Object.fromEntries(['USD', 'USDT'].map(currency => [
+            wallets: Object.fromEntries(this.currencies.map(currency => [
                 currency,
                 this._accountDataLoadState.wallets
                     ? (this.state.wallets[currency] || { balance: 0, available: 0 })
                     : { balance: null, available: null },
             ])),
-            activeOffers: {
-                USD: this._accountDataLoadState.offers.USD ? this.state.activeOffers.USD?.length || 0 : null,
-                USDT: this._accountDataLoadState.offers.USDT ? this.state.activeOffers.USDT?.length || 0 : null,
-            },
-            activeCredits: {
-                USD: this._accountDataLoadState.credits.USD ? this.state.activeCredits.USD?.length || 0 : null,
-                USDT: this._accountDataLoadState.credits.USDT ? this.state.activeCredits.USDT?.length || 0 : null,
-            },
+            activeOffers: Object.fromEntries(this.currencies.map(currency => [
+                currency,
+                this._accountDataLoadState.offers[currency] ? this.state.activeOffers[currency]?.length || 0 : null,
+            ])),
+            activeCredits: Object.fromEntries(this.currencies.map(currency => [
+                currency,
+                this._accountDataLoadState.credits[currency] ? this.state.activeCredits[currency]?.length || 0 : null,
+            ])),
             marketData: publicWs.marketData,
             strategy: strategyStatus,
             features: {
@@ -799,11 +817,11 @@ class LendingBot {
     getDetailedStatus() {
         return {
             ...this.getStatus(),
-            activeOffers: Object.fromEntries(['USD', 'USDT'].map(currency => [
+            activeOffers: Object.fromEntries(this.currencies.map(currency => [
                 currency,
                 this._accountDataLoadState.offers[currency] ? this.state.activeOffers[currency] : null,
             ])),
-            activeCredits: Object.fromEntries(['USD', 'USDT'].map(currency => [
+            activeCredits: Object.fromEntries(this.currencies.map(currency => [
                 currency,
                 this._accountDataLoadState.credits[currency] ? this.state.activeCredits[currency] : null,
             ])),

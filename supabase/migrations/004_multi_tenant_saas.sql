@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS user_bot_settings (
     bitfinex_api_secret TEXT,
     telegram_bot_token TEXT,
     telegram_chat_id TEXT,
-    lending_currencies VARCHAR(10)[] DEFAULT ARRAY['USD', 'USDT'],
+    lending_currencies VARCHAR(10)[] DEFAULT ARRAY['USD'],
     min_offer_amount DECIMAL(20, 8) DEFAULT 150.0,
     status VARCHAR(20) DEFAULT 'stopped', -- 'running', 'stopped'
     strategy_config JSONB DEFAULT '{"mode": "simplified"}',

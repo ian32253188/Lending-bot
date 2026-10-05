@@ -177,7 +177,6 @@ export default function FundingMarketDashboard({ token }) {
         <div className="card market-dashboard">
             <div className="market-header">
                 <div>
-                    <div className="market-kicker">PUBLIC MARKET / USD</div>
                     <div className="market-title">USD 融資市場 <span className={`market-live ${summary?.tickerFresh ? '' : 'market-stale'}`}><span className="status-pip" /> {summary?.tickerFresh ? 'LIVE' : 'TICKER 暫無更新'}</span></div>
                     <div className="market-subtitle">24H 成交額 {summary?.volume24h == null ? '—' : `${fmtAmount(summary.volume24h)} USD`} · {sourceLabel(summary?.volume24hSource)}</div>
                 </div>
@@ -194,17 +193,20 @@ export default function FundingMarketDashboard({ token }) {
             </div>
             <div className="market-body">
                 <div className="market-chart-column">
-                    <h3>近 30 日利率走勢 <span className="section-code">RATE RANGE / APY</span></h3>
+                    <h3>近 30 日利率走勢</h3>
                     <MarketChart points={points} unavailable={!historyDataAvailable} />
                     <div className="market-note">
-                        灰色區間為每日最低至最高利率，青線為均值；每日歷史來源：{summary?.marketDataSources?.rateHistory || 'Oracle PostgreSQL'}。
+                        年化利率。灰色區間為每日最低至最高利率，青線為均值。
                         {historyCoverageDays != null && ` 歷史覆蓋 ${historyCoverageDays}/${historyWindowDays} 日${coverageRange}。`}
                         {!historyDataAvailable && ' 歷史來源暫時無法讀取，圖表不代表零成交。'}
                     </div>
-                    <div className="market-note">行情來源：即時 ticker {summary?.tickerFresh ? `有效（${summary.tickerUpdatedAt ? new Date(summary.tickerUpdatedAt).toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei' }) : '更新時間未知'}）` : '逾時或尚未收到'}；24H 撮合：{summary?.marketDataSources?.trades || '—'}；利率歷史：{summary?.marketDataSources?.rateHistory || '—'}{summary?.currentRateSource ? `；成交均值：${sourceLabel(summary.currentRateSource)}（${summary.currentRateObservedAt ? new Date(summary.currentRateObservedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }) : '時間未知'}）` : ''}。</div>
+                    <details className="market-source-details">
+                        <summary>資料來源與更新狀態</summary>
+                        <p>即時利率：{summary?.tickerFresh ? `有效，${summary.tickerUpdatedAt ? new Date(summary.tickerUpdatedAt).toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei' }) + ' 更新' : '更新時間未知'}` : '逾時或尚未收到'}。成交資料：{summary?.marketDataSources?.trades || '—'}；利率歷史：{summary?.marketDataSources?.rateHistory || '—'}{summary?.currentRateSource ? `；成交均值：${sourceLabel(summary.currentRateSource)}（${summary.currentRateObservedAt ? new Date(summary.currentRateObservedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }) : '時間未知'}）` : ''}。</p>
+                    </details>
                 </div>
                 <div className="market-matches">
-                    <h3>過去每小時撮合 <span className="section-code">LAST 24H</span></h3>
+                    <h3>過去每小時撮合（24 小時）</h3>
                     <div className="market-table-head"><span>時間</span><span>成交利率</span><span>借量</span></div>
                     <div className="market-table-scroll">
                         {hourlyMatches.map(row => (

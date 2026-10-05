@@ -19,7 +19,7 @@ async function analyzeMarket() {
     console.log('  📊 第一部分：Bitfinex 即時市場狀態分析');
     console.log('═'.repeat(70));
 
-    const symbols = { 'USD': 'fUSD', 'USDT': 'fUST' };
+    const symbols = { 'USD': 'fUSD' };
 
     for (const [name, sym] of Object.entries(symbols)) {
         console.log(`\n┌─────────────────────────────────────────`);
@@ -214,7 +214,7 @@ async function analyzeDatabase() {
     }
 
     // 各幣種分拆
-    for (const cur of ['USD', 'USDT']) {
+    for (const cur of ['USD']) {
         const curE = allE.filter(e => e.currency === cur);
         if (curE.length > 0) {
             const curSum = sum(curE);
@@ -230,7 +230,7 @@ async function analyzeDatabase() {
     console.log('│ 📋 放貸合約分析');
     console.log('├─────────────────────────────────────────');
 
-    for (const cur of ['USD', 'USDT']) {
+    for (const cur of ['USD']) {
         const activeLoans = await db.getActiveLoans(cur);
         if (activeLoans.length > 0) {
             const totalLent = activeLoans.reduce((s, l) => s + (l.amount || 0), 0);
@@ -271,7 +271,7 @@ async function analyzeDatabase() {
     console.log('│ 📉 利率歷史趨勢分析 (7 天)');
     console.log('├─────────────────────────────────────────');
 
-    for (const cur of ['USD', 'USDT']) {
+    for (const cur of ['USD']) {
         const history = await db.getRateHistory(cur, 168);
         if (!history || history.length < 10) {
             console.log(`│ ${cur}: 歷史數據不足 (${history?.length || 0} 筆)`);
@@ -400,7 +400,7 @@ async function generateRecommendations(hasDbData) {
     console.log('═'.repeat(70));
 
     // 即時市場數據 for recommendations
-    const symbols = { 'USD': 'fUSD', 'USDT': 'fUST' };
+    const symbols = { 'USD': 'fUSD' };
     const recommendations = [];
 
     for (const [name, sym] of Object.entries(symbols)) {

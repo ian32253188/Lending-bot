@@ -37,7 +37,7 @@ export default function EarningsPanel({ token, embedded = false }) {
     }
 
     async function resetEarnings() {
-        if (!window.confirm('確定要清空所有的歷史收益紀錄嗎？此動作無法復原。')) return;
+        if (!window.confirm('確定要清空 USD 歷史收益紀錄嗎？此動作無法復原。')) return;
 
         setLoading(true);
         try {
@@ -47,7 +47,7 @@ export default function EarningsPanel({ token, embedded = false }) {
                     Authorization: `Bearer ${token}`,
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({}) // 沒傳幣種代表全刪
+                body: JSON.stringify({ currency: 'USD' })
             });
             if (res.ok) {
                 await fetchStats();
@@ -75,13 +75,13 @@ export default function EarningsPanel({ token, embedded = false }) {
         <div className={embedded ? 'earnings-panel-content' : 'panel'}>
             {error && <div className="market-error" role="alert"><strong>收益統計暫時無法更新</strong><span>{error}；畫面保留上次成功資料。</span></div>}
             <div className="panel-header">
-                <h3>💰 收益統計</h3>
+                <h3>收益統計</h3>
                 <button
                     className="btn btn-sm btn-outline"
                     onClick={resetEarnings}
                     title="清空所有歷史收益紀錄"
                 >
-                    🔄 重置紀錄
+                    重置 USD 紀錄
                 </button>
             </div>
 
@@ -98,7 +98,7 @@ export default function EarningsPanel({ token, embedded = false }) {
                 <div className="earnings-main">
                     <div className="earnings-label">累積收益明細</div>
                     <div className="earnings-breakdown">
-                        {Object.entries(accumulated.byCurrency || {}).map(([cur, amount]) => (
+                        {Object.entries(accumulated.byCurrency || {}).filter(([cur]) => cur === 'USD').map(([cur, amount]) => (
                             <div key={cur} className="earnings-currency">
                                 <span className="badge">{cur}</span>
                                 <span>{formatEarnings(amount)}</span>
@@ -115,7 +115,7 @@ export default function EarningsPanel({ token, embedded = false }) {
                 {/* 資金利用率 */}
                 <div className="utilization-panel">
                     <div className="panel-label">資金利用率</div>
-                    {Object.entries(stats.utilization || {}).map(([cur, rate]) => (
+                        {Object.entries(stats.utilization || {}).filter(([cur]) => cur === 'USD').map(([cur, rate]) => (
                         <div key={cur} className="utilization-item">
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                                 <span>{cur}</span>

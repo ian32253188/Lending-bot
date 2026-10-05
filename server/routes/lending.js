@@ -19,6 +19,7 @@ router.get('/settings', async (req, res) => {
         if (!settings) {
             return res.json(null);
         }
+        settings.lending_currencies = ['USD'];
         // 安全處理：遮蔽 API 金鑰與 Secret 避免前台明文洩漏
         if (settings.bitfinex_api_key) {
             settings.bitfinex_api_key = settings.bitfinex_api_key.substring(0, 8) + '...';
@@ -42,6 +43,10 @@ router.post('/settings', async (req, res) => {
     try {
         const userId = req.user.id;
         const newSettings = { ...(req.body || {}) };
+        newSettings.lending_currencies = ['USD'];
+        if (newSettings.compounding_enabled === true) {
+            newSettings.compounding_hold_amount = 0;
+        }
         const { encrypt } = require('../utils/crypto');
         
         // 如果使用者沒有輸入新金鑰（傳入遮蔽的值），則保留原本的舊金鑰
@@ -228,13 +233,15 @@ router.post('/strategy-settings', async (req, res) => {
 router.post('/compounding', async (req, res) => {
     try {
         const userId = req.user.id;
-        const { enabled } = req.body;
-        
-        await db.saveUserSettings(userId, { compounding_enabled: !!enabled });
-        
+        const enabled = Boolean(req.body?.enabled);
         const engine = getBot(userId);
         if (engine) {
-            engine.setCompounding(!!enabled);
+            await engine.setCompounding(enabled);
+        } else {
+            await db.saveUserSettings(userId, {
+                compounding_enabled: enabled,
+                ...(enabled ? { compounding_hold_amount: 0 } : {}),
+            });
         }
         res.json({ message: `複利模式已${enabled ? '開啟' : '關閉'}`, compounding: !!enabled });
     } catch (err) {
@@ -277,8 +284,8 @@ router.post('/offer', async (req, res) => {
             return res.status(400).json({ error: '缺少必要參數: currency, amount, rate, period' });
         }
 
-        if (!['USD', 'USDT'].includes(currency)) {
-            return res.status(400).json({ error: '不支援的幣種，僅支援 USD 或 USDT' });
+        if (currency !== 'USD') {
+            return res.status(400).json({ error: '目前僅支援 USD 放貸。' });
         }
 
         const parsedAmount = parseFloat(amount);
@@ -349,8 +356,8 @@ router.delete('/offers/:currency', async (req, res) => {
         const userId = req.user.id;
         const { currency } = req.params;
 
-        if (!['USD', 'USDT'].includes(currency)) {
-            return res.status(400).json({ error: '不支援的幣種，僅支援 USD 或 USDT' });
+        if (currency !== 'USD') {
+            return res.status(400).json({ error: '目前僅支援 USD 放貸。' });
         }
 
         const userSettings = await db.getUserSettings(userId);
@@ -394,8 +401,8 @@ router.post('/transfer', async (req, res) => {
             return res.status(400).json({ error: '金額必須為大於 0 的數字' });
         }
 
-        if (!['USD', 'USDT'].includes(currency)) {
-            return res.status(400).json({ error: '不支援的幣種，僅支援 USD 或 USDT' });
+        if (currency !== 'USD') {
+            return res.status(400).json({ error: '目前僅支援 USD 轉帳。' });
         }
 
         const userSettings = await db.getUserSettings(userId);

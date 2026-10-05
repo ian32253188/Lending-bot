@@ -41,24 +41,24 @@ class BitfinexWS extends EventEmitter {
         // 即時市場資料快取
         this.marketData = {
             USD: { frr: null, bids: [], asks: [], lastUpdate: null, tickerLastUpdate: null },
-            USDT: { frr: null, bids: [], asks: [], lastUpdate: null, tickerLastUpdate: null },
         };
     }
 
     /**
      * 內部幣種代碼 → Bitfinex Funding symbol
-     * 例如: 'USDT' → 'UST'
+     * USD → USD
      */
     _toBfxSymbol(currency) {
-        return config.lending.currencyMap?.[currency] || currency;
+        if (currency !== 'USD') throw new Error('目前僅支援 USD Funding。');
+        return 'USD';
     }
 
     /**
      * Bitfinex Funding symbol → 內部幣種代碼
-     * 例如: 'UST' → 'USDT'
+     * Bitfinex symbol → internal currency code
      */
     _fromBfxSymbol(bfxSymbol) {
-        return config.lending.symbolToCurrency?.[bfxSymbol] || bfxSymbol;
+        return bfxSymbol === 'USD' ? 'USD' : null;
     }
 
     connect() {
@@ -316,7 +316,8 @@ class BitfinexWS extends EventEmitter {
     _handleChannelData(channelInfo, data) {
         const { channel, symbol } = channelInfo;
         const bfxSymbol = symbol.replace('f', '');
-        const currency = this._fromBfxSymbol(bfxSymbol);  // UST → USDT
+        const currency = this._fromBfxSymbol(bfxSymbol);
+        if (currency !== 'USD') return;
         const payload = data[1];
 
         if (channel === 'ticker') {

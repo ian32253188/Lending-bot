@@ -11,11 +11,11 @@ import FundingMarketDashboard from './FundingMarketDashboard';
 import { getEngineBadge } from './engine-status';
 
 const NAV_ITEMS = [
-    { key: 'overview', code: '01', label: '總覽' },
-    { key: 'analytics', code: '02', label: '圖表' },
-    { key: 'history', code: '03', label: '歷史' },
-    { key: 'settings', code: '04', label: '設定' },
-    { key: 'logs', code: '05', label: '日誌' },
+    { key: 'overview', label: '總覽' },
+    { key: 'analytics', label: '圖表' },
+    { key: 'history', label: '歷史' },
+    { key: 'settings', label: '設定' },
+    { key: 'logs', label: '日誌' },
 ];
 
 export default function Dashboard({ status, connected, token, onLogout, onRefresh }) {
@@ -30,7 +30,6 @@ export default function Dashboard({ status, connected, token, onLogout, onRefres
                 <div className="brand-block">
                     <span className="brand-mark">LB</span>
                     <div>
-                        <span className="brand-kicker">ORACLE / FUNDING OPS</span>
                         <span className="logo">Lending Bot</span>
                     </div>
                     {/* 桌機版導航 */}
@@ -39,9 +38,10 @@ export default function Dashboard({ status, connected, token, onLogout, onRefres
                             <button
                                 key={item.key}
                                 className={`nav-btn ${activePage === item.key ? 'nav-btn-active' : ''}`}
+                                aria-current={activePage === item.key ? 'page' : undefined}
                                 onClick={() => setActivePage(item.key)}
                             >
-                                <span className="nav-code">{item.code}</span>{item.label}
+                                {item.label}
                             </button>
                         ))}
                     </nav>
@@ -54,7 +54,6 @@ export default function Dashboard({ status, connected, token, onLogout, onRefres
                     <div className={`connection-badge ${engineBadge.className}`} title={engineBadge.title}>
                         {engineBadge.label}
                     </div>
-                    <span className="header-clock">LIVE CONTROL</span>
                     <button className="btn btn-outline btn-sm" onClick={onLogout}>登出</button>
                 </div>
             </header>
@@ -65,10 +64,10 @@ export default function Dashboard({ status, connected, token, onLogout, onRefres
                     <button
                         key={item.key}
                         className={`mobile-nav-btn ${activePage === item.key ? 'mobile-nav-btn-active' : ''}`}
+                        aria-current={activePage === item.key ? 'page' : undefined}
                         onClick={() => setActivePage(item.key)}
                     >
-                        <span className="mobile-nav-code">{item.code}</span>
-                        <span style={{ fontSize: '0.7rem' }}>{item.label}</span>
+                        <span>{item.label}</span>
                     </button>
                 ))}
             </nav>
@@ -77,14 +76,7 @@ export default function Dashboard({ status, connected, token, onLogout, onRefres
             <main className="main-content">
 
                 <div className="workspace-heading">
-                    <div>
-                        <span className="workspace-eyebrow">FUNDING OPERATIONS / {activePage.toUpperCase()}</span>
-                        <h1>{NAV_ITEMS.find(item => item.key === activePage)?.label || '總覽'}</h1>
-                    </div>
-                    <div className="workspace-meta">
-                        <span className="meta-chip"><i className="meta-dot" /> PUBLIC FEED</span>
-                        <span className="meta-chip">AUTO REFRESH 60S</span>
-                    </div>
+                    <h1>{NAV_ITEMS.find(item => item.key === activePage)?.label || '總覽'}</h1>
                 </div>
 
                 {/* 總覽頁 */}
@@ -96,12 +88,12 @@ export default function Dashboard({ status, connected, token, onLogout, onRefres
                                 <EarningsPanel token={token} embedded />
                             </div>
                         </div>
-                        <div className="section">
-                            <FundingMarketDashboard token={token} />
-                        </div>
                         <div className="grid grid-2 section">
                             <StrategyPanel status={status} token={token} onRefresh={onRefresh} />
                             <LogViewer token={token} />
+                        </div>
+                        <div className="section">
+                            <FundingMarketDashboard token={token} />
                         </div>
                     </>
                 )}

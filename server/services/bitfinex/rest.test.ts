@@ -8,8 +8,8 @@ const configMock = {
     apiSecret: undefined,
   },
   lending: {
-    currencyMap: { USD: 'USD', USDT: 'UST' },
-    symbolToCurrency: { USD: 'USD', UST: 'USDT' },
+    currencyMap: { USD: 'USD' },
+    symbolToCurrency: { USD: 'USD' },
   },
 };
 
@@ -48,13 +48,13 @@ describe('Bitfinex REST adapter', () => {
     vi.unstubAllGlobals();
   });
 
-  it('maps USDT to Bitfinex fUST for public ticker requests', async () => {
+  it('rejects non-USD symbols for public ticker requests', async () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse([0.0003]));
     vi.stubGlobal('fetch', fetchMock);
 
-    await rest.getFundingTicker('USDT');
+    await expect(rest.getFundingTicker('USDT')).rejects.toThrow('目前僅支援 USD Funding。');
 
-    expect(fetchMock).toHaveBeenCalledWith('https://api.test/v2/ticker/fUST');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('serializes only provided public trade query parameters', async () => {
@@ -70,10 +70,10 @@ describe('Bitfinex REST adapter', () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse([]));
     vi.stubGlobal('fetch', fetchMock);
 
-    await rest.getFundingCandles('USDT', { limit: 1000, sort: -1 });
+    await rest.getFundingCandles('USD', { limit: 1000, sort: -1 });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://api.test/v2/candles/trade:1h:fUST:a30:p2:p30/hist?limit=1000&sort=-1',
+      'https://api.test/v2/candles/trade:1h:fUSD:a30:p2:p30/hist?limit=1000&sort=-1',
     );
   });
 
@@ -137,23 +137,25 @@ describe('Bitfinex REST adapter', () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse({ ok: true }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await rest.submitFundingOffer('USDT', 500, 0.0004, 10, { apiKey: 'key', apiSecret: 'secret' });
-    await rest.transfer('exchange', 'funding', 'USDT', 123.45, { apiKey: 'key', apiSecret: 'secret' });
+    await rest.submitFundingOffer('USD', 500, 0.0004, 10, { apiKey: 'key', apiSecret: 'secret' });
+    await rest.transfer('exchange', 'funding', 'USD', 123.45, { apiKey: 'key', apiSecret: 'secret' });
 
     const offerBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(offerBody).toMatchObject({ type: 'LIMIT', symbol: 'fUST', amount: '500', rate: '0.0004', period: 10 });
+    expect(offerBody).toMatchObject({ type: 'LIMIT', symbol: 'fUSD', amount: '500', rate: '0.0004', period: 10 });
     const transferBody = JSON.parse(fetchMock.mock.calls[1][1].body);
-    expect(transferBody).toEqual({ from: 'exchange', to: 'funding', currency: 'USDT', currency_to: 'USDT', amount: '123.45' });
+    expect(transferBody).toEqual({ from: 'exchange', to: 'funding', currency: 'USD', currency_to: 'USD', amount: '123.45' });
   });
 
   it('converts Bitfinex array responses into isolated domain objects', () => {
-    const offer = rest.parseFundingOffer([1, 'fUST', 1700000000000, 1700000001000, '500', '500', 'LIMIT', null, null, 0, 'ACTIVE', null, null, null, '0.0004', 10, 0, 0, null, 0]);
+    const offer = rest.parseFundingOffer([1, 'fUSD', 1700000000000, 1700000001000, '500', '500', 'LIMIT', null, null, 0, 'ACTIVE', null, null, null, '0.0004', 10, 0, 0, null, 0]);
     const credit = rest.parseFundingCredit([2, 'fUSD', 'CREDIT', 1700000000000, 1700000001000, '250', 0, 'ACTIVE', null, null, null, '0.0003', 7, 1700000002000, null]);
-    const wallet = rest.parseWallet(['funding', 'UST', '1000', '2', '998']);
+    const wallet = rest.parseWallet(['funding', 'USD', '1000', '2', '998']);
 
-    expect(offer).toMatchObject({ id: 1, currency: 'USDT', amount: '500', period: 10 });
+    expect(offer).toMatchObject({ id: 1, currency: 'USD', amount: '500', period: 10 });
     expect(credit).toMatchObject({ id: 2, currency: 'USD', amount: '250', period: 7 });
-    expect(wallet).toMatchObject({ type: 'funding', currency: 'USDT', rawCurrency: 'UST', balance: '1000', available: '998' });
+    expect(wallet).toMatchObject({ type: 'funding', currency: 'USD', rawCurrency: 'USD', balance: '1000', available: '998' });
+    expect(rest.parseFundingOffer([3, 'fUST'])).toBeNull();
+    expect(rest.parseWallet(['funding', 'UST', '50', '0', '50'])).toBeNull();
   });
 
   it('turns public HTTP failures into an actionable error', async () => {

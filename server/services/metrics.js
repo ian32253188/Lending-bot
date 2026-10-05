@@ -105,7 +105,7 @@ function normalizeEndpoint(endpoint) {
     // 移除查詢參數
     let path = endpoint.split('?')[0];
     
-    // 將 Bitfinex 幣種代碼 (例如 /fUSD, /fUST) 替換為佔位符
+    // 將 Bitfinex 幣種代碼 (例如 /fUSD) 替換為佔位符
     path = path.replace(/\/f[A-Z0-9]{3,4}\b/gi, '/:symbol');
     
     // 將訂單簿精度 (例如 /P0, /P1) 替換為佔位符

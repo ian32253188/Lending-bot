@@ -36,7 +36,7 @@
 - **IBRR 即時最佳利率計算** — 結合瓦爾拉斯均衡 (Walrasian Equilibrium) + 訂單簿分析，自動過濾莊家釣魚假單 (Spoofing Filter)
 - **事件驅動 + 定時混合決策** — WebSocket 即時捕捉錢包/掛單變動，搭配 10 秒定時決策週期，兼顧反應速度與穩定性
 - **防抖 (Debounce) + 流量交錯 (Jitter & Staggering)** — 避免多用戶在同一秒內併發爆 API Rate Limit
-- **自動複利再投 (Compounding)** — 貸款到期利息自動滾入下次放貸，最大化資金利用率
+- **自動複利再投 (Compounding)** — 開啟時將到期利息投入下一次放貸；關閉時保留利息，並繼續放貸本金
 
 ### 👥 多租戶 SaaS 架構
 - **Google OAuth 一鍵登入** — 透過 Supabase Auth 整合 Google 帳號登入，零密碼體驗
@@ -361,7 +361,7 @@ npm run test:watch
 | `logger.test.ts` | 4 | Production/Development 格式、debug 不寫入 `operation_logs`、警告去重與抑制計數 |
 | `reoffer.test.ts` | 2 | 自動降息重掛模組：荷蘭拍衰減機制 (Dutch Auction Decay)、保底利率 Floor 觸發 |
 | `market-summary.test.ts` | 5 | fUSD 市場摘要、24 小時撮合、30 日利率走勢與空時段 |
-| `rest.test.ts` | 7 | Bitfinex REST 公開/認證端點、USDT/fUST 映射、HMAC 簽名、交易參數與錯誤 |
+| `rest.test.ts` | 7 | Bitfinex REST 公開/認證端點、USD Funding 映射、HMAC 簽名、交易參數與錯誤 |
 | `ws.test.ts` | 5 | Bitfinex WebSocket ticker、訂單簿快照/更新、認證、維護事件與多實例隔離 |
 | `strategy-config.test.ts` | 2 | 3 種利率基準、6 種期限與安全預設值 |
 | `telegram-controls.test.ts` | 1 | Telegram 策略控制選項 |

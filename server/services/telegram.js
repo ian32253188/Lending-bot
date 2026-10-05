@@ -756,12 +756,14 @@ function setupAdminBotHandlers(bot) {
                 case 'toggle_compounding': {
                     if (engine) {
                         const nextVal = !engine.compoundingEnabled;
-                        engine.setCompounding(nextVal);
-                        await db.saveUserSettings(userId, { compounding_enabled: nextVal });
+                        await engine.setCompounding(nextVal);
                         await bot.answerCallbackQuery(query.id, { text: `♻️ 複利滾投已變更為: ${nextVal ? '開啟' : '關閉'}` });
                     } else {
                         const nextVal = !(dbSettings?.compounding_enabled !== false);
-                        await db.saveUserSettings(userId, { compounding_enabled: nextVal });
+                        await db.saveUserSettings(userId, {
+                            compounding_enabled: nextVal,
+                            ...(nextVal ? { compounding_hold_amount: 0 } : {}),
+                        });
                         await bot.answerCallbackQuery(query.id, { text: `♻️ 複利設定已變更為: ${nextVal ? '開啟' : '關閉'} (將在啟動時套用)` });
                     }
                     await updateAdminControlPanel(bot, chatId, messageId);

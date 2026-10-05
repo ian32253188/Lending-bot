@@ -2,6 +2,9 @@ export default function StatusPanel({ status }) {
     if (!status) return <div className="card">載入中...</div>;
 
     const { wallets, activeOffers, activeCredits } = status;
+    const usdWallet = wallets?.USD;
+    const usdOffers = activeOffers?.USD;
+    const usdCredits = activeCredits?.USD;
     const privateDataAvailable = status.accountDataAvailable ?? (status.running || status.authenticated);
     const privateValue = value => privateDataAvailable && value != null ? value : '—';
 
@@ -10,10 +13,10 @@ export default function StatusPanel({ status }) {
             {/* 統計卡片 */}
             <div className="grid grid-4">
                 {/* 錢包餘額 */}
-                {Object.entries(wallets || {}).map(([cur, w]) => (
+                {usdWallet && ([['USD', usdWallet]]).map(([cur, w]) => (
                     <div className="card" key={cur}>
                         <div className="card-header">
-                            <span className="card-title">💰 {cur} Funding</span>
+                            <span className="card-title">{cur} Funding 錢包</span>
                         </div>
                         <div className="stat-value green">
                             {privateDataAvailable && w.balance != null ? Number(w.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}
@@ -34,9 +37,9 @@ export default function StatusPanel({ status }) {
             <div className="grid grid-2 status-summary-grid" style={{ marginTop: 20 }}>
                 <div className="card">
                     <div className="card-header">
-                        <span className="card-title">📋 活躍掛單</span>
+                        <span className="card-title">活躍掛單</span>
                     </div>
-                    {Object.entries(activeOffers || {}).map(([cur, count]) => (
+                    {([['USD', usdOffers]]).map(([cur, count]) => (
                         <div key={cur} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
                             <span style={{ color: 'var(--text-secondary)' }}>{cur}</span>
                             <span className="stat-value" style={{ fontSize: 20 }}>{privateValue(count)}</span>
@@ -46,9 +49,9 @@ export default function StatusPanel({ status }) {
 
                 <div className="card">
                     <div className="card-header">
-                        <span className="card-title">🔗 放貸中</span>
+                        <span className="card-title">放貸中</span>
                     </div>
-                    {Object.entries(activeCredits || {}).map(([cur, count]) => (
+                    {([['USD', usdCredits]]).map(([cur, count]) => (
                         <div key={cur} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
                             <span style={{ color: 'var(--text-secondary)' }}>{cur}</span>
                             <span className="stat-value cyan" style={{ fontSize: 20 }}>{privateValue(count)}</span>

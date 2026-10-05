@@ -57,7 +57,7 @@ describe('USD/TWD exchange rate service', () => {
       headers: { accept: 'application/json' },
     }));
     expect(exchangeRate.convertToTwd(2, 'USD', quote)).toBeCloseTo(63.32454);
-    expect(exchangeRate.convertToTwd(2, 'USDT', quote)).toBeCloseTo(63.32454);
+    expect(exchangeRate.convertToTwd(2, 'USDT', quote)).toBeNull();
   });
 
   it('caches a successful quote so daily summaries do not call the provider repeatedly', async () => {

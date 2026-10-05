@@ -129,7 +129,8 @@ async function ensureUserBotSettingsTable() {
             bitfinex_api_secret TEXT,
             telegram_bot_token TEXT,
             telegram_chat_id TEXT,
-            lending_currencies VARCHAR(10)[] DEFAULT ARRAY['USD', 'USDT'],
+            lending_currencies VARCHAR(10)[] DEFAULT ARRAY['USD'],
+            compounding_hold_amount DECIMAL(20, 8) NOT NULL DEFAULT 0,
             min_offer_amount DECIMAL(20, 8) DEFAULT 150.0,
             status VARCHAR(20) DEFAULT 'stopped',
             strategy_config JSONB DEFAULT '{"mode": "simplified"}',
@@ -140,6 +141,13 @@ async function ensureUserBotSettingsTable() {
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );
+        ALTER TABLE user_bot_settings
+            ALTER COLUMN lending_currencies SET DEFAULT ARRAY['USD'],
+            ADD COLUMN IF NOT EXISTS compounding_hold_amount DECIMAL(20, 8) NOT NULL DEFAULT 0;
+        UPDATE user_bot_settings SET lending_currencies = ARRAY['USD']::VARCHAR(10)[] WHERE lending_currencies IS DISTINCT FROM ARRAY['USD']::VARCHAR(10)[];
+        UPDATE bot_settings
+        SET value = jsonb_set(value, '{currencies}', '["USD"]'::jsonb, true), updated_at = NOW()
+        WHERE key = 'general';
         CREATE UNIQUE INDEX IF NOT EXISTS user_bot_settings_telegram_chat_id_unique
             ON user_bot_settings (btrim(telegram_chat_id))
             WHERE telegram_chat_id IS NOT NULL AND btrim(telegram_chat_id) <> '';

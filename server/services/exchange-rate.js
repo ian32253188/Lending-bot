@@ -159,7 +159,7 @@ function convertToTwd(amount, currency, quote) {
 
     const normalizedCurrency = String(currency || 'USD').toUpperCase();
     if (normalizedCurrency === 'TWD') return numericAmount;
-    if (normalizedCurrency !== 'USD' && normalizedCurrency !== 'USDT') return null;
+    if (normalizedCurrency !== 'USD') return null;
 
     const rate = Number(typeof quote === 'object' ? quote?.rate : quote);
     return isPositiveFinite(rate) ? numericAmount * rate : null;

@@ -80,7 +80,7 @@ export default function HeatmapView({ token }) {
     return (
         <div className="panel">
             <div className="panel-header">
-                <h3>📅 收益日曆</h3>
+                <h3>收益日曆</h3>
                 <div style={{ display: 'flex', gap: '16px', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                     <span>累計 <strong style={{ color: 'var(--success)' }}>${totalEarned.toFixed(4)}</strong></span>
                     <span>活躍 <strong>{activeDays}</strong> 天</span>

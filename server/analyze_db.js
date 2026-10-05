@@ -5,7 +5,7 @@ async function runAnalysis() {
     console.log('=== 📊 3D Hybrid 歷史放貸資料庫量化分析 ===');
     console.log('時間:', new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }));
     
-    const currencies = ['USD', 'USDT'];
+    const currencies = ['USD'];
     
     for (const cur of currencies) {
         console.log(`\n🪙 幣種: ${cur}`);

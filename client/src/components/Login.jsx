@@ -44,7 +44,6 @@ export default function Login({ onLoginSuccess }) {
         <div className="login-page">
             <div className="login-card">
                 <div style={{ textAlign: 'center', marginBottom: '24px' }}>
-                    <div style={{ fontSize: '2.5rem', marginBottom: '8px' }}>⚡</div>
                     <h1 style={{ margin: 0, fontSize: '1.6rem', fontWeight: '700', letterSpacing: '-0.5px' }}>
                         Lending Bot
                     </h1>

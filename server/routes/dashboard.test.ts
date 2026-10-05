@@ -19,8 +19,8 @@ const mocks = vi.hoisted(() => {
     getReadOnlyAccountSnapshot: vi.fn().mockResolvedValue({
       accountDataAvailable: false,
       accountDataError: 'Bitfinex signature invalid',
-      activeCredits: { USD: null, USDT: null },
-      wallets: { USD: { balance: null }, USDT: { balance: null } },
+      activeCredits: { USD: null },
+      wallets: { USD: { balance: null } },
     }),
     getCachedFundingMarketSummary: vi.fn().mockResolvedValue({ currentApy: 8.9, hourlyMatches24: [] }),
     syncUserEarnings: vi.fn().mockResolvedValue(undefined),
@@ -40,11 +40,8 @@ const mocks = vi.hoisted(() => {
     ]),
     publicMarketData: {
       USD: { frr: 0.0004, tickerLastUpdate: Date.now() },
-      USDT: { frr: 0.0002, tickerLastUpdate: Date.now() },
     },
-    getMarketData: vi.fn((currency: string) => currency === 'USD'
-      ? mocks.publicMarketData.USD
-      : mocks.publicMarketData.USDT),
+    getMarketData: vi.fn((currency: string) => currency === 'USD' ? mocks.publicMarketData.USD : null),
   };
 });
 
@@ -104,10 +101,7 @@ describe('Dashboard routes', () => {
       { currency: 'USD', amount: 2.75, earned_at: '2026-08-27T01:00:00Z' },
     ]);
     mocks.publicMarketData.USD = { frr: 0.0004, tickerLastUpdate: Date.now() };
-    mocks.publicMarketData.USDT = { frr: 0.0002, tickerLastUpdate: Date.now() };
-    mocks.getMarketData.mockImplementation((currency: string) => currency === 'USD'
-      ? mocks.publicMarketData.USD
-      : mocks.publicMarketData.USDT);
+    mocks.getMarketData.mockImplementation((currency: string) => currency === 'USD' ? mocks.publicMarketData.USD : null);
   });
 
   it('returns the authenticated user engine status and an inactive fallback', async () => {
@@ -126,13 +120,13 @@ describe('Dashboard routes', () => {
     mocks.getInactiveDashboardStatusForUser.mockResolvedValueOnce({
       running: false,
       accountDataAvailable: true,
-      activeOffers: { USD: 2, USDT: 0 },
-      activeCredits: { USD: 4, USDT: 1 },
+      activeOffers: { USD: 2 },
+      activeCredits: { USD: 4 },
     });
 
     const res = await request(app).get('/api/dashboard/overview').expect(200);
     expect(res.body.accountDataAvailable).toBe(true);
-    expect(res.body.activeCredits).toEqual({ USD: 4, USDT: 1 });
+    expect(res.body.activeCredits).toEqual({ USD: 4 });
     expect(mocks.getInactiveDashboardStatusForUser).toHaveBeenCalledWith('user-a');
   });
 
@@ -141,7 +135,7 @@ describe('Dashboard routes', () => {
     mocks.getInactiveDashboardStatusForUser.mockResolvedValueOnce({
       running: false,
       accountDataAvailable: true,
-      activeCredits: { USD: [{ id: 1, amount: 100 }], USDT: [] },
+      activeCredits: { USD: [{ id: 1, amount: 100 }] },
     });
 
     const res = await request(app).get('/api/dashboard/detailed').expect(200);
@@ -158,26 +152,13 @@ describe('Dashboard routes', () => {
     }));
   });
 
-  it('builds currency suggestions only from fresh public ticker data', async () => {
-    const res = await request(app).get('/api/dashboard/suggestions').expect(200);
-    expect(res.body.available).toBe(true);
-    expect(res.body.rates).toEqual({ USD: 0.0004, USDT: 0.0002 });
-    expect(res.body.source).toContain('Bitfinex 公開 Funding Ticker');
-    expect(res.body.suggestions).toHaveLength(1);
-
-    mocks.publicMarketData.USD = { frr: 0.0004, tickerLastUpdate: Date.now() - 6 * 60 * 1000 };
-    mocks.getMarketData.mockImplementation((currency: string) => currency === 'USD'
-      ? mocks.publicMarketData.USD
-      : mocks.publicMarketData.USDT);
-    const stale = await request(app).get('/api/dashboard/suggestions').expect(200);
-    expect(stale.body.available).toBe(false);
-    expect(stale.body.rates.USD).toBeNull();
-    expect(stale.body.suggestions).toEqual([]);
-    expect(stale.body.error).toMatch(/尚未更新或已超過/);
+  it('rejects non-USD rate history requests', async () => {
+    await request(app).get('/api/dashboard/rate-history/USDT').expect(400);
+    expect(mocks.getRateHistory).not.toHaveBeenCalled();
   });
 
-  it('passes a 30-day window to the rate history repository', async () => {
-    await request(app).get('/api/dashboard/rate-history/USD?hours=720').expect(200);
+  it('always requests a fixed 30-day rate history window', async () => {
+    await request(app).get('/api/dashboard/rate-history/USD?hours=24').expect(200);
     expect(mocks.getRateHistory).toHaveBeenCalledWith('USD', 720, 'recorded_at,frr');
   });
 
@@ -203,13 +184,12 @@ describe('Dashboard routes', () => {
     mocks.getEarnings.mockResolvedValue([
       { currency: 'USD', amount: '1.8603', earned_at: '2026-10-04T01:00:00Z' },
       { currency: 'USD', amount: '2.1397', earned_at: '2026-10-03T01:00:00Z' },
-      { currency: 'USDT', amount: '0.25', earned_at: '2026-10-03T02:00:00Z' },
     ]);
 
     const res = await request(app).get('/api/dashboard/earnings/stats').expect(200);
 
-    expect(res.body.today).toEqual({ byCurrency: { USD: 4, USDT: 0.25 }, total: 4.25 });
-    expect(res.body.allTime).toEqual({ byCurrency: { USD: 4, USDT: 0.25 }, total: 4.25 });
+    expect(res.body.today).toEqual({ byCurrency: { USD: 4 }, total: 4 });
+    expect(res.body.allTime).toEqual({ byCurrency: { USD: 4 }, total: 4 });
   });
 
   it('adds Oracle numeric-string earnings correctly in the heatmap', async () => {
@@ -257,6 +237,13 @@ describe('Dashboard routes', () => {
     await request(app).get('/api/dashboard/history/loans?currency=USD').expect(200);
     expect(mocks.getActiveOffers).toHaveBeenCalledWith('USD', 'user-a');
     expect(mocks.getActiveLoans).toHaveBeenCalledWith('USD', 'user-a');
+  });
+
+  it('rejects non-USD history queries', async () => {
+    await request(app).get('/api/dashboard/history/offers?currency=USDT').expect(400);
+    await request(app).get('/api/dashboard/history/loans?currency=USDT').expect(400);
+    expect(mocks.getActiveOffers).not.toHaveBeenCalled();
+    expect(mocks.getActiveLoans).not.toHaveBeenCalled();
   });
 
   it('returns a database error instead of pretending a failed history query is empty', async () => {

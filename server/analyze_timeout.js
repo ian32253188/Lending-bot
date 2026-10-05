@@ -3,7 +3,7 @@ const db = require('./services/database');
 async function analyzeTimeout() {
     console.log('=== 🔬 3D Hybrid 超時降息重掛量化合理性分析 ===');
     
-    const currencies = ['USD', 'USDT'];
+    const currencies = ['USD'];
     
     for (const cur of currencies) {
         console.log(`\n🪙 評估幣種: ${cur}`);

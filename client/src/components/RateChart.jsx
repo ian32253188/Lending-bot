@@ -4,15 +4,8 @@ import {
     ResponsiveContainer, ReferenceLine, Legend,
 } from 'recharts';
 
-const RANGES = [
-    { label: '1天', hours: 24 },
-    { label: '3天', hours: 72 },
-    { label: '7天', hours: 168 },
-    { label: '30天', hours: 720 },
-];
-
-const CURRENCIES = ['USD', 'USDT'];
-const COLORS = { USD: '#53d5c3', USDT: '#86a9d6' };
+const CURRENCIES = ['USD'];
+const COLORS = { USD: '#53d5c3' };
 
 async function readJsonResponse(response) {
     const contentType = response.headers?.get?.('content-type') || '';
@@ -27,10 +20,9 @@ async function readJsonResponse(response) {
     }
 }
 
-function formatTime(dateStr, hours) {
+function formatTime(dateStr) {
     const d = new Date(dateStr);
-    if (hours <= 24) return d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
-    return d.toLocaleDateString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit' });
+    return d.toLocaleDateString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', timeZone: 'Asia/Taipei' });
 }
 
 const CustomTooltip = ({ active, payload, label }) => {
@@ -54,18 +46,16 @@ const CustomTooltip = ({ active, payload, label }) => {
 };
 
 export default function RateChart({ token }) {
-    const [range, setRange] = useState(RANGES[1]);
-    const [data, setData] = useState({ USD: [], USDT: [] });
+    const [data, setData] = useState({ USD: [] });
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
-    const [selectedCurrencies, setSelectedCurrencies] = useState(new Set(CURRENCIES));
 
     const fetchData = useCallback(async () => {
         setLoading(true);
         try {
             const results = await Promise.all(
                 CURRENCIES.map(cur =>
-                    fetch(`/api/dashboard/rate-history/${cur}?hours=${range.hours}`, {
+                    fetch(`/api/dashboard/rate-history/${cur}`, {
                         headers: { Authorization: `Bearer ${token}` },
                     }).then(async response => {
                         const payload = await readJsonResponse(response);
@@ -84,7 +74,7 @@ export default function RateChart({ token }) {
         } finally {
             setLoading(false);
         }
-    }, [range, token]);
+    }, [token]);
 
     useEffect(() => {
         fetchData();
@@ -92,7 +82,7 @@ export default function RateChart({ token }) {
         return () => clearInterval(interval);
     }, [fetchData]);
 
-    // 合併兩幣種資料為單一陣列供 Recharts 使用
+    // 整理 USD 歷史資料供 Recharts 使用
     const chartData = (() => {
         const merged = {};
         for (const cur of CURRENCIES) {
@@ -104,42 +94,14 @@ export default function RateChart({ token }) {
         }
         return Object.values(merged)
             .sort((a, b) => a.time.localeCompare(b.time))
-            .map(d => ({ ...d, timeLabel: formatTime(d.time, range.hours) }));
+            .map(d => ({ ...d, timeLabel: formatTime(d.time) }));
     })();
-
-    const toggleCurrency = (cur) => {
-        const s = new Set(selectedCurrencies);
-        if (s.has(cur)) { if (s.size > 1) s.delete(cur); }
-        else s.add(cur);
-        setSelectedCurrencies(s);
-    };
 
     return (
         <div className="panel">
             <div className="panel-header">
-                <h3>FRR 利率走勢 <span className="section-code">MARKET HISTORY</span></h3>
-                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-                    {CURRENCIES.map(cur => (
-                        <button
-                            key={cur}
-                            className={`btn btn-sm ${selectedCurrencies.has(cur) ? '' : 'btn-ghost'}`}
-                            style={selectedCurrencies.has(cur) ? { background: COLORS[cur] + '33', color: COLORS[cur], border: `1px solid ${COLORS[cur]}` } : {}}
-                            onClick={() => toggleCurrency(cur)}
-                        >
-                            {cur}
-                        </button>
-                    ))}
-                    <div style={{ width: 1, height: 20, background: 'var(--border)' }} />
-                    {RANGES.map(r => (
-                        <button
-                            key={r.label}
-                            className={`btn btn-sm ${range.label === r.label ? 'btn-primary' : 'btn-ghost'}`}
-                            onClick={() => setRange(r)}
-                        >
-                            {r.label}
-                        </button>
-                    ))}
-                </div>
+                <h3>USD FRR 利率走勢</h3>
+                <span className="market-note">近 30 天</span>
             </div>
 
             {error && <div className="market-error" role="alert"><strong>歷史資料同步失敗</strong><span>{error}</span><button type="button" className="btn btn-sm btn-outline" onClick={fetchData}>重新同步</button></div>}
@@ -164,7 +126,7 @@ export default function RateChart({ token }) {
                             width={65}
                         />
                         <Tooltip content={<CustomTooltip />} />
-                        {CURRENCIES.filter(c => selectedCurrencies.has(c)).map(cur => (
+                        {CURRENCIES.map(cur => (
                             <Line
                                 key={cur}
                                 type="monotone"

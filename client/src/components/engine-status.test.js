@@ -17,6 +17,6 @@ describe('engine status badge', () => {
 
     it('shows normal operation only when account status is not degraded', () => {
         expect(getEngineBadge({ running: true, paused: false, accountDataComplete: true }).label)
-            .toBe('🟢 放貸中');
+            .toBe('放貸中');
     });
 });

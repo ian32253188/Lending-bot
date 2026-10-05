@@ -5,8 +5,7 @@ async function analyzePublicPeriods() {
     console.log('時間:', new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }));
 
     const symbols = {
-        'USD': 'fUSD',
-        'USDT': 'fUST'
+        'USD': 'fUSD'
     };
 
     for (const [name, sym] of Object.entries(symbols)) {

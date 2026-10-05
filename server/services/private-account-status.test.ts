@@ -66,7 +66,7 @@ describe('read-only private Bitfinex account snapshot', () => {
       apiKey: 'decrypted:encrypted-key',
       apiSecret: 'decrypted:encrypted-secret',
     });
-    expect(mocks.getActiveFundingCredits).toHaveBeenCalledTimes(2);
+    expect(mocks.getActiveFundingCredits).toHaveBeenCalledTimes(1);
   });
 
   it('caches the private reads briefly for the dashboard websocket refresh loop', async () => {
@@ -74,7 +74,7 @@ describe('read-only private Bitfinex account snapshot', () => {
     await getReadOnlyAccountSnapshot('user-a');
 
     expect(mocks.getWallets).toHaveBeenCalledTimes(1);
-    expect(mocks.getActiveFundingCredits).toHaveBeenCalledTimes(2);
+    expect(mocks.getActiveFundingCredits).toHaveBeenCalledTimes(1);
   });
 
   it('does not return fake zero positions when credentials are unavailable', async () => {

@@ -10,7 +10,7 @@ export default function SettingsPanel({ token }) {
         compounding_enabled: true,
         auto_transfer_enabled: false,
         auto_transfer_threshold: 500,
-        lending_currencies: ['USD', 'USDT'],
+        lending_currencies: ['USD'],
         rateStrategy: 'current_avg',
         periodDays: 2,
     });
@@ -41,7 +41,7 @@ export default function SettingsPanel({ token }) {
                     compounding_enabled: data.compounding_enabled ?? true,
                     auto_transfer_enabled: data.auto_transfer_enabled ?? false,
                     auto_transfer_threshold: data.auto_transfer_threshold ?? 500,
-                    lending_currencies: data.lending_currencies || ['USD', 'USDT'],
+                    lending_currencies: ['USD'],
                     rateStrategy: data.strategy_config?.rateStrategy || 'current_avg',
                     periodDays: data.strategy_config?.periodDays || 2,
                 });
@@ -78,27 +78,16 @@ export default function SettingsPanel({ token }) {
 
             const data = await res.json();
             if (res.ok) {
-                setMsg({ type: 'success', text: '✅ 設定已成功更新！' });
+                setMsg({ type: 'success', text: '設定已成功更新。' });
                 fetchSettings();
             } else {
-                setMsg({ type: 'error', text: '❌ 更新失敗：' + (data.error || '未知錯誤') });
+                setMsg({ type: 'error', text: '更新失敗：' + (data.error || '未知錯誤') });
             }
         } catch (err) {
-            setMsg({ type: 'error', text: '❌ 連線錯誤：' + err.message });
+            setMsg({ type: 'error', text: '連線錯誤：' + err.message });
         } finally {
             setSaving(false);
         }
-    };
-
-    const handleCheckboxChange = (currency) => {
-        const current = [...settings.lending_currencies];
-        const idx = current.indexOf(currency);
-        if (idx > -1) {
-            current.splice(idx, 1);
-        } else {
-            current.push(currency);
-        }
-        setSettings({ ...settings, lending_currencies: current });
     };
 
     if (loading) {
@@ -109,7 +98,7 @@ export default function SettingsPanel({ token }) {
         <div className="settings-container" style={{ maxWidth: '800px', margin: '0 auto' }}>
             <form onSubmit={handleSave} className="card">
                 <div className="card-header" style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: 12 }}>
-                    <span className="card-title">⚙️ 放貸系統設定</span>
+                    <span className="card-title">放貸系統設定</span>
                     <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>配置您交易所 API 金鑰與放貸策略參數</span>
                 </div>
 
@@ -131,7 +120,7 @@ export default function SettingsPanel({ token }) {
                     {/* Section 1: API */}
                     <div style={{ marginBottom: 30 }}>
                         <h3 style={{ fontSize: '1.1rem', marginBottom: 16, color: 'var(--accent-blue)', borderBottom: '1px solid rgba(88, 166, 255, 0.15)', paddingBottom: 6 }}>
-                            🔑 Bitfinex 交易所 API 設定
+                            Bitfinex 交易所 API 設定
                         </h3>
                         <div className="grid grid-2" style={{ gap: 16 }}>
                             <div className="form-group">
@@ -163,7 +152,7 @@ export default function SettingsPanel({ token }) {
                     {/* Section 2: Telegram */}
                     <div style={{ marginBottom: 30 }}>
                         <h3 style={{ fontSize: '1.1rem', marginBottom: 16, color: 'var(--accent-cyan)', borderBottom: '1px solid rgba(57, 210, 192, 0.15)', paddingBottom: 6 }}>
-                            ✈️ Telegram 通知設定
+                            Telegram 通知設定
                         </h3>
                         <div className="grid grid-2" style={{ gap: 16 }}>
                             <div className="form-group">
@@ -186,38 +175,19 @@ export default function SettingsPanel({ token }) {
                             </div>
                         </div>
                         <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', marginTop: -6 }}>
-                            💡 設定後，系統會在成功掛單、撮合成交、或帳戶異常時向您發送即時 Telegram 通知。若不需通知可留空。
+                            成功掛單、撮合成交或帳戶異常時，系統會透過 Telegram 通知您；不需要通知時可留空。
                         </p>
                     </div>
 
                     {/* Section 3: Lending Params */}
                     <div style={{ marginBottom: 20 }}>
                         <h3 style={{ fontSize: '1.1rem', marginBottom: 16, color: 'var(--accent-green)', borderBottom: '1px solid rgba(63, 185, 80, 0.15)', paddingBottom: 6 }}>
-                            ⚙️ 放貸策略與參數
+                            放貸策略與參數
                         </h3>
 
                         <div className="form-group" style={{ marginBottom: 20 }}>
-                            <label style={{ display: 'block', marginBottom: 8 }}>放貸幣種選擇</label>
-                            <div style={{ display: 'flex', gap: 24, padding: '4px 0' }}>
-                                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: '0.95rem' }}>
-                                    <input
-                                        type="checkbox"
-                                        style={{ width: 'auto', cursor: 'pointer' }}
-                                        checked={settings.lending_currencies.includes('USD')}
-                                        onChange={() => handleCheckboxChange('USD')}
-                                    />
-                                    USD 美金
-                                </label>
-                                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: '0.95rem' }}>
-                                    <input
-                                        type="checkbox"
-                                        style={{ width: 'auto', cursor: 'pointer' }}
-                                        checked={settings.lending_currencies.includes('USDT')}
-                                        onChange={() => handleCheckboxChange('USDT')}
-                                    />
-                                    USDT 泰達幣
-                                </label>
-                            </div>
+                            <label>放貸幣種</label>
+                            <div style={{ color: 'var(--text-primary)', padding: '4px 0' }}>USD 美金</div>
                         </div>
 
                         <div className="grid grid-2" style={{ gap: 16 }}>
@@ -238,7 +208,7 @@ export default function SettingsPanel({ token }) {
                         </div>
 
                         <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-secondary)', fontSize: '0.82rem', marginBottom: 16 }}>
-                            💰 掛單金額固定使用 Funding Wallet 當下全部可用餘額；已放貸中的資金不會重複掛單。
+                            掛單金額使用 Funding Wallet 的可用 USD；已放貸中的資金不會重複掛單。
                         </div>
 
                         <div className="grid grid-2" style={{ gap: 16 }}>
@@ -254,7 +224,7 @@ export default function SettingsPanel({ token }) {
                                 <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Bitfinex 單筆掛單最低限制為 150</span>
                             </div>
                             <div className="form-group">
-                                <label>自動複利模式 (Compounding)</label>
+                                <label>到期利息再投入</label>
                                 <div style={{ display: 'flex', alignItems: 'center', height: '40px' }}>
                                     <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: '0.95rem' }}>
                                         <input
@@ -263,7 +233,7 @@ export default function SettingsPanel({ token }) {
                                             checked={settings.compounding_enabled}
                                             onChange={(e) => setSettings({ ...settings, compounding_enabled: e.target.checked })}
                                         />
-                                        啟用自動複利（將利息自動滾入下一次放貸）
+                                        啟用後，放貸到期的利息會自動投入下一次 USD 放貸；關閉時利息保留在 Funding Wallet。
                                     </label>
                                 </div>
                             </div>
@@ -300,7 +270,7 @@ export default function SettingsPanel({ token }) {
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid var(--border-color)', paddingTop: 16, marginTop: 10 }}>
                     <button type="submit" className="btn btn-primary" style={{ width: 'auto', minWidth: '150px' }} disabled={saving}>
-                        {saving ? '正在儲存...' : '💾 儲存並套用設定'}
+                        {saving ? '正在儲存...' : '儲存並套用設定'}
                     </button>
                 </div>
             </form>
