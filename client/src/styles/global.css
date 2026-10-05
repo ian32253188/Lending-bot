@@ -1668,6 +1668,224 @@ tr:hover td {
   overflow-wrap: anywhere;
 }
 
+/* Fixed 30-day USD FRR history */
+.rate-chart-panel {
+  min-width: 0;
+}
+
+.rate-chart-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.rate-chart-heading h3 {
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.rate-chart-subtitle,
+.rate-chart-period,
+.rate-chart-scale-note,
+.rate-chart-footer,
+.rate-chart-data {
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+}
+
+.rate-chart-subtitle {
+  margin-top: 4px;
+}
+
+.rate-chart-period {
+  flex: 0 0 auto;
+  padding-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rate-chart-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+  padding: 12px 0;
+}
+
+.rate-chart-summary > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+.rate-chart-summary > div + div {
+  padding-left: 20px;
+  border-left: 1px solid var(--border-color);
+}
+
+.rate-chart-summary span,
+.rate-chart-summary small {
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.rate-chart-summary strong {
+  color: var(--text-primary);
+  font-size: clamp(1.05rem, 2.2vw, 1.35rem);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.rate-chart-scale-note {
+  margin: 12px 0 2px;
+  line-height: 1.45;
+}
+
+.rate-chart-plot {
+  width: 100%;
+  height: 260px;
+  min-width: 0;
+}
+
+.rate-chart-tooltip {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.rate-chart-tooltip strong,
+.rate-chart-tooltip b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.rate-chart-tooltip strong {
+  margin-bottom: 2px;
+}
+
+.rate-chart-footer {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+
+.rate-chart-footer i {
+  display: inline-block;
+  width: 13px;
+  height: 2px;
+  margin-right: 4px;
+  background: #53d5c3;
+  vertical-align: middle;
+}
+
+.rate-chart-footer .rate-chart-band-key {
+  width: 10px;
+  height: 10px;
+  margin-left: 8px;
+  border: 1px solid rgba(83, 213, 195, 0.65);
+  background: rgba(83, 213, 195, 0.18);
+}
+
+.rate-chart-data {
+  margin-top: 12px;
+  border-top: 1px solid var(--border-color);
+  padding-top: 10px;
+}
+
+.rate-chart-data summary {
+  width: fit-content;
+  cursor: pointer;
+  text-underline-offset: 3px;
+}
+
+.rate-chart-data summary:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.rate-chart-table-wrap {
+  max-height: 280px;
+  margin-top: 8px;
+  overflow: auto;
+}
+
+.rate-chart-data table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.rate-chart-data th,
+.rate-chart-data td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.rate-chart-data thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-weight: 550;
+}
+
+.rate-chart-data th:first-child,
+.rate-chart-data td:first-child {
+  text-align: left;
+}
+
+.rate-chart-data tbody th {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.rate-chart-empty {
+  padding: 42px 12px;
+  text-align: center;
+  line-height: 1.6;
+}
+
+.rate-chart-loading {
+  height: 300px;
+  border-radius: var(--radius-sm);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 @media (max-width: 1040px) {
   .earnings-support {
     grid-template-columns: minmax(0, 1fr);
@@ -1720,6 +1938,33 @@ tr:hover td {
 
   .utilization-error {
     grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 520px) {
+  .rate-chart-panel {
+    padding: 16px 12px;
+  }
+
+  .rate-chart-heading {
+    gap: 8px;
+  }
+
+  .rate-chart-summary > div + div {
+    padding-left: 12px;
+  }
+
+  .rate-chart-summary strong {
+    font-size: 1.02rem;
+  }
+
+  .rate-chart-plot {
+    height: 230px;
+  }
+
+  .rate-chart-footer {
+    flex-direction: column;
+    gap: 3px;
   }
 }
 

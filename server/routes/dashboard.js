@@ -71,7 +71,9 @@ router.get('/rate-history/:currency', async (req, res) => {
         if (currency !== 'USD') {
             return res.status(400).json({ error: '僅提供 USD FRR 歷史資料。' });
         }
-        const data = await db.getRateHistory('USD', 30 * 24, 'recorded_at,frr');
+        const data = typeof db.getDailyFRRHistory === 'function'
+            ? await db.getDailyFRRHistory('USD', 30 * 24)
+            : await db.getRateHistory('USD', 30 * 24, 'recorded_at,frr');
         res.json(data);
     } catch (err) {
         res.status(500).json({ error: err.message });

@@ -10,6 +10,17 @@ const AVERAGE_FRR_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 // 1 小時記憶體快取：大幅消除頻繁查詢 rate_history 所造成的 Disk IO 消耗
 const rateHistoryCache = new Map();
 const RATE_HISTORY_CACHE_TTL_MS = 60 * 60 * 1000;
+const taipeiDateFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+});
+
+function taipeiDateKey(value) {
+    const parts = Object.fromEntries(taipeiDateFormatter.formatToParts(value).map(part => [part.type, part.value]));
+    return `${parts.year}-${parts.month}-${parts.day}`;
+}
 let fundingTradesSchemaPromise = null;
 let fundingTradesSchemaErrorCode = null;
 let userSettingsSchemaPromise = null;
@@ -1021,17 +1032,18 @@ async function fetchSupabaseRateHistory(currency, fromDate, select) {
     return rows;
 }
 
-async function getRateHistory(currency, hours = 24, select = '*') {
-    const cacheKey = `${currency}:${select}`;
+async function getRateHistory(currency, hours = 24, select = '*', options = {}) {
+    const presentRows = rows => options.downsample === false ? rows : downsampleRateHistory(rows, hours);
     const now = Date.now();
     const fromTimestamp = now - hours * 60 * 60 * 1000;
     const fetchHours = Math.max(hours, 168);
+    const cacheKey = `${currency}:${select}:${fetchHours}`;
     const fromDate = new Date(now - fetchHours * 60 * 60 * 1000).toISOString();
     const cached = rateHistoryCache.get(cacheKey);
 
     if (process.env.NODE_ENV !== 'test' && cached && now < cached.expiresAt) {
         const filtered = cached.data.filter(r => !r?.recorded_at || new Date(r.recorded_at).getTime() >= fromTimestamp);
-        return downsampleRateHistory(filtered, hours);
+        return presentRows(filtered);
     }
 
     let rows = [];
@@ -1078,11 +1090,49 @@ async function getRateHistory(currency, hours = 24, select = '*') {
             expiresAt: now + RATE_HISTORY_CACHE_TTL_MS,
         });
     } else if (cached && process.env.NODE_ENV !== 'test') {
-        return downsampleRateHistory(cached.data, hours);
+        return presentRows(cached.data.filter(r => !r?.recorded_at || new Date(r.recorded_at).getTime() >= fromTimestamp));
     }
 
     const filtered = rows.filter(r => !r?.recorded_at || new Date(r.recorded_at).getTime() >= fromTimestamp);
-    return downsampleRateHistory(filtered, hours);
+    return presentRows(filtered);
+}
+
+async function getDailyFRRHistory(currency = 'USD', hours = 30 * 24) {
+    const rows = await getRateHistory(currency, hours, 'recorded_at,frr', { downsample: false });
+    const byDate = new Map();
+
+    for (const row of rows) {
+        const timestamp = new Date(row?.recorded_at);
+        const rate = Number(row?.frr);
+        if (row?.frr === null || row?.frr === undefined || !Number.isFinite(timestamp.getTime()) || !Number.isFinite(rate)) continue;
+
+        const localDate = taipeiDateKey(timestamp);
+        let day = byDate.get(localDate);
+        if (!day) {
+            day = { local_date: localDate, total: 0, high_rate: -Infinity, low_rate: Infinity, sample_count: 0 };
+            byDate.set(localDate, day);
+        }
+        day.total += rate;
+        day.high_rate = Math.max(day.high_rate, rate);
+        day.low_rate = Math.min(day.low_rate, rate);
+        day.sample_count += 1;
+    }
+
+    return [...byDate.values()]
+        .sort((a, b) => a.local_date.localeCompare(b.local_date))
+        .slice(-30)
+        .map(day => {
+            const avgRate = day.total / day.sample_count;
+            return {
+                local_date: day.local_date,
+                recorded_at: `${day.local_date}T00:00:00+08:00`,
+                frr: avgRate,
+                avg_rate: avgRate,
+                high_rate: day.high_rate,
+                low_rate: day.low_rate,
+                sample_count: day.sample_count,
+            };
+        });
 }
 
 // ============== 操作日誌 ==============
@@ -1437,7 +1487,7 @@ module.exports = {
     saveOffer, closeOffer, getActiveOffers,
     saveLoan, closeLoan, getActiveLoans,
     saveEarning, getEarnings, deleteEarnings,
-    saveRateSnapshot, saveRateSnapshots, getRateHistory,
+    saveRateSnapshot, saveRateSnapshots, getRateHistory, getDailyFRRHistory,
     ensureFundingTradesTable, upsertFundingTrades, getFundingTrades, getFundingTradeDiagnostics,
     getLatestFundingTradeTimestamp, getOldestFundingTradeTimestamp, deleteOldFundingTrades,
     saveOrderBookSnapshot,
