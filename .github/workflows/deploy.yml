@@ -187,5 +187,24 @@ jobs:
             sudo docker exec bitfinex-lending-bot node -e 'require("dns").lookup(process.env.PGHOST || "postgres", (error, address) => { if (error) { console.error(`PostgreSQL DNS lookup failed: ${error.code} ${error.hostname}`); process.exitCode = 1; } else { console.log(`PostgreSQL DNS resolved: ${address}`); } })'
             sudo docker exec bitfinex-lending-bot node -e 'const { Client } = require("pg"); const client = new Client({ host: process.env.PGHOST || "postgres", port: Number(process.env.PGPORT || 5432), user: process.env.PGUSER || "postgres", password: process.env.PGPASSWORD, database: process.env.PGDATABASE || "lending_bot", connectionTimeoutMillis: 5000 }); client.connect().then(() => client.query("SELECT 1")).then(() => console.log("PostgreSQL SELECT 1 succeeded")).catch(error => { console.error(`PostgreSQL connection check failed: ${error.code || "UNKNOWN"} ${error.hostname || ""}`); process.exitCode = 1; }).finally(() => client.end())'
 
+            # Confirm the protected research status API can read the upgraded schema
+            # and that the independent USD collector has written its first minute bar.
+            research_status_ok=0
+            attempts=0
+            while [ "$attempts" -lt 30 ]; do
+              research_status="$(sudo docker exec bitfinex-lending-bot node -e 'const jwt = require("jsonwebtoken"); const config = require("./server/config"); const { SINGLE_ACCOUNT_USER_ID } = require("./server/config/single-account"); const token = jwt.sign({ id: SINGLE_ACCOUNT_USER_ID, role: "admin" }, config.jwt.secret); fetch(`http://127.0.0.1:${config.port}/api/research/status`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }).then(async response => { const data = await response.json(); if (!response.ok || !data.databaseReady || !data.market?.fresh || Number(data.market?.count || 0) < 1) { process.exitCode = 1; return; } console.log(`Research dashboard verified: bars=${data.market.count}, latest=${data.market.latestAt || "unknown"}`); }).catch(() => { process.exitCode = 1; })' 2>/dev/null)" || true
+              if printf '%s\n' "$research_status" | grep -q '^Research dashboard verified:'; then
+                printf '%s\n' "$research_status"
+                research_status_ok=1
+                break
+              fi
+              attempts=$((attempts + 1))
+              sleep 2
+            done
+            if [ "$research_status_ok" -ne 1 ]; then
+              echo "Research status API or initial USD market write did not become ready within 60 seconds"
+              exit 1
+            fi
+
             # 8. 清理舊的不需要的 Docker 映像檔以釋放虛擬機空間
             sudo docker image prune -f
