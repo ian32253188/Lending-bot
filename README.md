@@ -73,6 +73,19 @@ GitHub Actions 部署流程需要 repo secrets：`OCI_VM_IP`、`OCI_VM_USER`、`
 
 - 首次建立新的 PostgreSQL volume 時，Compose 會執行 `deploy/init-db/` 中的初始化 SQL。既有 volume 不會重新執行初始化檔。
 - PostgreSQL 資料儲存在 `postgres_data` 或 `postgres_dev_data` volume；升級或重建容器前請先備份資料庫及 `.env`。
+- 啟動後會另外收集 USD Funding 分鐘行情、影子決策、真實掛單／取消事件與私有 Funding Trades 配對結果。研究資料預設保留 180 天；公開行情收集不依賴放貸引擎是否啟動。影子模型不會送出或取消訂單，現行放貸策略仍單獨控制真實下單。
+- 私有成交僅保存成交 ID、`OFFER_ID`、執行時間、金額、利率與期限；不保存 API 憑證或 Bitfinex 原始私有回應。未能依 `OFFER_ID` 找到本機掛單紀錄的成交會保留為未配對，不用利率或時間推測關聯。
+- 預測期間在首 30 天後，以至少 50 筆 `OFFER_ID` 精確配對成交的成交等待時間第 75 百分位鎖定；樣本不足時使用 24 小時。模型比較包含持續性、近一小時均值、Ridge、Huber、HistGradientBoosting 與 P10/P50/P90 Quantile regression。舊版來源不明的權重不會載入。
+- 首次模型評估以第 1–30 天訓練、第 31–45 天選定有限參數、第 46–60 天做鎖定測試；若行情完整度低於 90%、配對成交少於 50 筆，或成熟標籤不足，訓練程式會拒絕發布並要求延長收集。跨越時間切分邊界的標籤會排除。模型評分以 MAE 為主，分位數另記錄 pinball loss 與區間涵蓋率。
+- 離線訓練需要可連線至同一個 PostgreSQL 的 Python 環境：
+
+  ```bash
+  python -m venv .venv-ml
+  .venv-ml/bin/pip install -r scripts/requirements-ml.txt
+  .venv-ml/bin/python scripts/train_research_models.py --env-file .env
+  ```
+
+  Windows PowerShell 可將 `.venv-ml/bin/` 換成 `.venv-ml/Scripts/`。程式從 `.env` 讀取 PostgreSQL 連線設定，輸出路徑只保存版本化模型；訓練結果與啟用模型會寫入 PostgreSQL，Node 評分器每分鐘讀取。為控制 Quantile regression 的離線運算量，每個時間區間最多使用 5,000 筆等距樣本，所有候選共用同一批樣本。不會讀取 Bitfinex 私鑰、不呼叫交易 API，也不會把環境變數列印到終端機。訓練只會在符合樣本門檻時更新啟用模型。
 - 備份正式資料庫（在 `deploy/` 執行，輸出檔寫到專案根目錄）：
 
   ```bash
@@ -101,6 +114,7 @@ GitHub Actions 部署流程需要 repo secrets：`OCI_VM_IP`、`OCI_VM_USER`、`
 ```text
 client/                 React 網頁儀表板
 server/                 Express API、放貸引擎與 Bitfinex 整合
+scripts/train_research_models.py  離線時間序列訓練與鎖定測試
 deploy/docker-compose.yml       開發用 App + PostgreSQL
 deploy/docker-compose.prod.yml  正式環境 GHCR image + PostgreSQL
 deploy/init-db/         新資料庫初始化 SQL

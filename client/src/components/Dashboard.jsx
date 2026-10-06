@@ -8,6 +8,7 @@ import HeatmapView from './HeatmapView';
 import HistoryPage from './HistoryPage';
 import SettingsPanel from './SettingsPanel';
 import FundingMarketDashboard from './FundingMarketDashboard';
+import ResearchPanel from './ResearchPanel';
 import { getEngineBadge } from './engine-status';
 
 const NAV_ITEMS = [
@@ -94,6 +95,9 @@ export default function Dashboard({ status, connected, token, onLogout, onRefres
                         </div>
                         <div className="section">
                             <FundingMarketDashboard token={token} />
+                        </div>
+                        <div className="section">
+                            <ResearchPanel token={token} />
                         </div>
                     </>
                 )}

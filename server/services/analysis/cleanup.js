@@ -9,6 +9,7 @@ const DEFAULT_OPERATION_LOG_RETENTION_DAYS = parseInt(process.env.OPERATION_LOG_
 const DEFAULT_RATE_HISTORY_RETENTION_DAYS = parseInt(process.env.RATE_HISTORY_RETENTION_DAYS, 10) || 30;
 const DEFAULT_ORDERBOOK_SNAPSHOT_RETENTION_DAYS = parseInt(process.env.ORDERBOOK_SNAPSHOT_RETENTION_DAYS, 10) || 7;
 const DEFAULT_FUNDING_TRADE_RETENTION_DAYS = parseInt(process.env.FUNDING_TRADE_RETENTION_DAYS, 10) || 2;
+const DEFAULT_RESEARCH_RETENTION_DAYS = parseInt(process.env.RESEARCH_RETENTION_DAYS, 10) || 180;
 
 /**
  * 執行資料庫過期資料自動滾動清理程序
@@ -22,12 +23,14 @@ async function runCleanup(options = {}, customDbClient = null) {
     const rateDays = options.rateDays ?? DEFAULT_RATE_HISTORY_RETENTION_DAYS;
     const obDays = options.snapshotDays ?? DEFAULT_ORDERBOOK_SNAPSHOT_RETENTION_DAYS;
     const fundingTradeDays = options.fundingTradeDays ?? DEFAULT_FUNDING_TRADE_RETENTION_DAYS;
+    const researchDays = options.researchDays ?? DEFAULT_RESEARCH_RETENTION_DAYS;
 
     const orderCutoffDate = new Date(Date.now() - orderDays * 24 * 60 * 60 * 1000).toISOString();
     const logCutoffDate = new Date(Date.now() - logDays * 24 * 60 * 60 * 1000).toISOString();
     const rateHistoryCutoffDate = new Date(Date.now() - rateDays * 24 * 60 * 60 * 1000).toISOString();
     const orderbookCutoffDate = new Date(Date.now() - obDays * 24 * 60 * 60 * 1000).toISOString();
     const fundingTradeCutoffDate = new Date(Date.now() - fundingTradeDays * 24 * 60 * 60 * 1000).toISOString();
+    const researchCutoffDate = new Date(Date.now() - researchDays * 24 * 60 * 60 * 1000).toISOString();
 
     logger.info('cleanup', `正在執行資料庫過期資料滾動清理 (已結案訂單: ${orderDays}天, 日誌: ${logDays}天, 利率: ${rateDays}天, 快照: ${obDays}天, 撮合: ${fundingTradeDays}天)...`);
 
@@ -59,6 +62,9 @@ async function runCleanup(options = {}, customDbClient = null) {
 
             await db.query(`DELETE FROM funding_trades WHERE executed_at < $1;`, [fundingTradeCutoffDate]);
             stats.tablesCleaned.push('funding_trades');
+
+            const researchDeleted = await db.deleteOldResearchData(researchCutoffDate);
+            stats.tablesCleaned.push(`USD research data (${researchDays} days; ${researchDeleted} rows)`);
 
             logger.info('cleanup', '🎉 資料庫過期資料自動滾動清理作業全數完成 (原生 PostgreSQL)');
             return { success: true, stats };

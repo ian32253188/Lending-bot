@@ -26,6 +26,7 @@ let fundingTradesSchemaErrorCode = null;
 let userSettingsSchemaPromise = null;
 let userSettingsSchemaErrorCode = null;
 let applicationDataSchemaPromise = null;
+let researchSchemaPromise = null;
 
 /**
  * 判斷是否配置了原生 PostgreSQL
@@ -266,6 +267,451 @@ async function ensureApplicationDataTables() {
     });
 
     return applicationDataSchemaPromise;
+}
+
+/** Idempotent PostgreSQL schema for the USD shadow-research pipeline. */
+async function ensureResearchTables() {
+    if (!isPostgresConfigured()) return false;
+    if (researchSchemaPromise) return researchSchemaPromise;
+    researchSchemaPromise = query(`
+        CREATE TABLE IF NOT EXISTS research_market_bars (
+            currency VARCHAR(10) NOT NULL DEFAULT 'USD',
+            minute_at TIMESTAMPTZ NOT NULL,
+            features JSONB NOT NULL,
+            collected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (currency, minute_at)
+        );
+        CREATE INDEX IF NOT EXISTS idx_research_market_bars_time
+            ON research_market_bars (minute_at DESC);
+
+        CREATE TABLE IF NOT EXISTS research_decisions (
+            decision_at TIMESTAMPTZ NOT NULL,
+            currency VARCHAR(10) NOT NULL DEFAULT 'USD',
+            model_id VARCHAR(64) NOT NULL,
+            model_version VARCHAR(100) NOT NULL,
+            horizon_minutes INTEGER NOT NULL,
+            features JSONB NOT NULL,
+            predicted_rate NUMERIC(20, 12),
+            p10_rate NUMERIC(20, 12),
+            p90_rate NUMERIC(20, 12),
+            floor_rate NUMERIC(20, 12),
+            recommendation VARCHAR(24) NOT NULL,
+            reason VARCHAR(64),
+            meets_minimum_order BOOLEAN NOT NULL DEFAULT FALSE,
+            simulated_offer_count INTEGER NOT NULL DEFAULT 14,
+            simulated_offer_amount NUMERIC(20, 8) NOT NULL DEFAULT 500,
+            simulated_offer_period_days INTEGER NOT NULL DEFAULT 2,
+            actual_rate NUMERIC(20, 12),
+            absolute_error NUMERIC(20, 12),
+            p10_covered BOOLEAN,
+            p90_covered BOOLEAN,
+            label_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (decision_at, currency, model_id, model_version)
+        );
+        ALTER TABLE research_decisions ADD COLUMN IF NOT EXISTS simulated_offer_period_days INTEGER NOT NULL DEFAULT 2;
+        CREATE INDEX IF NOT EXISTS idx_research_decisions_model_time
+            ON research_decisions (model_id, decision_at DESC);
+
+        CREATE TABLE IF NOT EXISTS research_order_events (
+            event_key VARCHAR(160) PRIMARY KEY,
+            offer_id BIGINT NOT NULL,
+            currency VARCHAR(10) NOT NULL DEFAULT 'USD',
+            event_type VARCHAR(24) NOT NULL,
+            amount NUMERIC(20, 8),
+            rate NUMERIC(20, 12),
+            period INTEGER,
+            event_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_research_order_events_offer
+            ON research_order_events (offer_id, event_at);
+
+        CREATE TABLE IF NOT EXISTS research_funding_fills (
+            trade_id BIGINT PRIMARY KEY,
+            offer_id BIGINT,
+            currency VARCHAR(10) NOT NULL DEFAULT 'USD',
+            executed_at TIMESTAMPTZ NOT NULL,
+            amount NUMERIC(20, 8) NOT NULL,
+            rate NUMERIC(20, 12) NOT NULL,
+            period INTEGER NOT NULL,
+            offer_matched BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_research_fills_time
+            ON research_funding_fills (executed_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_research_fills_offer
+            ON research_funding_fills (offer_id, executed_at);
+
+        CREATE TABLE IF NOT EXISTS research_experiments (
+            id BIGSERIAL PRIMARY KEY,
+            experiment_key VARCHAR(100) NOT NULL UNIQUE,
+            model_id VARCHAR(64) NOT NULL,
+            model_version VARCHAR(100) NOT NULL,
+            stage VARCHAR(32) NOT NULL,
+            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            finished_at TIMESTAMPTZ,
+            train_start TIMESTAMPTZ,
+            train_end TIMESTAMPTZ,
+            validation_start TIMESTAMPTZ,
+            validation_end TIMESTAMPTZ,
+            test_start TIMESTAMPTZ,
+            test_end TIMESTAMPTZ,
+            metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+            status VARCHAR(24) NOT NULL DEFAULT 'collecting'
+        );
+        CREATE INDEX IF NOT EXISTS idx_research_experiments_model
+            ON research_experiments (model_id, started_at DESC);
+
+        CREATE TABLE IF NOT EXISTS research_model_artifacts (
+            version VARCHAR(100) PRIMARY KEY,
+            artifact JSONB NOT NULL,
+            active BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_research_model_artifacts_active
+            ON research_model_artifacts (active, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS research_config (
+            config_key VARCHAR(100) PRIMARY KEY,
+            value JSONB NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS research_collection_runs (
+            id BIGSERIAL PRIMARY KEY,
+            attempted_at TIMESTAMPTZ NOT NULL,
+            status VARCHAR(24) NOT NULL,
+            error_code VARCHAR(80),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_research_collection_runs_time
+            ON research_collection_runs (attempted_at DESC);
+    `).then(() => true).catch(error => {
+        researchSchemaPromise = null;
+        console.error('ensureResearchTables error:', error);
+        return false;
+    });
+    return researchSchemaPromise;
+}
+
+async function saveResearchMarketBar(bar) {
+    if (!bar || bar.currency !== 'USD' || !bar.minuteAt || !bar.features) return false;
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return false;
+    try {
+        await query(`INSERT INTO research_market_bars (currency, minute_at, features)
+            VALUES ('USD', $1, $2::jsonb)
+            ON CONFLICT (currency, minute_at) DO UPDATE SET
+                features = EXCLUDED.features, collected_at = NOW()`,
+        [bar.minuteAt, JSON.stringify(bar.features)]);
+        return true;
+    } catch (error) {
+        console.error('saveResearchMarketBar error:', error.message);
+        return false;
+    }
+}
+
+async function getResearchMarketBars(from = null, to = null, limit = 100000) {
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return [];
+    const result = await query(`SELECT minute_at, features FROM research_market_bars
+        WHERE currency = 'USD' AND ($1::timestamptz IS NULL OR minute_at >= $1)
+          AND ($2::timestamptz IS NULL OR minute_at <= $2)
+        ORDER BY minute_at ASC LIMIT $3`, [from, to, Math.max(1, Math.min(Number(limit) || 100000, 250000))]);
+    return result?.rows || [];
+}
+
+async function saveResearchDecisions(decisions) {
+    if (!Array.isArray(decisions) || !decisions.length) return 0;
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return 0;
+    const payload = decisions.filter(row => row && row.modelId && row.decisionAt).map(row => ({
+        decision_at: row.decisionAt, currency: 'USD', model_id: row.modelId,
+        model_version: row.modelVersion || 'unversioned', horizon_minutes: row.horizonMinutes,
+        features: row.modelId === 'live_strategy' ? (row.features || {}) : {}, predicted_rate: row.predictedRate ?? null,
+        p10_rate: row.p10Rate ?? null, p90_rate: row.p90Rate ?? null, floor_rate: row.floorRate ?? null,
+        recommendation: row.recommendation, reason: row.reason || null,
+        meets_minimum_order: Boolean(row.meetsMinimumOrder),
+        simulated_offer_count: Number.isInteger(row.simulatedOfferCount) ? row.simulatedOfferCount : 14,
+        simulated_offer_amount: Number.isFinite(Number(row.simulatedOfferAmount)) ? Number(row.simulatedOfferAmount) : 500,
+        simulated_offer_period_days: Number.isInteger(row.simulatedOfferPeriodDays) ? row.simulatedOfferPeriodDays : 2,
+    }));
+    if (!payload.length) return 0;
+    const result = await query(`INSERT INTO research_decisions (
+        decision_at, currency, model_id, model_version, horizon_minutes, features,
+        predicted_rate, p10_rate, p90_rate, floor_rate, recommendation, reason,
+        meets_minimum_order, simulated_offer_count, simulated_offer_amount, simulated_offer_period_days)
+        SELECT x.decision_at, 'USD', x.model_id, x.model_version, x.horizon_minutes, x.features,
+            x.predicted_rate, x.p10_rate, x.p90_rate, x.floor_rate, x.recommendation, x.reason,
+            x.meets_minimum_order, x.simulated_offer_count, x.simulated_offer_amount, x.simulated_offer_period_days
+        FROM jsonb_to_recordset($1::jsonb) AS x(
+            decision_at timestamptz, model_id text, model_version text, horizon_minutes integer,
+            features jsonb, predicted_rate numeric, p10_rate numeric, p90_rate numeric,
+            floor_rate numeric, recommendation text, reason text, meets_minimum_order boolean,
+            simulated_offer_count integer, simulated_offer_amount numeric, simulated_offer_period_days integer)
+        ON CONFLICT (decision_at, currency, model_id, model_version) DO NOTHING`, [JSON.stringify(payload)]);
+    return result?.rowCount || 0;
+}
+
+async function recordResearchOrderEvent(event) {
+    if (!event?.offerId || !['offer_new', 'offer_cancel'].includes(event.eventType)) return false;
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return false;
+    const eventAt = event.eventAt || new Date().toISOString();
+    const eventKey = `${event.offerId}:${event.eventType}:${new Date(eventAt).getTime()}`;
+    await query(`INSERT INTO research_order_events
+        (event_key, offer_id, currency, event_type, amount, rate, period, event_at)
+        VALUES ($1, $2, 'USD', $3, $4, $5, $6, $7)
+        ON CONFLICT (event_key) DO NOTHING`,
+    [eventKey, event.offerId, event.eventType, event.amount ?? null, event.rate ?? null, event.period ?? null, eventAt]);
+    return true;
+}
+
+async function upsertResearchFundingFills(trades) {
+    if (!Array.isArray(trades) || !trades.length) return 0;
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return 0;
+    const rows = trades.filter(t => t && t.id != null && t.offerId != null && t.timestamp &&
+        Number.isFinite(Number(t.amount)) && Number.isFinite(Number(t.rate)) && Number.isFinite(Number(t.period)))
+        .map(t => ({ trade_id: t.id, offer_id: t.offerId, executed_at: new Date(Number(t.timestamp)).toISOString(),
+            amount: Math.abs(Number(t.amount)), rate: Number(t.rate), period: Number(t.period) }));
+    if (!rows.length) return 0;
+    const result = await query(`INSERT INTO research_funding_fills
+        (trade_id, offer_id, currency, executed_at, amount, rate, period, offer_matched)
+        SELECT x.trade_id, x.offer_id, 'USD', x.executed_at, ABS(x.amount), x.rate, x.period,
+            EXISTS (SELECT 1 FROM funding_offers o WHERE o.offer_id = x.offer_id)
+            OR EXISTS (SELECT 1 FROM research_order_events e WHERE e.offer_id = x.offer_id AND e.event_type = 'offer_new')
+        FROM jsonb_to_recordset($1::jsonb) AS x(
+            trade_id bigint, offer_id bigint, executed_at timestamptz, amount numeric, rate numeric, period integer)
+        ON CONFLICT (trade_id) DO UPDATE SET
+            offer_id = EXCLUDED.offer_id, offer_matched =
+                EXISTS (SELECT 1 FROM funding_offers o WHERE o.offer_id = EXCLUDED.offer_id)
+                OR EXISTS (SELECT 1 FROM research_order_events e WHERE e.offer_id = EXCLUDED.offer_id AND e.event_type = 'offer_new')`,
+    [JSON.stringify(rows)]);
+    return result?.rowCount || 0;
+}
+
+async function getLatestResearchFillTimestamp() {
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return null;
+    const result = await query(`SELECT EXTRACT(EPOCH FROM MAX(executed_at)) * 1000 AS timestamp
+        FROM research_funding_fills WHERE currency = 'USD'`, []);
+    const timestamp = Number(result?.rows?.[0]?.timestamp);
+    return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+async function reconcileResearchFundingFillLinks() {
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return 0;
+    const result = await query(`UPDATE research_funding_fills f SET offer_matched = TRUE
+        WHERE f.currency = 'USD' AND f.offer_matched = FALSE
+          AND (EXISTS (SELECT 1 FROM funding_offers o WHERE o.offer_id = f.offer_id)
+            OR EXISTS (SELECT 1 FROM research_order_events e WHERE e.offer_id = f.offer_id AND e.event_type = 'offer_new'))`, []);
+    return result?.rowCount || 0;
+}
+
+async function finalizeResearchLabels(now = new Date()) {
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return 0;
+    const result = await query(`WITH eligible AS (
+        SELECT d.decision_at, d.currency, d.model_id, d.model_version, d.horizon_minutes,
+            (SELECT SUM((b.features->>'fundingVwap')::numeric * (b.features->>'tradeVolume')::numeric)
+                / NULLIF(SUM((b.features->>'tradeVolume')::numeric), 0)
+             FROM research_market_bars b
+             WHERE b.currency = d.currency AND b.minute_at > d.decision_at
+               AND b.minute_at <= d.decision_at + make_interval(mins => d.horizon_minutes)
+               AND NULLIF(b.features->>'fundingVwap', '') IS NOT NULL
+               AND COALESCE((b.features->>'tradeVolume')::numeric, 0) > 0) AS vwap,
+            (SELECT COUNT(*) FROM research_market_bars b
+             WHERE b.currency = d.currency AND b.minute_at > d.decision_at
+               AND b.minute_at <= d.decision_at + make_interval(mins => d.horizon_minutes)
+               AND b.features->'dataQuality'->>'tickerFresh' = 'true'
+               AND b.features->'dataQuality'->>'bookFresh' = 'true'
+               AND b.features->'dataQuality'->>'tradeFresh' = 'true') AS complete_minutes,
+            (SELECT MAX(b.minute_at) FROM research_market_bars b
+             WHERE b.currency = d.currency AND b.minute_at > d.decision_at
+               AND b.minute_at <= d.decision_at + make_interval(mins => d.horizon_minutes)) AS label_at
+        FROM research_decisions d
+        WHERE d.actual_rate IS NULL
+          AND d.decision_at + make_interval(mins => d.horizon_minutes) <= $1
+    )
+    UPDATE research_decisions d SET
+        actual_rate = e.vwap,
+        absolute_error = CASE WHEN d.predicted_rate IS NULL THEN NULL ELSE ABS(d.predicted_rate - e.vwap) END,
+        p10_covered = CASE WHEN d.p10_rate IS NULL THEN NULL ELSE e.vwap >= d.p10_rate END,
+        p90_covered = CASE WHEN d.p90_rate IS NULL THEN NULL ELSE e.vwap <= d.p90_rate END,
+        label_at = e.label_at
+    FROM eligible e
+    WHERE d.decision_at = e.decision_at AND d.currency = e.currency
+      AND d.model_id = e.model_id AND d.model_version = e.model_version
+      AND e.vwap IS NOT NULL AND e.complete_minutes >= CEIL(e.horizon_minutes * 0.9)`, [now]);
+    return result?.rowCount || 0;
+}
+
+async function setUnlabeledResearchHorizon(minutes) {
+    if (!Number.isInteger(minutes) || minutes <= 0) return 0;
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return 0;
+    const result = await query(`UPDATE research_decisions SET horizon_minutes = $1
+        WHERE currency = 'USD' AND actual_rate IS NULL`, [minutes]);
+    return result?.rowCount || 0;
+}
+
+async function getResearchStatus() {
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return { databaseReady: false };
+    const [bars, decisions, fills, experiments] = await Promise.all([
+        query(`SELECT COUNT(*)::int AS count, MIN(minute_at) AS first_at, MAX(minute_at) AS latest_at,
+            COUNT(*) FILTER (WHERE minute_at > NOW() - INTERVAL '60 days'
+                AND features->'dataQuality'->>'tickerFresh' = 'true'
+                AND features->'dataQuality'->>'bookFresh' = 'true'
+                AND features->'dataQuality'->>'tradeFresh' = 'true')::int AS complete60_count,
+            (SELECT COUNT(*)::int FROM (
+                SELECT minute_at, LAG(minute_at) OVER (ORDER BY minute_at) AS previous_at
+                FROM research_market_bars WHERE currency = 'USD' AND minute_at > NOW() - INTERVAL '24 hours'
+            ) gaps WHERE previous_at IS NOT NULL AND minute_at - previous_at > INTERVAL '90 seconds') AS gaps24h,
+            (SELECT COUNT(*)::int FROM research_collection_runs
+                WHERE attempted_at > NOW() - INTERVAL '24 hours' AND status = 'error') AS errors24h
+            FROM research_market_bars WHERE currency = 'USD'`),
+        query(`SELECT model_id, model_version, MAX(decision_at) AS latest_at, COUNT(*)::int AS predictions,
+            COUNT(actual_rate)::int AS labeled, AVG(absolute_error)::float8 AS mae,
+            AVG(p10_covered::int)::float8 AS p10_coverage, AVG(p90_covered::int)::float8 AS p90_coverage,
+            AVG((actual_rate >= p10_rate AND actual_rate <= p90_rate)::int)::float8 AS interval_coverage
+            FROM research_decisions WHERE currency = 'USD' GROUP BY model_id, model_version
+            ORDER BY model_id, latest_at DESC`),
+        query(`SELECT COUNT(*)::int AS count,
+            COUNT(*) FILTER (WHERE offer_matched)::int AS matched,
+            MAX(executed_at) AS latest_at FROM research_funding_fills WHERE currency = 'USD'`),
+        query(`SELECT experiment_key, model_id, model_version, stage, status, metrics,
+            started_at, finished_at FROM research_experiments ORDER BY started_at DESC, id DESC LIMIT 20`),
+    ]);
+    const bar = bars?.rows?.[0] || {};
+    const fill = fills?.rows?.[0] || {};
+    const latest = bar.latest_at ? new Date(bar.latest_at) : null;
+    const ageSeconds = latest ? Math.max(0, Math.round((Date.now() - latest.getTime()) / 1000)) : null;
+    return {
+        databaseReady: true,
+        market: { count: Number(bar.count || 0), firstAt: bar.first_at, latestAt: bar.latest_at,
+            ageSeconds, fresh: ageSeconds !== null && ageSeconds <= 180,
+            expected60DayMinutes: 60 * 24 * 60,
+            coverage60Days: Math.min(1, Number(bar.complete60_count || 0) / (60 * 24 * 60)),
+            gaps24h: Number(bar.gaps24h || 0), collectionErrors24h: Number(bar.errors24h || 0) },
+        fills: { count: Number(fill.count || 0), matched: Number(fill.matched || 0), latestAt: fill.latest_at },
+        models: decisions?.rows || [],
+        experiments: experiments?.rows || [],
+    };
+}
+
+async function recordResearchCollectionRun(attempt) {
+    if (!attempt || !['healthy', 'incomplete', 'error'].includes(attempt.status)) return false;
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return false;
+    await query(`INSERT INTO research_collection_runs (attempted_at, status, error_code)
+        VALUES ($1, $2, $3)`, [attempt.attemptedAt || new Date().toISOString(), attempt.status, attempt.errorCode || null]);
+    return true;
+}
+
+async function getResearchOfferPeriodDays(userId) {
+    if (!userId || !isPostgresConfigured()) return 2;
+    try {
+        const result = await query('SELECT strategy_config FROM user_bot_settings WHERE user_id = $1', [userId]);
+        const period = Number(result?.rows?.[0]?.strategy_config?.periodDays);
+        return [2, 10, 30, 60, 90, 120].includes(period) ? period : 2;
+    } catch (error) {
+        return 2;
+    }
+}
+
+async function getResearchHorizonDurations(since = null, to = null) {
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return [];
+    const result = await query(`SELECT EXTRACT(EPOCH FROM (f.executed_at - o.created_at)) / 60 AS minutes
+        FROM research_funding_fills f
+        JOIN funding_offers o ON o.offer_id = f.offer_id
+        WHERE f.currency = 'USD' AND f.offer_matched = TRUE
+          AND ($1::timestamptz IS NULL OR f.executed_at >= $1)
+          AND ($2::timestamptz IS NULL OR f.executed_at < $2)
+          AND ($1::timestamptz IS NULL OR o.created_at >= $1)
+          AND ($2::timestamptz IS NULL OR o.created_at < $2)
+          AND f.executed_at >= o.created_at
+        ORDER BY f.executed_at ASC`, [since, to]);
+    return (result?.rows || []).map(row => Number(row.minutes)).filter(value => Number.isFinite(value) && value > 0);
+}
+
+async function getResearchSetting(key) {
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return null;
+    const result = await query('SELECT value FROM research_config WHERE config_key = $1', [key]);
+    return result?.rows?.[0]?.value || null;
+}
+
+async function saveResearchSetting(key, value) {
+    if (!key || value === undefined || !isPostgresConfigured() || !(await ensureResearchTables())) return false;
+    await query(`INSERT INTO research_config (config_key, value, updated_at)
+        VALUES ($1, $2::jsonb, NOW()) ON CONFLICT (config_key) DO NOTHING`, [key, JSON.stringify(value)]);
+    return true;
+}
+
+async function recordResearchExperiment(experiment) {
+    if (!experiment?.experimentKey || !experiment.modelId) return false;
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return false;
+    await query(`INSERT INTO research_experiments (
+        experiment_key, model_id, model_version, stage, started_at, finished_at,
+        train_start, train_end, validation_start, validation_end, test_start, test_end,
+        metrics, status)
+        VALUES ($1, $2, $3, $4, COALESCE($5, NOW()), $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14)
+        ON CONFLICT (experiment_key) DO UPDATE SET
+            model_version = EXCLUDED.model_version, stage = EXCLUDED.stage,
+            finished_at = EXCLUDED.finished_at, train_start = EXCLUDED.train_start,
+            train_end = EXCLUDED.train_end, validation_start = EXCLUDED.validation_start,
+            validation_end = EXCLUDED.validation_end, test_start = EXCLUDED.test_start,
+            test_end = EXCLUDED.test_end, metrics = EXCLUDED.metrics, status = EXCLUDED.status`,
+    [experiment.experimentKey, experiment.modelId, experiment.modelVersion || 'unversioned', experiment.stage,
+        experiment.startedAt || null, experiment.finishedAt || null, experiment.trainStart || null,
+        experiment.trainEnd || null, experiment.validationStart || null, experiment.validationEnd || null,
+        experiment.testStart || null, experiment.testEnd || null, JSON.stringify(experiment.metrics || {}),
+        experiment.status || 'completed']);
+    return true;
+}
+
+async function saveResearchModelArtifact(artifact) {
+    if (!artifact?.version || artifact.schemaVersion !== 1 || !artifact.models) return false;
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return false;
+    const p = getPool();
+    const client = await p.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('UPDATE research_model_artifacts SET active = FALSE WHERE active = TRUE');
+        await client.query(`INSERT INTO research_model_artifacts (version, artifact, active)
+            VALUES ($1, $2::jsonb, TRUE)
+            ON CONFLICT (version) DO UPDATE SET artifact = EXCLUDED.artifact, active = TRUE`,
+        [artifact.version, JSON.stringify(artifact)]);
+        await client.query('COMMIT');
+        return true;
+    } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+async function getActiveResearchModelArtifact() {
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return null;
+    const result = await query(`SELECT artifact FROM research_model_artifacts
+        WHERE active = TRUE ORDER BY created_at DESC LIMIT 1`, []);
+    return result?.rows?.[0]?.artifact || null;
+}
+
+async function deleteOldResearchData(cutoffDate) {
+    if (!isPostgresConfigured() || !(await ensureResearchTables())) return 0;
+    const result = await query(`WITH deleted AS (
+        DELETE FROM research_market_bars WHERE minute_at < $1 RETURNING 1
+    ), decisions AS (
+        DELETE FROM research_decisions WHERE decision_at < $1 RETURNING 1
+    ), events AS (
+        DELETE FROM research_order_events WHERE event_at < $1 RETURNING 1
+    ), fills AS (
+        DELETE FROM research_funding_fills WHERE executed_at < $1 RETURNING 1
+    ), experiments AS (
+        DELETE FROM research_experiments WHERE started_at < $1 RETURNING 1
+    ), artifacts AS (
+        DELETE FROM research_model_artifacts WHERE active = FALSE AND created_at < $1 RETURNING 1
+    ), collection_runs AS (
+        DELETE FROM research_collection_runs WHERE attempted_at < $1 RETURNING 1
+    ) SELECT (SELECT COUNT(*) FROM deleted) + (SELECT COUNT(*) FROM decisions)
+        + (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM fills)
+        + (SELECT COUNT(*) FROM experiments) + (SELECT COUNT(*) FROM artifacts)
+        + (SELECT COUNT(*) FROM collection_runs) AS count`, [cutoffDate]);
+    return Number(result?.rows?.[0]?.count || 0);
 }
 
 /**
@@ -1484,6 +1930,12 @@ module.exports = {
     ensureUserBotSettingsTable,
     getUserSettingsSchemaErrorCode: () => userSettingsSchemaErrorCode,
     ensureApplicationDataTables,
+    ensureResearchTables, saveResearchMarketBar, getResearchMarketBars, saveResearchDecisions,
+    recordResearchOrderEvent, upsertResearchFundingFills, finalizeResearchLabels, getResearchStatus,
+    setUnlabeledResearchHorizon, getResearchHorizonDurations, getResearchSetting, saveResearchSetting, recordResearchCollectionRun,
+    getResearchOfferPeriodDays,
+    getLatestResearchFillTimestamp, reconcileResearchFundingFillLinks,
+    recordResearchExperiment, saveResearchModelArtifact, getActiveResearchModelArtifact, deleteOldResearchData,
     saveOffer, closeOffer, getActiveOffers,
     saveLoan, closeLoan, getActiveLoans,
     saveEarning, getEarnings, deleteEarnings,

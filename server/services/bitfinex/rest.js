@@ -316,6 +316,28 @@ async function getFundingTrades(currency, options = {}) {
     return publicRequest(`/trades/f${bfxSym}/hist${query ? `?${query}` : ''}`);
 }
 
+/** Read the authenticated account's funding trades; retain only stable fields and OFFER_ID. */
+async function getUserFundingTrades(currency, options = {}, credentials = null) {
+    const bfxSym = toBfxSymbol(currency);
+    const body = {};
+    for (const key of ['start', 'end', 'limit']) {
+        const value = options[key];
+        if (value !== undefined && value !== null) body[key] = value;
+    }
+    const rows = await authRequest(`/auth/r/funding/trades/f${bfxSym}/hist`, body, credentials);
+    if (!Array.isArray(rows)) return [];
+    return rows.filter(row => Array.isArray(row) && row.length >= 7).map(row => ({
+        id: Number(row[0]),
+        timestamp: Number(row[2]),
+        offerId: Number(row[3]),
+        amount: Math.abs(Number(row[4])),
+        rate: Number(row[5]),
+        period: Number(row[6]),
+    })).filter(row => Number.isSafeInteger(row.id) && Number.isSafeInteger(row.offerId)
+        && Number.isFinite(row.timestamp) && Number.isFinite(row.amount)
+        && Number.isFinite(row.rate) && Number.isInteger(row.period));
+}
+
 /**
  * 取得公開 Funding 成交 K 線（每小時），供缺少本機日歷史時補足圖表。
  * Bitfinex candle 格式為 [MTS, OPEN, CLOSE, HIGH, LOW, VOLUME]。
@@ -426,6 +448,7 @@ module.exports = {
     getFundingTicker,
     getFundingStats,
     getFundingTrades,
+    getUserFundingTrades,
     getFundingCandles,
     getFundingBook,
     parseFundingOffer,

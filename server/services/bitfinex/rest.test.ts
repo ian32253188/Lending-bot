@@ -66,6 +66,19 @@ describe('Bitfinex REST adapter', () => {
     expect(fetchMock).toHaveBeenCalledWith('https://api.test/v2/trades/fUSD/hist?limit=25&start=100');
   });
 
+  it('links private Funding Trades by the documented OFFER_ID field', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse([[31, 'fUSD', 1700000000000, 987654, -500, 0.0004, 2]]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const trades = await rest.getUserFundingTrades('USD', { start: 100, end: 200, limit: 20 }, {
+      apiKey: 'research-key', apiSecret: 'research-secret',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('https://api.test/v2/auth/r/funding/trades/fUSD/hist', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ start: 100, end: 200, limit: 20 });
+    expect(trades).toEqual([{ id: 31, timestamp: 1700000000000, offerId: 987654, amount: 500, rate: 0.0004, period: 2 }]);
+  });
+
   it('requests hourly public funding candles for the mapped Bitfinex symbol', async () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse([]));
     vi.stubGlobal('fetch', fetchMock);

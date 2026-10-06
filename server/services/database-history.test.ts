@@ -178,4 +178,50 @@ describe('rate_history repository', () => {
       }
     }
   });
+
+  it('creates idempotent minute, decision, event, fill, experiment, and artifact research tables', async () => {
+    const originalRunDbIntegrationTests = process.env.RUN_DB_INTEGRATION_TESTS;
+    configMock.database = { host: 'postgres', password: 'test-password' };
+    process.env.RUN_DB_INTEGRATION_TESTS = '1';
+    try {
+      const ready = await db.ensureResearchTables();
+      expect(ready).toBe(true);
+      const sql = state.pgQueries.map(([statement]) => statement).join('\n');
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS research_market_bars');
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS research_decisions');
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS research_order_events');
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS research_funding_fills');
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS research_experiments');
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS research_model_artifacts');
+      expect(sql).toContain('PRIMARY KEY (currency, minute_at)');
+    } finally {
+      delete configMock.database;
+      if (originalRunDbIntegrationTests === undefined) delete process.env.RUN_DB_INTEGRATION_TESTS;
+      else process.env.RUN_DB_INTEGRATION_TESTS = originalRunDbIntegrationTests;
+    }
+  });
+
+  it('pairs private funding fills to locally observed offers only by OFFER_ID', async () => {
+    const originalRunDbIntegrationTests = process.env.RUN_DB_INTEGRATION_TESTS;
+    configMock.database = { host: 'postgres', password: 'test-password' };
+    process.env.RUN_DB_INTEGRATION_TESTS = '1';
+    try {
+      await db.upsertResearchFundingFills([{
+        id: 31, offerId: 987654, timestamp: 1700000000000,
+        amount: -500, rate: 0.0004, period: 2,
+      }]);
+
+      const [sql, params] = state.pgQueries.at(-1)!;
+      expect(sql).toContain('o.offer_id = x.offer_id');
+      expect(sql).toContain('e.offer_id = x.offer_id');
+      expect(sql).not.toMatch(/rate\s*=.*event_at|ABS\(.*event_at/s);
+      expect(JSON.parse(String(params[0]))).toEqual([expect.objectContaining({
+        trade_id: 31, offer_id: 987654, amount: 500,
+      })]);
+    } finally {
+      delete configMock.database;
+      if (originalRunDbIntegrationTests === undefined) delete process.env.RUN_DB_INTEGRATION_TESTS;
+      else process.env.RUN_DB_INTEGRATION_TESTS = originalRunDbIntegrationTests;
+    }
+  });
 });

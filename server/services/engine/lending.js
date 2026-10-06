@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const config = require('../../config');
 const logger = require('../../utils/logger');
 const db = require('../database');
@@ -444,7 +445,29 @@ class LendingBot {
             available,
         };
 
-        if (nominalAvailable < this.minOfferAmount) {
+        const meetsMinimumOrder = nominalAvailable >= this.minOfferAmount;
+        const placeableOrder = (optimalResult.orders || []).some(order => Number(order.amount) >= this.minOfferAmount);
+        const strategySettings = Object.fromEntries(Object.entries(this.strategyConfig || {}).sort(([a], [b]) => a.localeCompare(b)));
+        const strategyVersion = `live-${crypto.createHash('sha256').update(JSON.stringify(strategySettings)).digest('hex').slice(0, 12)}`;
+        if (typeof db.saveResearchDecisions === 'function') db.saveResearchDecisions([{
+            decisionAt: new Date(Math.floor(Date.now() / 60_000) * 60_000).toISOString(),
+            modelId: 'live_strategy', modelVersion: strategyVersion, horizonMinutes: 24 * 60,
+            features: {
+                frr: Number(marketData.frr) || 0,
+                fundingVwap: Number(marketData.currentTradeAvg) || Number(marketData.lastPrice) || null,
+                bestBid: Number(marketData.bids?.[0]?.rate) || null,
+                bestAsk: Number(marketData.asks?.[0]?.rate) || null,
+            },
+            predictedRate: Number(optimalResult.diagnostics?.finalRate) || null,
+            floorRate: Number(optimalResult.diagnostics?.frrRate) || null,
+            recommendation: meetsMinimumOrder && placeableOrder ? 'offer' : 'wait',
+            reason: !meetsMinimumOrder ? 'below_minimum_order' : placeableOrder ? 'current_live_strategy' : 'strategy_wait',
+            meetsMinimumOrder,
+            simulatedOfferCount: 0,
+            simulatedOfferAmount: 0,
+        }]).catch(error => logger.warn('engine', '儲存即時基準決策失敗', { userId: this.userId, error: error.message }));
+
+        if (!meetsMinimumOrder) {
             return; // 餘額不足，在記錄完市場診斷後優雅退場
         }
 
@@ -571,6 +594,11 @@ class LendingBot {
                         id: offer.id, currency: cur, amount: Math.abs(offer.amount),
                         rate: offer.rate, period: offer.period, status: 'active',
                     }, this.userId);
+                    db.recordResearchOrderEvent?.({
+                        offerId: offer.id, eventType: 'offer_new', amount: Math.abs(offer.amount),
+                        rate: offer.rate, period: offer.period,
+                        eventAt: offer.createdAt || new Date().toISOString(),
+                    })?.catch(error => logger.warn('research', '記錄真實掛單事件失敗', { error: error.message }));
                 }
             }
         });
@@ -583,6 +611,11 @@ class LendingBot {
                 if (this.state.activeOffers[cur]) {
                     this.state.activeOffers[cur] = this.state.activeOffers[cur].filter((o) => o.id !== offer.id);
                     db.closeOffer(offer.id, this.userId);
+                    db.recordResearchOrderEvent?.({
+                        offerId: offer.id, eventType: 'offer_cancel', amount: Math.abs(offer.amount),
+                        rate: offer.rate, period: offer.period,
+                        eventAt: offer.updatedAt || new Date().toISOString(),
+                    })?.catch(error => logger.warn('research', '記錄真實取消事件失敗', { error: error.message }));
                 }
             }
         });

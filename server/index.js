@@ -16,6 +16,7 @@ const metrics = require('./services/metrics');
 const authRoutes = require('./routes/auth');
 const dashboardRoutes = require('./routes/dashboard');
 const lendingRoutes = require('./routes/lending');
+const researchRoutes = require('./routes/research');
 
 const app = express();
 const server = http.createServer(app);
@@ -30,6 +31,7 @@ app.use(express.static(path.join(__dirname, '..', 'client', 'dist')));
 app.use('/api/auth', authRoutes);
 app.use('/api/dashboard', authMiddleware, dashboardRoutes);
 app.use('/api/lending', authMiddleware, lendingRoutes);
+app.use('/api/research', authMiddleware, researchRoutes);
 
 // Prometheus 監控指標
 app.get('/metrics', async (req, res) => {
@@ -285,6 +287,12 @@ async function startup() {
         }
     }
 
+    if (db.isPostgresConfigured()) {
+        const researchReady = await db.ensureResearchTables();
+        if (researchReady) logger.info('server', '✅ USD 影子研究資料表已就緒（180 天保留）');
+        else logger.error('server', '❌ USD 影子研究資料表初始化失敗');
+    }
+
     // 初始化管理員全域 Telegram Bot (SaaS 模式下為選配，用戶各自的 Bot 在 manager.startBot 中初始化)
     initTelegram();
 
@@ -292,6 +300,14 @@ async function startup() {
     const { autoResumeAll } = require('./services/engine/manager');
     const { startDailyCleanup } = require('./services/analysis/cleanup');
     const { startFundingTradeCollector } = require('./services/market-summary');
+    const { startShadowResearch } = require('./services/research/shadow');
+
+    // Keep public USD market capture alive even when the lending account is stopped or unavailable.
+    try {
+        getBitfinexPublicWS().connect();
+    } catch (err) {
+        logger.error('server', '啟動公開 USD 行情 WebSocket 失敗', { error: err.message });
+    }
 
     if (userSettingsReady && applicationDataTablesReady) {
         try {
@@ -315,6 +331,12 @@ async function startup() {
         logger.error('server', '啟動公開撮合資料收集器失敗', { error: err.message });
     }
 
+    try {
+        startShadowResearch();
+    } catch (err) {
+        logger.error('server', '啟動 USD 影子研究收集器失敗', { error: err.message });
+    }
+
     // 啟動 HTTP 伺服器
     server.listen(config.port, () => {
         logger.info('server', `✅ 伺服器已啟動，埠號: ${config.port}`);
@@ -328,9 +350,11 @@ process.on('SIGTERM', async () => {
     const { shutdownAll } = require('./services/engine/manager');
     const { stopDailyCleanup } = require('./services/analysis/cleanup');
     const { stopFundingTradeCollector } = require('./services/market-summary');
+    const { stopShadowResearch } = require('./services/research/shadow');
     try {
         stopDailyCleanup();
         stopFundingTradeCollector();
+        stopShadowResearch();
     } catch (err) {}
     await shutdownAll();
     server.close(() => process.exit(0));
@@ -341,9 +365,11 @@ process.on('SIGINT', async () => {
     const { shutdownAll } = require('./services/engine/manager');
     const { stopDailyCleanup } = require('./services/analysis/cleanup');
     const { stopFundingTradeCollector } = require('./services/market-summary');
+    const { stopShadowResearch } = require('./services/research/shadow');
     try {
         stopDailyCleanup();
         stopFundingTradeCollector();
+        stopShadowResearch();
     } catch (err) {}
     await shutdownAll();
     server.close(() => process.exit(0));

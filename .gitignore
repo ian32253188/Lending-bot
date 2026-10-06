@@ -9,3 +9,8 @@ client/dist/
 *.stackdump
 *.tar
 *.tar.gz
+/server/data/research-models.json
+/server/data/research-models.tmp
+.venv-ml/
+__pycache__/
+*.pyc
