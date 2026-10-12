@@ -327,14 +327,14 @@ export class StrategyEngine {
       timestamp: Date.now(),
     };
 
-    result.shouldOffer = true;
-
     // 依選定的利率基準與期限，把全部可用餘額放在同一筆掛單
     result.orders = this._calculateSingleOrder(
       availableAmount, baseRate, marketData, stratConfig, currency
     );
-
-    result.reason = `直接採用基準(${stratConfig.rateStrategy}): ${(baseRate * 100).toFixed(4)}%, 期限: ${stratConfig.periodDays}天`;
+    result.shouldOffer = result.orders.length > 0;
+    result.reason = result.shouldOffer
+      ? `直接採用基準(${stratConfig.rateStrategy}): ${(baseRate * 100).toFixed(4)}%, 期限: ${stratConfig.periodDays}天`
+      : '可用餘額必須大於 150 USD 才會掛單';
 
     return result;
   }

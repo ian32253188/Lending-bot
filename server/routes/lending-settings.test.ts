@@ -67,6 +67,58 @@ describe('per-user settings and Telegram binding', () => {
     mocks.getBot.mockReturnValue(null);
   });
 
+  it('returns fixed compounding and omits the removed transfer and reserve settings', async () => {
+    mocks.getUserSettings.mockResolvedValue({
+      lending_currencies: ['BTC'],
+      compounding_enabled: false,
+      compounding_hold_amount: 25,
+      min_offer_amount: 100,
+      auto_transfer_enabled: true,
+      auto_transfer_threshold: 500,
+      strategy_config: { rateStrategy: 'high_24h', periodDays: 30, minRate: 0.001, maxRate: 0.01 },
+    });
+
+    const res = await request(app).get('/api/lending/settings').expect(200);
+
+    expect(res.body).toMatchObject({
+      lending_currencies: ['USD'],
+      compounding_enabled: true,
+      strategy_config: { rateStrategy: 'high_24h', periodDays: 30 },
+    });
+    expect(res.body).not.toHaveProperty('compounding_hold_amount');
+    expect(res.body).not.toHaveProperty('min_offer_amount');
+    expect(res.body).not.toHaveProperty('auto_transfer_enabled');
+    expect(res.body).not.toHaveProperty('auto_transfer_threshold');
+    expect(res.body.strategy_config).not.toHaveProperty('minRate');
+    expect(res.body.strategy_config).not.toHaveProperty('maxRate');
+  });
+
+  it('forces compounding on and disables automatic transfer settings on writes', async () => {
+    await request(app)
+      .post('/api/lending/settings')
+      .send({ compounding_enabled: false, compounding_hold_amount: 25, auto_transfer_enabled: true, auto_transfer_threshold: 500 })
+      .expect(200);
+
+    expect(mocks.saveUserSettings).toHaveBeenCalledWith('user-a', expect.objectContaining({
+      compounding_enabled: true,
+      compounding_hold_amount: 0,
+      auto_transfer_enabled: false,
+    }));
+    expect(mocks.saveUserSettings.mock.calls[0][1]).not.toHaveProperty('auto_transfer_threshold');
+  });
+
+  it('keeps the legacy compounding endpoint fixed on and removes automatic transfer', async () => {
+    const compounding = await request(app).post('/api/lending/compounding').send({ enabled: false }).expect(200);
+    expect(compounding.body).toMatchObject({ compounding: true });
+    expect(mocks.saveUserSettings).toHaveBeenCalledWith('user-a', {
+      compounding_enabled: true,
+      compounding_hold_amount: 0,
+    });
+
+    const transfer = await request(app).post('/api/lending/auto-transfer').send({ enabled: true }).expect(410);
+    expect(transfer.body.error).toContain('已移除');
+  });
+
   it('rejects a Telegram Chat ID already owned by another tenant', async () => {
     mocks.getUserSettingsByTelegramChatId.mockResolvedValue({ user_id: 'user-b', telegram_chat_id: '10001' });
 

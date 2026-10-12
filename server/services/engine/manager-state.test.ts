@@ -106,7 +106,12 @@ describe('Engine manager persisted state', () => {
     const bot = await startBot(userId);
 
     expect(bot.running).toBe(true);
-    expect(saveUserSettings).toHaveBeenCalledWith(userId, { status: 'running' });
+    expect(saveUserSettings).toHaveBeenCalledWith(userId, expect.objectContaining({
+      status: 'running',
+      compounding_enabled: true,
+      compounding_hold_amount: 0,
+      auto_transfer_enabled: false,
+    }));
     expect(saveUserSettings).not.toHaveBeenCalledWith(userId, { status: 'stopped' });
   });
 

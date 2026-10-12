@@ -147,7 +147,7 @@ describe('LendingBot private account status', () => {
     expect(status.activeCredits).toEqual({ USD: 0 });
   });
 
-  it('persists compounding changes and releases held interest when re-enabled', async () => {
+  it('keeps compounding enabled and clears legacy held interest', async () => {
     const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' }, {
       compoundingEnabled: false,
       compoundingHoldAmount: 12.5,
@@ -162,11 +162,11 @@ describe('LendingBot private account status', () => {
       compounding_hold_amount: 0,
     });
     expect(bot.compoundingEnabled).toBe(true);
-    expect(bot.compoundingHoldAmount).toBe(0);
+    expect(bot.compoundingHoldAmount).toBeUndefined();
     expect(bot._debouncedDecision).toHaveBeenCalledWith('USD', 1000);
   });
 
-  it('holds estimated net maturity interest while compounding is disabled', () => {
+  it('closes a repaid loan without estimating interest from its original term', () => {
     const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' }, {
       compoundingEnabled: false,
     });
@@ -183,13 +183,13 @@ describe('LendingBot private account status', () => {
       period: 10,
     });
 
-    expect(bot.compoundingHoldAmount).toBeCloseTo(4.25);
-    expect(mocks.closeLoan).toHaveBeenCalledWith(88, 4.25, 'user-a');
-    expect(mocks.saveUserSettings).toHaveBeenCalledWith('user-a', { compounding_hold_amount: 4.25 });
-    expect(bot._debouncedDecision).not.toHaveBeenCalled();
+    expect(mocks.closeLoan).toHaveBeenCalledWith(88, null, 'user-a');
+    expect(bot.compoundingHoldAmount).toBeUndefined();
+    expect(bot._debouncedDecision).toHaveBeenCalledWith('USD', 2000);
+    clearTimeout(bot.pendingEarningsSyncTimer);
   });
 
-  it('leaves held interest out of the next USD offer balance', async () => {
+  it('uses the full available USD balance and ignores legacy compounding reserves', async () => {
     const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' }, {
       compoundingEnabled: false,
       compoundingHoldAmount: 100,
@@ -201,12 +201,14 @@ describe('LendingBot private account status', () => {
     expect(mocks.strategy.calculateOptimalRate).toHaveBeenCalledWith(
       expect.objectContaining({ frr: 0.001 }),
       'USD',
-      400,
+      500,
       bot.strategyConfig,
     );
+    expect(bot.compoundingEnabled).toBe(true);
+    expect(bot.compoundingHoldAmount).toBeUndefined();
   });
 
-  it('does not reduce the saved interest reserve while account data is incomplete', async () => {
+  it('does not reserve balance from legacy settings when available USD is below the minimum', async () => {
     const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' }, {
       compoundingEnabled: false,
       compoundingHoldAmount: 100,
@@ -215,10 +217,10 @@ describe('LendingBot private account status', () => {
 
     await bot._processForCurrency('USD');
 
-    expect(bot.compoundingHoldAmount).toBe(100);
-    expect(mocks.saveUserSettings).not.toHaveBeenCalledWith('user-a', { compounding_hold_amount: 50 });
+    expect(bot.compoundingEnabled).toBe(true);
+    expect(bot.compoundingHoldAmount).toBeUndefined();
     expect(mocks.strategy.calculateOptimalRate).toHaveBeenCalledWith(
-      expect.any(Object), 'USD', 0, bot.strategyConfig,
+      expect.any(Object), 'USD', 50, bot.strategyConfig,
     );
   });
 });

@@ -16,11 +16,19 @@ describe('Telegram strategy controls', () => {
     ]));
     expect(callbackData).toContain('start_engine');
     expect(callbackData).not.toContain('get_diagnostics');
+    expect(callbackData).not.toContain('toggle_compounding');
+    expect(callbackData).not.toContain('toggle_auto_transfer');
     expect(getControlPanelText(null, { strategy_config: { rateStrategy: 'high_24h', periodDays: 30 } }))
       .not.toContain('即時決策診斷');
     expect(callbackData).not.toContain('pause_engine');
     expect(callbackData).not.toContain('resume_engine');
     expect(getControlPanelText(null, { strategy_config: { rateStrategy: 'high_24h', periodDays: 30 } }))
       .toContain('24 小時最高');
+    expect(getControlPanelText(null, { strategy_config: { rateStrategy: 'high_24h', periodDays: 30 } }))
+      .toContain('複利滾投</b>: 固定開啟');
+    expect(getControlPanelText(null, { strategy_config: { rateStrategy: 'high_24h', periodDays: 30 } }))
+      .toContain('單筆投入全部可用餘額');
+    expect(getControlPanelText(null, { strategy_config: { rateStrategy: 'high_24h', periodDays: 30 } }))
+      .not.toContain('自動劃轉');
   });
 });
