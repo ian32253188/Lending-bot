@@ -1,15 +1,12 @@
 /**
  * =========================================================================
- * 🌌 終極防禦型三維自適應放貸策略引擎 (TypeScript Production Edition)
+ * 🌌 自適應放貸策略引擎 (TypeScript Production Edition)
  * 
  * 融合技術：
  * 1. 瓦爾拉斯出清 IBRR 引擎 (地基)
  * 2. Harmonia 10分鐘誠信時間戳過濾 (防莊家高頻釣魚假單 Spoofing)
- * 3. 60% 空間穩健底倉 (Instabot easeInCubic 緩和曲線網格)
- * 4. 20% 交易量深度探針 (Loan-Manager Percent Depth 15% 防線)
- * 5. 20% 荷蘭拍時間探針 (Cascade 2.5倍天價起手 + 指數衰減降息)
- * 6. 隨機金額防偵測 + 捨入誤差傳遞算法 (Error Diffusion Dithering)
- * 7. 溢價天數滑動橡皮筋 (Harmonia Rate/FRR 比例天數映射)
+ * 3. 依使用者選擇的利率基準計算單筆掛單利率
+ * 4. 全部可用餘額以一筆掛單投入，並使用所選期限
  * =========================================================================
  */
 
@@ -69,7 +66,7 @@ export interface IBRRResult {
   equilibriumFound?: boolean;
 }
 
-export interface GridOrder {
+export interface FundingOfferOrder {
   amount: number;
   rate: number;
   period: number;
@@ -80,8 +77,6 @@ export interface StrategyConfig {
   frrMultiplier: number;
   maxRate: number;
   minRate?: number;
-  orderUnit?: number;
-  defaultPeriod?: number;
   rateStrategy?: 'current_avg' | 'high_24h' | 'high_30d';
   periodDays?: number;
   useAllAvailable?: boolean;
@@ -89,16 +84,11 @@ export interface StrategyConfig {
 }
 
 export interface OptimalRateResult {
-  orders: GridOrder[];
+  orders: FundingOfferOrder[];
   shouldOffer: boolean;
   reason: string;
   currency: string;
   diagnostics?: Record<string, any>;
-}
-
-// Cubic 緩和函數 (源自 Instabot Easing)
-function easeInCubic(t: number): number {
-  return t * t * t;
 }
 
 export class StrategyEngine {
@@ -108,7 +98,7 @@ export class StrategyEngine {
   public ibrrHistory: Record<string, Array<{ ibrr: number; timestamp: number }>>;
 
   constructor() {
-    // 響應用戶需求，只保留唯一的 3D_Hybrid 策略 (對齊前端 balanced id)
+    // 保留唯一的自適應放貸策略 (對齊前端 balanced id)
     this.mode = 'balanced';
     this.customOverrides = {};
     this.historicalFRR = {};
@@ -116,18 +106,16 @@ export class StrategyEngine {
   }
 
   /**
-   * 獲取策略配置：鎖定為 3D_Hybrid 預設配置，並融入用戶的自定義覆寫
+   * 獲取放貸策略預設配置，並融入用戶的自定義覆寫
    */
   public getStrategyConfig(): StrategyConfig {
-    const default3DConfig: StrategyConfig = {
+    const defaultLendingConfig: StrategyConfig = {
       frrMultiplier: 1.0,  // 以 FRR 作為物理保護底線
       maxRate: 0.008,      // 日利率上限 (0.8%)
       minRate: 0.0002,     // 日利率下限 (0.02%)
-      orderUnit: 500,      // 拆單底倉基準單位
-      defaultPeriod: 2,
     };
     return {
-      ...default3DConfig,
+      ...defaultLendingConfig,
       rateStrategy: 'current_avg',
       periodDays: 2,
       useAllAvailable: true,
@@ -136,10 +124,10 @@ export class StrategyEngine {
   }
 
   /**
-   * 鎖定 3D_Hybrid 策略，拒絕切換到其他舊模式
+   * 保留唯一的自適應放貸策略，拒絕切換到其他舊模式
    */
   public setMode(mode: string): void {
-    logger.info('strategy', `策略已鎖定為 3D_Hybrid，忽略切換請求至: ${mode}`);
+    logger.info('strategy', `策略已鎖定為自適應放貸，忽略切換請求至: ${mode}`);
   }
 
   /**
@@ -350,8 +338,8 @@ export class StrategyEngine {
 
     result.shouldOffer = true;
 
-    // 調用唯一核心：三維自適應拆單網格
-    result.orders = this._calculateGridOrders(
+    // 依選定的利率基準與期限，把全部可用餘額放在同一筆掛單
+    result.orders = this._calculateSingleOrder(
       availableAmount, baseRate, marketData, stratConfig, currency
     );
 
@@ -390,145 +378,25 @@ export class StrategyEngine {
   }
 
   /**
-   * 三維自適應拆單網格
+   * 以全部可用餘額建立單筆掛單
    */
-  public _calculateGridOrders(
+  public _calculateSingleOrder(
     totalAmount: number,
-    baseRate: number,
+    rate: number,
     marketData: MarketData,
     stratConfig: StrategyConfig,
     currency: string
-  ): GridOrder[] {
+  ): FundingOfferOrder[] {
     // @ts-ignore
     const minOffer = config.lending?.minOfferAmount || 150;
     if (totalAmount < minOffer) return [];
 
-    const orders: GridOrder[] = [];
-    const asks = marketData.asks || [];
-
-    // 1. 資金三維分配 (60% 底倉, 20% 深度, 20% 級聯)
-    const amountBase = totalAmount * 0.60;
-    const amountDepth = totalAmount * 0.20;
-    const amountCascade = totalAmount * 0.20;
-
-    // 2. 第一維：空間穩健底倉 (60% 資金 - 緩和曲線網格)
-    if (amountBase >= minOffer) {
-      const unit = stratConfig.orderUnit || 500;
-      const orderCount = Math.min(5, Math.max(2, Math.floor(amountBase / unit)));
-      
-      const gridRates: number[] = [];
-      const lowRate = baseRate * 0.999; 
-      const highRate = baseRate * 1.12;  
-      const rateRange = highRate - lowRate;
-
-      for (let i = 0; i < orderCount; i++) {
-        const t = i / (orderCount - 1 || 1);
-        const rate = lowRate + rateRange * easeInCubic(t); 
-        gridRates.push(rate);
-      }
-
-      const baseAmounts = this._generateRandomAmounts(amountBase, orderCount, minOffer, 0.08);
-
-      for (let i = 0; i < orderCount; i++) {
-        const period = this._selectPeriod(gridRates[i], marketData, stratConfig, currency);
-        orders.push({
-          amount: baseAmounts[i],
-          rate: gridRates[i],
-          period,
-          tag: 'grid_base'
-        });
-      }
-    }
-
-    // 3. 第二維：Percent Depth 深度探針 (20% 資金)
-    if (amountDepth >= minOffer && asks.length > 0) {
-      const totalAskVolume = asks.reduce((sum, a) => sum + (a.amount || 0), 0);
-      const targetVolume = totalAskVolume * 0.15;
-      let runningVolume = 0;
-      let depthRate = baseRate * 1.15;
-
-      for (const ask of asks) {
-        runningVolume += ask.amount;
-        if (runningVolume <= targetVolume) {
-          depthRate = ask.rate;
-        } else {
-          break;
-        }
-      }
-
-      depthRate = Math.max(baseRate * 1.05, Math.min(depthRate, stratConfig.maxRate || 0.005));
-      const period = this._selectPeriod(depthRate, marketData, stratConfig, currency);
-
-      orders.push({
-        amount: amountDepth,
-        rate: depthRate,
-        period,
-        tag: 'grid_depth'
-      });
-    }
-
-    // 4. 第三維：Cascade 時間級聯天價探針 (20% 資金)
-    if (amountCascade >= minOffer) {
-      const cascadeRate = Math.min(baseRate * 2.5, stratConfig.maxRate || 0.005);
-      const period = this._selectPeriod(cascadeRate, marketData, stratConfig, currency);
-
-      orders.push({
-        amount: amountCascade,
-        rate: cascadeRate,
-        period,
-        tag: 'grid_cascade'
-      });
-    }
-
-    // 5. 補償殘餘資金，或在無法拆單時提供單筆備份訂單
-    if (orders.length === 0 && totalAmount >= minOffer) {
-      const period = this._selectPeriod(baseRate, marketData, stratConfig, currency);
-      orders.push({
-        amount: totalAmount,
-        rate: baseRate,
-        period,
-        tag: 'grid_base_consolidated'
-      });
-    } else {
-      const allocatedTotal = orders.reduce((sum, o) => sum + o.amount, 0);
-      const remainder = totalAmount - allocatedTotal;
-      if (remainder > 0 && orders.length > 0) {
-        orders[0].amount += remainder;
-      }
-    }
-
-    return orders;
-  }
-
-  private _generateRandomAmounts(
-    totalFunds: number,
-    orderCount: number,
-    minSize: number,
-    randomDiff: number
-  ): number[] {
-    if (orderCount <= 0) return [];
-    const perOrder = totalFunds / orderCount;
-    const maxRandomDiff = perOrder < minSize ? 0 : (perOrder - minSize) / perOrder;
-    const safeDiff = Math.max(0, Math.min(randomDiff, maxRandomDiff, 1));
-
-    const randomised: number[] = [];
-    for (let i = 0; i < orderCount; i++) {
-      const rand = (Math.random() * safeDiff * 2) - safeDiff; 
-      randomised.push(1 + rand);
-    }
-
-    const unscaledTotal = randomised.reduce((sum, val) => sum + val, 0);
-    const scaleFactor = totalFunds / unscaledTotal;
-
-    let error = 0;
-    const finalAmounts = randomised.map((weight) => {
-      const wish = Math.max((weight * scaleFactor) + error, minSize);
-      const have = Math.floor(wish * 100000) / 100000; 
-      error = wish - have; 
-      return have;
-    });
-
-    return finalAmounts;
+    return [{
+      amount: totalAmount,
+      rate,
+      period: this._selectPeriod(rate, marketData, stratConfig, currency),
+      tag: 'strategy_single',
+    }];
   }
 
   /**

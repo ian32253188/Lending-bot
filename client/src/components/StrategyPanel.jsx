@@ -120,7 +120,7 @@ export default function StrategyPanel({ status, token, onRefresh }) {
                             <p>
                                 {availableUsd == null
                                     ? '帳戶餘額尚未同步；機器人連線後會讀取可用 USD。'
-                                    : `將使用可用 USD ${Number(availableUsd).toLocaleString('en-US', { maximumFractionDigits: 2 })}，依「${strategyName}」基準及 ${strategySettings.periodDays} 天期限自動掛單。`}
+                                    : `Funding Wallet 可用 USD ${Number(availableUsd).toLocaleString('en-US', { maximumFractionDigits: 2 })}；${features.compounding ? '全部可用餘額' : '先保留已到期利息後的餘額'}會以單筆掛單，依「${strategyName}」基準及 ${strategySettings.periodDays} 天期限送出。`}
                             </p>
                             {strategyDirty && <p role="alert">策略有尚未儲存的變更。請先儲存，再啟動。</p>}
                             <div className="strategy-confirmation-actions">
@@ -169,7 +169,7 @@ export default function StrategyPanel({ status, token, onRefresh }) {
                         </button>
                     ))}
                 </div>
-                <div className="strategy-settings-footnote">可放貸金額：Funding Wallet 可用餘額；關閉複利時會保留已到期利息。</div>
+                <div className="strategy-settings-footnote">掛單方式：將可投入金額以單筆掛單送出；關閉複利時會保留已到期利息。</div>
                 <button type="button" className="btn btn-primary btn-sm" onClick={saveStrategy} disabled={loading || !strategyDirty} style={{ marginTop: 10 }}>
                     {strategyDirty ? '儲存策略變更' : '策略已儲存'}
                 </button>

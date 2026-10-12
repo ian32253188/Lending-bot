@@ -1025,7 +1025,7 @@ function getControlPanelText(engine, dbSettings = null) {
         `⚙️ <b>引擎狀態</b>: <b>${engineStatus}</b>\n` +
         `🧠 <b>利率基準</b>: <b>${strategyLabel}</b>\n` +
         `📅 <b>放貸期限</b>: <b>${strategyConfig.periodDays} 天</b>\n` +
-        `💰 <b>掛單金額</b>: Funding Wallet 全部可用餘額\n` +
+        `💰 <b>掛單方式</b>: 一筆使用全部可投入餘額\n` +
         `♻️ <b>複利滾投</b>: <b>${compounding}</b>\n` +
         `🔄 <b>自動劃轉</b>: <b>${autoTransfer}</b>\n` +
         `──────────────────────\n` +
