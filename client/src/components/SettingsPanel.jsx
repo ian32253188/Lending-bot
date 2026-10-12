@@ -6,10 +6,6 @@ export default function SettingsPanel({ token }) {
         bitfinex_api_secret: '',
         telegram_bot_token: '',
         telegram_chat_id: '',
-        min_offer_amount: 150,
-        compounding_enabled: true,
-        auto_transfer_enabled: false,
-        auto_transfer_threshold: 500,
         lending_currencies: ['USD'],
         rateStrategy: 'current_avg',
         periodDays: 2,
@@ -37,10 +33,6 @@ export default function SettingsPanel({ token }) {
                     bitfinex_api_secret: data.bitfinex_api_secret || '',
                     telegram_bot_token: data.telegram_bot_token || '',
                     telegram_chat_id: data.telegram_chat_id || '',
-                    min_offer_amount: data.min_offer_amount ?? 150,
-                    compounding_enabled: data.compounding_enabled ?? true,
-                    auto_transfer_enabled: data.auto_transfer_enabled ?? false,
-                    auto_transfer_threshold: data.auto_transfer_threshold ?? 500,
                     lending_currencies: ['USD'],
                     rateStrategy: data.strategy_config?.rateStrategy || 'current_avg',
                     periodDays: data.strategy_config?.periodDays || 2,
@@ -211,59 +203,8 @@ export default function SettingsPanel({ token }) {
                             掛單金額使用 Funding Wallet 的可用 USD；已放貸中的資金不會重複掛單。
                         </div>
 
-                        <div className="grid grid-2" style={{ gap: 16 }}>
-                            <div className="form-group">
-                                <label>最低放貸單位 (Min Offer Amount)</label>
-                                <input
-                                    type="number"
-                                    value={settings.min_offer_amount}
-                                    onChange={(e) => setSettings({ ...settings, min_offer_amount: parseInt(e.target.value) || 150 })}
-                                    min="150"
-                                    placeholder="最低 150 美元"
-                                />
-                                <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Bitfinex 單筆掛單最低限制為 150</span>
-                            </div>
-                            <div className="form-group">
-                                <label>到期利息再投入</label>
-                                <div style={{ display: 'flex', alignItems: 'center', height: '40px' }}>
-                                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: '0.95rem' }}>
-                                        <input
-                                            type="checkbox"
-                                            style={{ width: 'auto', cursor: 'pointer' }}
-                                            checked={settings.compounding_enabled}
-                                            onChange={(e) => setSettings({ ...settings, compounding_enabled: e.target.checked })}
-                                        />
-                                        啟用後，放貸到期的利息會自動投入下一次 USD 放貸；關閉時利息保留在 Funding Wallet。
-                                    </label>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="grid grid-2" style={{ gap: 16, marginTop: 12 }}>
-                            <div className="form-group" style={{ display: 'flex', alignItems: 'center', height: '40px' }}>
-                                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: '0.95rem' }}>
-                                    <input
-                                        type="checkbox"
-                                        style={{ width: 'auto', cursor: 'pointer' }}
-                                        checked={settings.auto_transfer_enabled}
-                                        onChange={(e) => setSettings({ ...settings, auto_transfer_enabled: e.target.checked })}
-                                    />
-                                    啟用自動轉帳 (Auto-transfer)
-                                </label>
-                            </div>
-                            {settings.auto_transfer_enabled && (
-                                <div className="form-group">
-                                    <label>自動轉帳觸發門檻 (Threshold)</label>
-                                    <input
-                                        type="number"
-                                        value={settings.auto_transfer_threshold}
-                                        onChange={(e) => setSettings({ ...settings, auto_transfer_threshold: parseInt(e.target.value) || 500 })}
-                                        min="1"
-                                        placeholder="例如 500"
-                                    />
-                                    <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>當交易錢包餘額超過此金額時自動轉入融資錢包</span>
-                                </div>
-                            )}
+                        <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
+                            複利固定開啟。Funding Wallet 可用 USD 嚴格大於 $150 時，系統會將全部可用餘額以單筆掛單投入；利率直接採用上方選取的基準。
                         </div>
                     </div>
                 </div>

@@ -46,7 +46,6 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.StrategyEngine = void 0;
 exports.getStrategyEngine = getStrategyEngine;
-const config = __importStar(require("../../config"));
 const logger = __importStar(require("../../utils/logger"));
 // ML Predictor is currently loaded but is not actively used in the simplified balanced strategy.
 const ml_predictor_1 = require("./ml-predictor");
@@ -68,13 +67,7 @@ class StrategyEngine {
      * 獲取放貸策略預設配置，並融入用戶的自定義覆寫
      */
     getStrategyConfig() {
-        const defaultLendingConfig = {
-            frrMultiplier: 1.0, // 以 FRR 作為物理保護底線
-            maxRate: 0.008, // 日利率上限 (0.8%)
-            minRate: 0.0002, // 日利率下限 (0.02%)
-        };
         return {
-            ...defaultLendingConfig,
             rateStrategy: 'current_avg',
             periodDays: 2,
             useAllAvailable: true,
@@ -230,23 +223,25 @@ class StrategyEngine {
             currency,
             diagnostics: {},
         };
-        if (!marketData || !marketData.frr) {
+        if (!marketData) {
             result.reason = '無市場數據';
             return result;
         }
-        const frr = marketData.frr;
+        const frr = Number(marketData.frr) || 0;
         const asks = marketData.asks || [];
         const bids = marketData.bids || [];
         const ibrrResult = this.calculateIBRR(marketData, 5, currency);
         const ibrrRate = ibrrResult.ibrr;
-        // 🛡️ 鋼板級 FRR 底線保護
-        const frrRate = frr * stratConfig.frrMultiplier;
         const referenceRate = this._getReferenceRate(marketData, stratConfig);
-        let baseRate = Math.max(referenceRate, frrRate, stratConfig.minRate || 0);
-        baseRate = Math.min(baseRate, stratConfig.maxRate);
+        if (!Number.isFinite(referenceRate) || referenceRate <= 0) {
+            result.reason = '所選利率基準目前無有效數據';
+            return result;
+        }
+        // 掛單利率直接採用使用者選取的市場基準，不加 FRR、最低或最高利率修正。
+        const baseRate = referenceRate;
         result.diagnostics = {
             frr,
-            frrRate,
+            frrRate: frr,
             referenceRate,
             rateStrategy: stratConfig.rateStrategy,
             periodDays: stratConfig.periodDays,
@@ -271,16 +266,17 @@ class StrategyEngine {
         result.shouldOffer = true;
         // 依選定的利率基準與期限，把全部可用餘額放在同一筆掛單
         result.orders = this._calculateSingleOrder(availableAmount, baseRate, marketData, stratConfig, currency);
-        result.reason = `基準(${stratConfig.rateStrategy}): ${(referenceRate * 100).toFixed(4)}%, IBRR: ${(ibrrRate * 100).toFixed(4)}%, 最終: ${(baseRate * 100).toFixed(4)}%, 期限: ${stratConfig.periodDays}天`;
+        result.reason = `直接採用基準(${stratConfig.rateStrategy}): ${(baseRate * 100).toFixed(4)}%, 期限: ${stratConfig.periodDays}天`;
         return result;
     }
     _getReferenceRate(marketData, stratConfig) {
         const candidates = {
-            current_avg: marketData.currentTradeAvg || marketData.lastPrice || marketData.frr,
-            high_24h: marketData.high24h || marketData.high || marketData.lastPrice || marketData.frr,
-            high_30d: marketData.high30d || marketData.high || marketData.lastPrice || marketData.frr,
+            current_avg: marketData.currentTradeAvg,
+            high_24h: marketData.high24h,
+            high_30d: marketData.high30d,
         };
-        return Number(candidates[stratConfig.rateStrategy || 'current_avg'] || marketData.frr || 0);
+        const candidate = Number(candidates[stratConfig.rateStrategy || 'current_avg']);
+        return Number.isFinite(candidate) && candidate > 0 ? candidate : 0;
     }
     /**
      * 期限自適應選擇器
@@ -302,9 +298,7 @@ class StrategyEngine {
      * 以全部可用餘額建立單筆掛單
      */
     _calculateSingleOrder(totalAmount, rate, marketData, stratConfig, currency) {
-        // @ts-ignore
-        const minOffer = config.lending?.minOfferAmount || 150;
-        if (totalAmount < minOffer)
+        if (!Number.isFinite(totalAmount) || totalAmount <= 150)
             return [];
         return [{
                 amount: totalAmount,

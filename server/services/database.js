@@ -145,7 +145,7 @@ async function ensureUserBotSettingsTable() {
         ALTER TABLE bot_settings
             ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
         INSERT INTO bot_settings (key, value) VALUES
-            ('strategy', '{"mode": "balanced", "frrDelta": 0.0001, "minRate": 0.0001, "maxRate": 0.01}'),
+            ('strategy', '{"mode": "balanced", "frrDelta": 0.0001}'),
             ('risk', '{"reserveRatio": 0.1, "maxSingleAmount": 10000, "pauseOnVolatility": true}'),
             ('general', '{"currencies": ["USD"], "minOfferAmount": 150, "enabled": true}')
         ON CONFLICT (key) DO NOTHING;
@@ -243,10 +243,13 @@ async function ensureApplicationDataTables() {
             rate DECIMAL(20, 10) NOT NULL,
             period INTEGER,
             earned_at TIMESTAMPTZ DEFAULT NOW(),
+            ledger_id BIGINT,
             user_id UUID
         );
+        ALTER TABLE earnings ADD COLUMN IF NOT EXISTS ledger_id BIGINT;
         CREATE INDEX IF NOT EXISTS idx_earnings_currency_time ON earnings (currency, earned_at DESC);
         CREATE INDEX IF NOT EXISTS idx_earnings_user ON earnings (user_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_earnings_user_ledger ON earnings (user_id, ledger_id);
 
         CREATE TABLE IF NOT EXISTS operation_logs (
             id SERIAL PRIMARY KEY,
@@ -946,7 +949,7 @@ async function closeLoan(loanId, interestEarned, userId = null) {
                 SET status = 'closed', closed_at = NOW(), interest_earned = $2
                 WHERE loan_id = $1
             `;
-            const params = [loanId, interestEarned || 0];
+            const params = [loanId, interestEarned === null || interestEarned === undefined ? null : Number(interestEarned) || 0];
             if (userId) {
                 sql += ` AND user_id = $3`;
                 params.push(userId);
@@ -965,7 +968,7 @@ async function closeLoan(loanId, interestEarned, userId = null) {
     let q = db.from('funding_loans').update({
         status: 'closed',
         closed_at: new Date().toISOString(),
-        interest_earned: interestEarned || 0,
+        interest_earned: interestEarned === null || interestEarned === undefined ? null : Number(interestEarned) || 0,
     }).eq('loan_id', loanId);
     
     if (userId) q = q.eq('user_id', userId);
@@ -1011,12 +1014,14 @@ async function getActiveLoans(currency, userId = null) {
 
 async function saveEarning(earning, userId = null) {
     if (!requireUserId('saveEarning', userId)) return null;
+    await ensureApplicationDataTables();
 
     if (isPostgresConfigured()) {
         try {
             const sql = `
-                INSERT INTO earnings (currency, amount, rate, period, earned_at, user_id)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO earnings (currency, amount, rate, period, earned_at, ledger_id, user_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (user_id, ledger_id) DO NOTHING
                 RETURNING *;
             `;
             const params = [
@@ -1025,6 +1030,7 @@ async function saveEarning(earning, userId = null) {
                 earning.rate,
                 earning.period,
                 earning.earnedAt || new Date().toISOString(),
+                earning.ledgerId || null,
                 userId
             ];
             const res = await query(sql, params);
@@ -1045,11 +1051,73 @@ async function saveEarning(earning, userId = null) {
             rate: earning.rate,
             period: earning.period,
             earned_at: earning.earnedAt || new Date().toISOString(),
+            ledger_id: earning.ledgerId || null,
             user_id: userId,
-        })
+        }, { onConflict: 'user_id,ledger_id', ignoreDuplicates: true })
         .select();
     if (error) console.error('saveEarning error:', error);
     return data;
+}
+
+async function saveEarnings(earnings, userId = null) {
+    if (!requireUserId('saveEarnings', userId)) return [];
+    if (!Array.isArray(earnings) || earnings.length === 0) return [];
+    await ensureApplicationDataTables();
+
+    if (isPostgresConfigured()) {
+        const saved = [];
+        const chunkSize = 500;
+        for (let offset = 0; offset < earnings.length; offset += chunkSize) {
+            const chunk = earnings.slice(offset, offset + chunkSize);
+            const values = [];
+            const placeholders = chunk.map((earning, index) => {
+                const base = index * 7;
+                values.push(
+                    earning.currency,
+                    earning.amount,
+                    earning.rate,
+                    earning.period,
+                    earning.earnedAt || new Date().toISOString(),
+                    earning.ledgerId || null,
+                    userId,
+                );
+                return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`;
+            });
+            try {
+                const result = await query(`
+                    INSERT INTO earnings (currency, amount, rate, period, earned_at, ledger_id, user_id)
+                    VALUES ${placeholders.join(', ')}
+                    ON CONFLICT (user_id, ledger_id) DO NOTHING
+                    RETURNING *;
+                `, values);
+                saved.push(...(result.rows || []));
+            } catch (error) {
+                console.error('saveEarnings (pg) error:', error);
+            }
+        }
+        return saved;
+    }
+
+    const db = getSupabase();
+    if (!db) return [];
+    const rows = earnings.map(earning => ({
+        currency: earning.currency,
+        amount: earning.amount,
+        rate: earning.rate,
+        period: earning.period,
+        earned_at: earning.earnedAt || new Date().toISOString(),
+        ledger_id: earning.ledgerId || null,
+        user_id: userId,
+    }));
+    const { data, error } = await db
+        .from('earnings')
+        .upsert(rows, { onConflict: 'user_id,ledger_id', ignoreDuplicates: true })
+        .select();
+    if (error) {
+        console.error('saveEarnings error:', error);
+        return [];
+    }
+    return data || [];
 }
 
 async function getEarnings(currency, fromDate, toDate, userId = null) {
@@ -1938,7 +2006,7 @@ module.exports = {
     recordResearchExperiment, saveResearchModelArtifact, getActiveResearchModelArtifact, deleteOldResearchData,
     saveOffer, closeOffer, getActiveOffers,
     saveLoan, closeLoan, getActiveLoans,
-    saveEarning, getEarnings, deleteEarnings,
+    saveEarning, saveEarnings, getEarnings, deleteEarnings,
     saveRateSnapshot, saveRateSnapshots, getRateHistory, getDailyFRRHistory,
     ensureFundingTradesTable, upsertFundingTrades, getFundingTrades, getFundingTradeDiagnostics,
     getLatestFundingTradeTimestamp, getOldestFundingTradeTimestamp, deleteOldFundingTrades,

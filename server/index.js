@@ -9,7 +9,7 @@ const { isSingleAccount } = require('./config/single-account');
 const logger = require('./utils/logger');
 const authMiddleware = require('./middleware/auth');
 const { getBitfinexPublicWS } = require('./services/bitfinex/ws');
-const { initTelegram } = require('./services/telegram');
+const { initTelegram, initConfiguredUserTelegram } = require('./services/telegram');
 const metrics = require('./services/metrics');
 
 // 路由
@@ -295,6 +295,7 @@ async function startup() {
 
     // 初始化管理員全域 Telegram Bot (SaaS 模式下為選配，用戶各自的 Bot 在 manager.startBot 中初始化)
     initTelegram();
+    if (userSettingsReady) await initConfiguredUserTelegram();
 
     // 啟動自動恢復程序
     const { autoResumeAll } = require('./services/engine/manager');

@@ -5,9 +5,10 @@ const cron = require('node-cron');
 const { buildFundingMarketSummary } = require('./market-summary');
 const { RATE_STRATEGY_LABELS, PERIOD_DAYS, normalizeStrategyConfig } = require('./strategy-config');
 const { normalizeTelegramChatId } = require('./telegram-routing');
+const { getSharedTelegramBotToken } = require('./telegram-binding');
 const { getUsdToTwdRate, convertToTwd } = require('./exchange-rate');
 const { isPublicTickerFresh } = require('./bitfinex/ws');
-const { isSingleAccount } = require('../config/single-account');
+const { isSingleAccount, SINGLE_ACCOUNT_USER_ID } = require('../config/single-account');
 
 // One shared Bot and one private account route are supported in this deployment.
 const userBots = new Map();
@@ -18,6 +19,7 @@ let adminChatId = null;
 let sharedBotToken = null;
 let handlersReady = false;
 let dailySummaryJob = null;
+let actualFundingInterestJob = null;
 
 function ensureDailySummarySchedule() {
     if (dailySummaryJob) return;
@@ -32,6 +34,24 @@ function ensureDailySummarySchedule() {
         timezone: 'Asia/Taipei'
     });
     logger.info('telegram', '📅 已註冊每日放貸摘要排程 (每晚 23:55 台北時間)');
+}
+
+function ensureActualFundingInterestSchedule() {
+    if (actualFundingInterestJob) return;
+    actualFundingInterestJob = cron.schedule('*/10 * * * *', async () => {
+        const { syncUserEarnings } = require('./engine/sync');
+        const { getBot } = require('./engine/manager');
+        for (const [userId] of userBots) {
+            try {
+                const engine = getBot(userId);
+                if (engine) await engine._syncActualFundingEarnings(false, true);
+                else await syncUserEarnings(userId, false, true);
+            } catch (error) {
+                logger.error('telegram', `用戶 ${userId} 實際放貸利息同步失敗`, { error: error.message });
+            }
+        }
+    }, { timezone: 'Asia/Taipei' });
+    logger.info('telegram', '📒 已註冊實際放貸利息帳本同步排程（每 10 分鐘）');
 }
 
 /**
@@ -95,8 +115,23 @@ function initUserTelegram(userId, botToken, chatId) {
     }
 
     userBots.set(userId, { bot, chatId: normalizedChatId });
+    ensureActualFundingInterestSchedule();
     logger.info('telegram', `✅ 用戶 ${userId} 的 Telegram Chat ID 已註冊`);
     return bot;
+}
+
+async function initConfiguredUserTelegram() {
+    const db = require('./database');
+    try {
+        const settings = await db.getUserSettings(SINGLE_ACCOUNT_USER_ID);
+        if (!settings?.telegram_chat_id) return null;
+        const botToken = getSharedTelegramBotToken(settings);
+        if (!botToken) return null;
+        return initUserTelegram(SINGLE_ACCOUNT_USER_ID, botToken, settings.telegram_chat_id);
+    } catch (error) {
+        logger.error('telegram', '初始化已設定的 Telegram 路由失敗', { error: error.message });
+        return null;
+    }
 }
 
 /**
@@ -175,8 +210,6 @@ async function sendAlert(title, details, userId = null) {
  */
 async function sendTradeNotification(currency, amount, rate, period, userId = null) {
     const annualRate = rate * 365 * 100;
-    const estimatedInterest = amount * rate * period;
-    const netEstimatedInterest = estimatedInterest * 0.85; // 扣除 15% 手續費
 
     const msg = `🎉 <b>放貸合約成交</b>\n\n` +
         `🪙 <b>放貸幣種</b>: ${currency}\n` +
@@ -184,7 +217,7 @@ async function sendTradeNotification(currency, amount, rate, period, userId = nu
         `📉 <b>日利率</b>: <b>${(rate * 100).toFixed(4)}%/天</b>\n` +
         `📈 <b>年化利率</b>: <b>${annualRate.toFixed(2)}%</b>\n` +
         `⏳ <b>放貸天數</b>: <b>${period} 天</b>\n` +
-        `💰 <b>預估淨利息</b>: <b>$${netEstimatedInterest.toFixed(6)} USD</b> (已扣稅)`;
+        `💰 <b>利息通知</b>: 實際入帳後會依 Funding Wallet 帳本金額另行通知`;
 
     await sendMessage(msg, userId);
 }
@@ -210,17 +243,34 @@ async function sendOfferNotification(currency, amount, rate, period, userId = nu
 /**
  * 💸 發送放貸合約結束／本金返還通知
  */
-async function sendLoanRepaymentNotification(currency, principal, interestEarned, rate, period, userId = null) {
+async function sendLoanRepaymentNotification(currency, principal, rate, period, userId = null) {
     const normalizedPrincipal = Number(principal) || 0;
-    const normalizedInterest = Number(interestEarned) || 0;
     const normalizedRate = Number(rate) || 0;
     const msg = `💸 <b>放貸合約結束，本金已返還</b>\n\n` +
         `🪙 <b>放貸幣種</b>: ${currency}\n` +
         `💵 <b>返還本金</b>: $${normalizedPrincipal.toFixed(2)}\n` +
         `📉 <b>合約日利率</b>: ${(normalizedRate * 100).toFixed(4)}%/天\n` +
-        `⏳ <b>合約期限</b>: ${period} 天\n` +
-        `💰 <b>估算稅後利息</b>: $${normalizedInterest.toFixed(6)} USD`;
+        `⏳ <b>原合約期限</b>: ${period} 天\n` +
+        `💰 <b>利息</b>: 不再按原合約期限估算；實際入帳以「放貸利息實際入帳」帳本通知為準`;
 
+    await sendMessage(msg, userId);
+}
+
+/** Notify one actual positive interest credit recorded by the Bitfinex Funding Wallet ledger. */
+async function sendActualFundingInterestNotification(entry, userId = null) {
+    const currency = entry?.currency || 'USD';
+    const amount = Number(entry?.amount) || 0;
+    if (amount <= 0) return;
+    const earnedAt = new Date(entry.earnedAt || entry.timestamp || Date.now());
+    const earnedAtText = Number.isFinite(earnedAt.getTime())
+        ? earnedAt.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })
+        : '時間待同步';
+    const msg = `💰 <b>放貸利息實際入帳</b>\n\n` +
+        `🪙 <b>放貸幣種</b>: ${currency}\n` +
+        `💵 <b>實際入帳金額</b>: $${amount.toFixed(8)} ${currency}\n` +
+        `🕒 <b>帳本入帳時間</b>: ${earnedAtText}\n` +
+        `📒 <b>資料來源</b>: Bitfinex Funding Wallet Ledger\n` +
+        `ℹ️ 此金額是帳戶實際入帳紀錄；Bitfinex 帳本未提供單筆合約 ID，因此不拆分到個別合約。`;
     await sendMessage(msg, userId);
 }
 
@@ -706,7 +756,7 @@ function setupAdminBotHandlers(bot) {
         if (!(await isAuthorized(msg))) return;
         const helpText = `📖 <b>放貸機器人操作指南</b>\n\n` +
             `🤖 <b>指令清單</b>:\n` +
-            `• <code>/control</code> - 開啟視覺化控制面板。您可以一鍵切換複利、自動劃轉、暫停或恢復放貸，或者執行緊急避險撤單。\n` +
+            `• <code>/control</code> - 調整利率基準與放貸期限，並啟動或停止策略；複利固定開啟。\n` +
             `• <code>/status</code> - 即時查詢 USD 餘額、放貸中合約筆數、最新年化利率、以及今日/昨日/累計淨收益。\n\n` +
             `🛡️ <b>安全提示</b>:\n` +
             `• 本終端僅限管理員 Chat ID 操控，其他任何人均無法存取，請放心使用。`;
@@ -790,31 +840,19 @@ function setupAdminBotHandlers(bot) {
             switch (action) {
                 case 'toggle_compounding': {
                     if (engine) {
-                        const nextVal = !engine.compoundingEnabled;
-                        await engine.setCompounding(nextVal);
-                        await bot.answerCallbackQuery(query.id, { text: `♻️ 複利滾投已變更為: ${nextVal ? '開啟' : '關閉'}` });
+                        await engine.setCompounding(true);
                     } else {
-                        const nextVal = !(dbSettings?.compounding_enabled !== false);
                         await db.saveUserSettings(userId, {
-                            compounding_enabled: nextVal,
-                            ...(nextVal ? { compounding_hold_amount: 0 } : {}),
+                            compounding_enabled: true,
+                            compounding_hold_amount: 0,
                         });
-                        await bot.answerCallbackQuery(query.id, { text: `♻️ 複利設定已變更為: ${nextVal ? '開啟' : '關閉'} (將在啟動時套用)` });
                     }
+                    await bot.answerCallbackQuery(query.id, { text: '複利固定開啟' });
                     await updateAdminControlPanel(bot, chatId, messageId);
                     break;
                 }
                 case 'toggle_autotransfer': {
-                    if (engine) {
-                        const nextVal = !engine.autoTransferEnabled;
-                        engine.setAutoTransfer(nextVal, engine.autoTransferThreshold);
-                        await db.saveUserSettings(userId, { auto_transfer_enabled: nextVal });
-                        await bot.answerCallbackQuery(query.id, { text: `🔄 自動劃轉已變更為: ${nextVal ? '開啟' : '關閉'}` });
-                    } else {
-                        const nextVal = !(dbSettings?.auto_transfer_enabled || false);
-                        await db.saveUserSettings(userId, { auto_transfer_enabled: nextVal });
-                        await bot.answerCallbackQuery(query.id, { text: `🔄 劃轉設定已變更為: ${nextVal ? '開啟' : '關閉'} (將在啟動時套用)` });
-                    }
+                    await bot.answerCallbackQuery(query.id, { text: '自動劃轉已移除' });
                     await updateAdminControlPanel(bot, chatId, messageId);
                     break;
                 }
@@ -1038,14 +1076,8 @@ async function updateAdminControlPanel(bot, chatId, messageId) {
 }
 
 function getControlPanelText(engine, dbSettings = null) {
-    const compoundingEnabled = engine ? engine.compoundingEnabled : dbSettings?.compounding_enabled !== false;
-    const autoTransferEnabled = engine ? engine.autoTransferEnabled : dbSettings?.auto_transfer_enabled || false;
-    const autoTransferThreshold = engine ? engine.autoTransferThreshold : dbSettings?.auto_transfer_threshold || 500;
     const strategyConfig = normalizeStrategyConfig(dbSettings?.strategy_config || engine?.strategyConfig || {});
     const strategyLabel = RATE_STRATEGY_LABELS[strategyConfig.rateStrategy];
-    
-    const compounding = compoundingEnabled ? '開啟 ♻️' : '關閉 ⏸️';
-    const autoTransfer = autoTransferEnabled ? `開啟 🔄 ($${autoTransferThreshold})` : '關閉 ⏹️';
 
     let engineStatus = '⏹️ 已停止';
     if (engine && engine.running) {
@@ -1060,21 +1092,15 @@ function getControlPanelText(engine, dbSettings = null) {
         `⚙️ <b>引擎狀態</b>: <b>${engineStatus}</b>\n` +
         `🧠 <b>利率基準</b>: <b>${strategyLabel}</b>\n` +
         `📅 <b>放貸期限</b>: <b>${strategyConfig.periodDays} 天</b>\n` +
-        `💰 <b>掛單方式</b>: 一筆使用全部可投入餘額\n` +
-        `♻️ <b>複利滾投</b>: <b>${compounding}</b>\n` +
-        `🔄 <b>自動劃轉</b>: <b>${autoTransfer}</b>\n` +
+        `💰 <b>掛單方式</b>: 可用 USD 大於 $150 時，單筆投入全部可用餘額\n` +
+        `♻️ <b>複利滾投</b>: 固定開啟\n` +
         `──────────────────────\n` +
         `請點擊下方按鈕進行即時變更：`;
 }
 
 function getControlPanelKeyboard(engine, dbSettings = null) {
-    const compoundingEnabled = engine ? engine.compoundingEnabled : dbSettings?.compounding_enabled !== false;
-    const autoTransferEnabled = engine ? engine.autoTransferEnabled : dbSettings?.auto_transfer_enabled || false;
     const isRunning = engine ? engine.running && !engine.paused : false;
     const strategyConfig = normalizeStrategyConfig(dbSettings?.strategy_config || engine?.strategyConfig || {});
-
-    const compoundingLabel = compoundingEnabled ? '♻️ 關閉複利滾投' : '♻️ 開啟複利滾投';
-    const autoTransferLabel = autoTransferEnabled ? '🔄 關閉自動劃轉' : '🔄 開啟自動劃轉';
 
     const strategyButtons = Object.entries(RATE_STRATEGY_LABELS).map(([value, label]) => ({
         text: `${strategyConfig.rateStrategy === value ? '✅ ' : ''}${label}`,
@@ -1088,10 +1114,6 @@ function getControlPanelKeyboard(engine, dbSettings = null) {
     return {
         reply_markup: {
             inline_keyboard: [
-                [
-                    { text: compoundingLabel, callback_data: 'toggle_compounding' },
-                    { text: autoTransferLabel, callback_data: 'toggle_autotransfer' }
-                ],
                 [
                     isRunning
                         ? { text: '⏹️ 停止策略', callback_data: 'stop_engine' }
@@ -1120,6 +1142,7 @@ async function saveTelegramStrategySettings(userId, strategyConfig, wasRunning) 
 module.exports = {
     initTelegram,
     initUserTelegram,
+    initConfiguredUserTelegram,
     destroyUserTelegram,
     sendMessage,
     getTelegramRoutingStats,
@@ -1128,6 +1151,7 @@ module.exports = {
     sendTradeNotification,
     sendOfferNotification,
     sendLoanRepaymentNotification,
+    sendActualFundingInterestNotification,
     sendReofferNotification,
     buildUserSummaryMessage,
     buildGlobalSummaryMessage,

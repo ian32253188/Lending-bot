@@ -15,7 +15,6 @@ export default function StrategyPanel({ status, token, onRefresh }) {
     const [strategySettings, setStrategySettings] = useState({ rateStrategy: 'current_avg', periodDays: 2 });
     const [savedStrategySettings, setSavedStrategySettings] = useState({ rateStrategy: 'current_avg', periodDays: 2 });
 
-    const features = status?.features || {};
     const strategyActive = status?.running && !status?.paused;
     const strategyDirty = JSON.stringify(strategySettings) !== JSON.stringify(savedStrategySettings);
     const availableUsd = status?.wallets?.USD?.available;
@@ -86,14 +85,6 @@ export default function StrategyPanel({ status, token, onRefresh }) {
         return result;
     });
 
-    const toggleCompounding = () => apiCall(() =>
-        post('/api/lending/compounding', { enabled: !features.compounding })
-    );
-
-    const toggleAutoTransfer = () => apiCall(() =>
-        post('/api/lending/auto-transfer', { enabled: !features.autoTransfer, threshold: features.autoTransferThreshold || 500 })
-    );
-
     return (
         <div className="card strategy-panel">
             <div className="card-header">
@@ -120,7 +111,7 @@ export default function StrategyPanel({ status, token, onRefresh }) {
                             <p>
                                 {availableUsd == null
                                     ? '帳戶餘額尚未同步；機器人連線後會讀取可用 USD。'
-                                    : `Funding Wallet 可用 USD ${Number(availableUsd).toLocaleString('en-US', { maximumFractionDigits: 2 })}；${features.compounding ? '全部可用餘額' : '先保留已到期利息後的餘額'}會以單筆掛單，依「${strategyName}」基準及 ${strategySettings.periodDays} 天期限送出。`}
+                                    : `Funding Wallet 可用 USD ${Number(availableUsd).toLocaleString('en-US', { maximumFractionDigits: 2 })}；可用金額嚴格大於 $150 時，全部餘額會以單筆掛單，依「${strategyName}」基準及 ${strategySettings.periodDays} 天期限送出。複利固定開啟。`}
                             </p>
                             {strategyDirty && <p role="alert">策略有尚未儲存的變更。請先儲存，再啟動。</p>}
                             <div className="strategy-confirmation-actions">
@@ -169,32 +160,10 @@ export default function StrategyPanel({ status, token, onRefresh }) {
                         </button>
                     ))}
                 </div>
-                <div className="strategy-settings-footnote">掛單方式：將可投入金額以單筆掛單送出；關閉複利時會保留已到期利息。</div>
+                <div className="strategy-settings-footnote">掛單方式：Funding Wallet 可用 USD 嚴格大於 $150 時，將全部可用餘額以單筆掛單送出；利率直接採用所選基準，複利固定開啟。</div>
                 <button type="button" className="btn btn-primary btn-sm" onClick={saveStrategy} disabled={loading || !strategyDirty} style={{ marginTop: 10 }}>
                     {strategyDirty ? '儲存策略變更' : '策略已儲存'}
                 </button>
-            </div>
-
-            <div className="strategy-feature-actions">
-                <div className="strategy-settings-title">自動化選項</div>
-                <div className="strategy-feature-buttons">
-                    <button
-                        className={`btn btn-sm ${features.compounding ? 'btn-success' : 'btn-ghost'}`}
-                        onClick={toggleCompounding}
-                        disabled={loading}
-                        title="開啟時會把到期利息投入下一次放貸；關閉時保留利息。"
-                    >
-                        到期利息再投入：{features.compounding ? '開' : '關'}
-                    </button>
-                    <button
-                        className={`btn btn-sm ${features.autoTransfer ? 'btn-success' : 'btn-ghost'}`}
-                        onClick={toggleAutoTransfer}
-                        disabled={loading}
-                        title="Exchange 錢包餘額自動轉入 Funding"
-                    >
-                        自動轉帳：{features.autoTransfer ? '開' : '關'}
-                    </button>
-                </div>
             </div>
         </div>
     );

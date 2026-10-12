@@ -74,20 +74,6 @@ const config = {
         },
     },
 
-    strategy: {
-        defaultMode: 'simplified',
-        modes: {
-            simplified: {
-                frrMultiplier: 0.99, // FRR * 0.99 (加速成交)
-                minRate: 0.0002,     // 日利率 0.02% (基於原 balanced 模式)
-                maxRate: 0.008,
-                reserveRatio: 0,
-                orderUnit: 500,
-                defaultPeriod: 7,
-                pauseOnVolatility: true,
-            },
-        },
-    },
 };
 
 // 驗證必要設定

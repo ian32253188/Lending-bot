@@ -71,11 +71,7 @@ async function startBot(userId) {
 
         // 整合用戶設定
         const botSettings = {
-            compoundingEnabled: settings.compounding_enabled !== false,
-            compoundingHoldAmount: settings.compounding_hold_amount || 0,
-            autoTransferEnabled: settings.auto_transfer_enabled || false,
-            autoTransferThreshold: settings.auto_transfer_threshold || 500,
-            minOfferAmount: settings.min_offer_amount || 150,
+            compoundingEnabled: true,
             currencies: ['USD'],
             strategyConfig: settings.strategy_config || { mode: 'simplified' },
         };
@@ -87,7 +83,12 @@ async function startBot(userId) {
         // 3. 快取至記憶體，並更新資料庫狀態為 running
         activeRunners.set(userId, bot);
         metrics.setActiveEngines(activeRunners.size);
-        await db.saveUserSettings(userId, { status: 'running' });
+        await db.saveUserSettings(userId, {
+            status: 'running',
+            compounding_enabled: true,
+            compounding_hold_amount: 0,
+            auto_transfer_enabled: false,
+        });
 
         // 部署重啟時，保留使用者上次的暫停狀態；手動啟動暫停中的策略也必須由使用者明確恢復。
         if (persistedStatus === 'paused') {

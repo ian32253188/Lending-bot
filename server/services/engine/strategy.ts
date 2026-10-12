@@ -10,7 +10,6 @@
  * =========================================================================
  */
 
-import * as config from '../../config';
 import * as logger from '../../utils/logger';
 // ML Predictor is currently loaded but is not actively used in the simplified balanced strategy.
 import { getMLPredictor } from './ml-predictor';
@@ -74,9 +73,6 @@ export interface FundingOfferOrder {
 }
 
 export interface StrategyConfig {
-  frrMultiplier: number;
-  maxRate: number;
-  minRate?: number;
   rateStrategy?: 'current_avg' | 'high_24h' | 'high_30d';
   periodDays?: number;
   useAllAvailable?: boolean;
@@ -109,13 +105,7 @@ export class StrategyEngine {
    * 獲取放貸策略預設配置，並融入用戶的自定義覆寫
    */
   public getStrategyConfig(): StrategyConfig {
-    const defaultLendingConfig: StrategyConfig = {
-      frrMultiplier: 1.0,  // 以 FRR 作為物理保護底線
-      maxRate: 0.008,      // 日利率上限 (0.8%)
-      minRate: 0.0002,     // 日利率下限 (0.02%)
-    };
     return {
-      ...defaultLendingConfig,
       rateStrategy: 'current_avg',
       periodDays: 2,
       useAllAvailable: true,
@@ -292,28 +282,29 @@ export class StrategyEngine {
       diagnostics: {},
     };
 
-    if (!marketData || !marketData.frr) {
+    if (!marketData) {
       result.reason = '無市場數據';
       return result;
     }
 
-    const frr = marketData.frr;
+    const frr = Number(marketData.frr) || 0;
     const asks = marketData.asks || [];
     const bids = marketData.bids || [];
 
     const ibrrResult = this.calculateIBRR(marketData, 5, currency);
     const ibrrRate = ibrrResult.ibrr;
     
-    // 🛡️ 鋼板級 FRR 底線保護
-    const frrRate = frr * stratConfig.frrMultiplier;
-
     const referenceRate = this._getReferenceRate(marketData, stratConfig);
-    let baseRate = Math.max(referenceRate, frrRate, stratConfig.minRate || 0);
-    baseRate = Math.min(baseRate, stratConfig.maxRate);
+    if (!Number.isFinite(referenceRate) || referenceRate <= 0) {
+      result.reason = '所選利率基準目前無有效數據';
+      return result;
+    }
+    // 掛單利率直接採用使用者選取的市場基準，不加 FRR、最低或最高利率修正。
+    const baseRate = referenceRate;
 
     result.diagnostics = {
       frr,
-      frrRate,
+      frrRate: frr,
       referenceRate,
       rateStrategy: stratConfig.rateStrategy,
       periodDays: stratConfig.periodDays,
@@ -343,18 +334,19 @@ export class StrategyEngine {
       availableAmount, baseRate, marketData, stratConfig, currency
     );
 
-    result.reason = `基準(${stratConfig.rateStrategy}): ${(referenceRate * 100).toFixed(4)}%, IBRR: ${(ibrrRate * 100).toFixed(4)}%, 最終: ${(baseRate * 100).toFixed(4)}%, 期限: ${stratConfig.periodDays}天`;
+    result.reason = `直接採用基準(${stratConfig.rateStrategy}): ${(baseRate * 100).toFixed(4)}%, 期限: ${stratConfig.periodDays}天`;
 
     return result;
   }
 
   public _getReferenceRate(marketData: MarketData, stratConfig: StrategyConfig): number {
     const candidates: Record<string, number | undefined> = {
-      current_avg: marketData.currentTradeAvg || marketData.lastPrice || marketData.frr,
-      high_24h: (marketData as any).high24h || marketData.high || marketData.lastPrice || marketData.frr,
-      high_30d: (marketData as any).high30d || marketData.high || marketData.lastPrice || marketData.frr,
+      current_avg: marketData.currentTradeAvg,
+      high_24h: (marketData as any).high24h,
+      high_30d: (marketData as any).high30d,
     };
-    return Number(candidates[stratConfig.rateStrategy || 'current_avg'] || marketData.frr || 0);
+    const candidate = Number(candidates[stratConfig.rateStrategy || 'current_avg']);
+    return Number.isFinite(candidate) && candidate > 0 ? candidate : 0;
   }
 
   /**
@@ -387,9 +379,7 @@ export class StrategyEngine {
     stratConfig: StrategyConfig,
     currency: string
   ): FundingOfferOrder[] {
-    // @ts-ignore
-    const minOffer = config.lending?.minOfferAmount || 150;
-    if (totalAmount < minOffer) return [];
+    if (!Number.isFinite(totalAmount) || totalAmount <= 150) return [];
 
     return [{
       amount: totalAmount,

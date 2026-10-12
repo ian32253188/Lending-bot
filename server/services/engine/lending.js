@@ -7,6 +7,8 @@ const { getBitfinexPublicWS, createBitfinexPrivateWS, isPublicTickerFresh } = re
 const { getStrategyEngine } = require('./strategy');
 const { getCachedFundingMarketSummary } = require('../market-summary');
 const { classifyPrivateApiError } = require('../private-account-status');
+const { normalizeStrategyConfig } = require('../strategy-config');
+const MIN_ORDER_AMOUNT = 150;
 
 class LendingBot {
     constructor(userId, credentials, settings = {}) {
@@ -19,13 +21,9 @@ class LendingBot {
         this.monitorOnly = false;
 
         // 用戶專屬策略設定
-        this.compoundingEnabled = settings.compoundingEnabled !== false;
-        this.compoundingHoldAmount = Math.max(0, Number(settings.compoundingHoldAmount) || 0);
-        this.autoTransferEnabled = settings.autoTransferEnabled || false;
-        this.autoTransferThreshold = settings.autoTransferThreshold || 500;
-        this.minOfferAmount = settings.minOfferAmount || 150;
+        this.compoundingEnabled = true;
         this.currencies = ['USD'];
-        this.strategyConfig = settings.strategyConfig || { mode: 'simplified' };
+        this.strategyConfig = normalizeStrategyConfig(settings.strategyConfig || { mode: 'simplified' });
 
         // 用戶運行狀態快取
         this.state = {
@@ -68,6 +66,7 @@ class LendingBot {
 
         this.bfxWs = null;
         this.decisionTimer = null;
+        this.pendingEarningsSyncTimer = null;
     }
 
     /**
@@ -121,6 +120,10 @@ class LendingBot {
         if (this.decisionTimer) {
             clearInterval(this.decisionTimer);
             this.decisionTimer = null;
+        }
+        if (this.pendingEarningsSyncTimer) {
+            clearTimeout(this.pendingEarningsSyncTimer);
+            this.pendingEarningsSyncTimer = null;
         }
 
         // 清除事件防抖 timer
@@ -185,25 +188,26 @@ class LendingBot {
         }
     }
 
-    async setCompounding(enabled) {
-        const nextEnabled = Boolean(enabled);
-        const nextHoldAmount = nextEnabled ? 0 : this.compoundingHoldAmount;
+    async setCompounding() {
         await db.saveUserSettings(this.userId, {
-            compounding_enabled: nextEnabled,
-            compounding_hold_amount: nextHoldAmount,
+            compounding_enabled: true,
+            compounding_hold_amount: 0,
         });
-        this.compoundingEnabled = nextEnabled;
-        this.compoundingHoldAmount = nextHoldAmount;
-        logger.info('engine', `複利模式已${nextEnabled ? '開啟' : '關閉'}`, this.userId);
-        if (nextEnabled && this.running && !this.paused) {
+        this.compoundingEnabled = true;
+        logger.info('engine', '複利固定開啟', this.userId);
+        if (this.running && !this.paused) {
             for (const currency of this.currencies) this._debouncedDecision(currency, 1000);
         }
     }
 
-    setAutoTransfer(enabled, threshold = 500) {
-        this.autoTransferEnabled = enabled;
-        this.autoTransferThreshold = threshold;
-        logger.info('engine', `自動轉帳已${enabled ? '開啟' : '關閉'}，門檻: ${threshold}`, this.userId);
+    async _syncActualFundingEarnings(force = false, notify = true) {
+        const { syncUserEarnings } = require('./sync');
+        const entries = await syncUserEarnings(this.userId, force, notify);
+        for (const entry of entries || []) {
+            const currency = entry.currency || 'USD';
+            this.state.stats.totalEarned[currency] = (this.state.stats.totalEarned[currency] || 0) + (Number(entry.amount) || 0);
+        }
+        return entries || [];
     }
 
     /**
@@ -390,17 +394,12 @@ class LendingBot {
         // fUSD 的三種策略基準來自公開成交/歷史資料；使用 60 秒快取，避免每個決策週期重複打 API。
         if (currency === 'USD') {
             const summary = await getCachedFundingMarketSummary({ publicWs, db });
-            const toDailyRate = value => Number.isFinite(Number(value)) ? Number(value) / (365 * 100) : null;
             marketData = {
                 ...marketData,
-                currentTradeAvg: summary.currentRate,
+                currentTradeAvg: summary.currentRateSource === 'funding_trades_24h_vwap' ? summary.currentRate : null,
                 high24h: summary.high24h,
                 high30d: summary.high30d,
             };
-            // 避免摘要 API 暫時無資料時覆寫 WebSocket 的即時行情。
-            if (!marketData.currentTradeAvg) marketData.currentTradeAvg = toDailyRate(summary.currentApy);
-            if (!marketData.high24h) marketData.high24h = toDailyRate(summary.high24hApy);
-            if (!marketData.high30d) marketData.high30d = toDailyRate(summary.high30dApy);
         }
 
         const strategy = getStrategyEngine();
@@ -425,14 +424,7 @@ class LendingBot {
         }
 
         const available = this.state.wallets[currency]?.available || 0;
-        if (!this.compoundingEnabled && this.state.accountDataComplete && available < this.compoundingHoldAmount) {
-            this.compoundingHoldAmount = available;
-            db.saveUserSettings(this.userId, { compounding_hold_amount: available }).catch(error => {
-                logger.warn('engine', '更新保留利息金額失敗', { userId: this.userId, error: error.message });
-            });
-        }
-        const heldInterest = this.compoundingEnabled ? 0 : Math.min(available, this.compoundingHoldAmount);
-        const nominalAvailable = Math.max(0, available - heldInterest);
+        const nominalAvailable = Math.max(0, available);
 
         // 核心：使用使用者個人的策略設定 (strategyConfig) 計算最佳掛單方案
         const optimalResult = strategy.calculateOptimalRate(marketData, currency, nominalAvailable, this.strategyConfig);
@@ -445,8 +437,8 @@ class LendingBot {
             available,
         };
 
-        const meetsMinimumOrder = nominalAvailable >= this.minOfferAmount;
-        const placeableOrder = (optimalResult.orders || []).some(order => Number(order.amount) >= this.minOfferAmount);
+        const meetsMinimumOrder = nominalAvailable > MIN_ORDER_AMOUNT;
+        const placeableOrder = (optimalResult.orders || []).some(order => Number(order.amount) > MIN_ORDER_AMOUNT);
         const strategySettings = Object.fromEntries(Object.entries(this.strategyConfig || {}).sort(([a], [b]) => a.localeCompare(b)));
         const strategyVersion = `live-${crypto.createHash('sha256').update(JSON.stringify(strategySettings)).digest('hex').slice(0, 12)}`;
         if (typeof db.saveResearchDecisions === 'function') db.saveResearchDecisions([{
@@ -459,7 +451,7 @@ class LendingBot {
                 bestAsk: Number(marketData.asks?.[0]?.rate) || null,
             },
             predictedRate: Number(optimalResult.diagnostics?.finalRate) || null,
-            floorRate: Number(optimalResult.diagnostics?.frrRate) || null,
+            floorRate: null,
             recommendation: meetsMinimumOrder && placeableOrder ? 'offer' : 'wait',
             reason: !meetsMinimumOrder ? 'below_minimum_order' : placeableOrder ? 'current_live_strategy' : 'strategy_wait',
             meetsMinimumOrder,
@@ -478,7 +470,7 @@ class LendingBot {
 
         // 進行掛單執行（加入微幅隨機延遲平滑流量）
         for (const order of optimalResult.orders) {
-            if (order.amount < this.minOfferAmount) continue;
+            if (Number(order.amount) <= MIN_ORDER_AMOUNT) continue;
 
             const submitDelay = Math.random() * 500;
             if (submitDelay > 0) {
@@ -561,7 +553,7 @@ class LendingBot {
                     };
 
                     const newAvailable = wallet.available || 0;
-                    if (newAvailable > prevAvailable && newAvailable >= this.minOfferAmount) {
+                    if (newAvailable > prevAvailable && newAvailable > MIN_ORDER_AMOUNT) {
                         logger.info('engine', `⚡ 錢包 ${cur} 新進可用資金 +${(newAvailable - prevAvailable).toFixed(2)}，觸發即刻掛單`, this.userId);
                         this._debouncedDecision(cur, 1500);
                     }
@@ -760,25 +752,22 @@ class LendingBot {
         }
 
         const principal = Math.abs(Number(loan.amount) || 0);
-        const rawInterest = principal * (Number(loan.rate) || 0) * (Number(loan.period) || 0);
-        const interestEarned = rawInterest * 0.85;
-        void db.closeLoan(loan.id, interestEarned, this.userId);
-        this.state.stats.totalEarned[currency] = (this.state.stats.totalEarned[currency] || 0) + interestEarned;
-        logger.info('engine', `放貸到期 ${currency}，估算稅後利息 ${interestEarned.toFixed(4)}`, this.userId);
+        void db.closeLoan(loan.id, null, this.userId);
+        logger.info('engine', `放貸合約結束 ${currency}，本金 ${principal.toFixed(4)} 已返還；實際利息以 Ledger 入帳為準`, this.userId);
         const { sendLoanRepaymentNotification } = require('../telegram');
-        sendLoanRepaymentNotification(currency, principal, interestEarned, loan.rate, loan.period, this.userId)
+        sendLoanRepaymentNotification(currency, principal, loan.rate, loan.period, this.userId)
             .catch(error => logger.warn('telegram', '發送本金返還通知失敗', { userId: this.userId, error: error.message }));
 
-        if (this.compoundingEnabled) {
-            if (this.running && !this.paused) this._debouncedDecision(currency, 2000);
-            return;
-        }
+        // Ledger 更新可能稍晚於合約關閉事件，稍後強制同步；實際入帳通知只使用 Ledger 金額。
+        if (this.pendingEarningsSyncTimer) clearTimeout(this.pendingEarningsSyncTimer);
+        this.pendingEarningsSyncTimer = setTimeout(() => {
+            this.pendingEarningsSyncTimer = null;
+            this._syncActualFundingEarnings(true, true).catch(error => {
+                logger.warn('engine', '合約結束後同步實際利息失敗', { userId: this.userId, error: error.message });
+            });
+        }, 1500);
 
-        // 關閉複利時，保留利息；到期本金仍可照常重新放貸。
-        this.compoundingHoldAmount += interestEarned;
-        db.saveUserSettings(this.userId, { compounding_hold_amount: this.compoundingHoldAmount }).catch(error => {
-            logger.warn('engine', '儲存保留利息金額失敗', { userId: this.userId, error: error.message });
-        });
+        if (this.running && !this.paused) this._debouncedDecision(currency, 2000);
     }
 
     getStatus() {
@@ -818,9 +807,7 @@ class LendingBot {
             accountDataError: this.state.accountDataError,
             accountDataErrorCode: this.state.accountDataErrorCode,
             monitorOnly: this.monitorOnly,
-            compounding: this.compoundingEnabled,
-            autoTransfer: this.autoTransferEnabled,
-            autoTransferThreshold: this.autoTransferThreshold,
+            compounding: true,
             strategyMode: 'balanced',
             connected: this.bfxWs ? this.bfxWs.isConnected() : false,
             authenticated: this.bfxWs ? this.bfxWs.isAuthenticated() : false,
@@ -842,9 +829,7 @@ class LendingBot {
             marketData: publicWs.marketData,
             strategy: strategyStatus,
             features: {
-                compounding: this.compoundingEnabled,
-                autoTransfer: this.autoTransferEnabled,
-                autoTransferThreshold: this.autoTransferThreshold,
+                compounding: true,
             },
             strategySettings: {
                 rateStrategy: userStrategyConfig.rateStrategy || 'current_avg',
@@ -882,9 +867,6 @@ function getLendingEngine() {
         };
         const settings = {
             compoundingEnabled: true,
-            autoTransferEnabled: false,
-            autoTransferThreshold: 500,
-            minOfferAmount: config.lending.minOfferAmount,
             currencies: config.lending.currencies,
         };
         legacyInstance = new LendingBot('legacy_admin', credentials, settings);

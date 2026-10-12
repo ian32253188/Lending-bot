@@ -20,6 +20,7 @@ const DEFAULT_STRATEGY_CONFIG = Object.freeze({
 
 function normalizeStrategyConfig(input = {}) {
     const source = input && typeof input === 'object' ? input : {};
+    const { minRate, maxRate, frrMultiplier, ...savedOptions } = source;
     const rateStrategy = Object.prototype.hasOwnProperty.call(RATE_STRATEGY_LABELS, source.rateStrategy)
         ? source.rateStrategy
         : DEFAULT_STRATEGY_CONFIG.rateStrategy;
@@ -29,7 +30,7 @@ function normalizeStrategyConfig(input = {}) {
         : DEFAULT_STRATEGY_CONFIG.periodDays;
 
     return {
-        ...source,
+        ...savedOptions,
         rateStrategy,
         periodDays: normalizedPeriod,
         useAllAvailable: true,

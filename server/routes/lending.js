@@ -20,6 +20,12 @@ router.get('/settings', async (req, res) => {
             return res.json(null);
         }
         settings.lending_currencies = ['USD'];
+        settings.compounding_enabled = true;
+        settings.strategy_config = normalizeStrategyConfig(settings.strategy_config || DEFAULT_STRATEGY_CONFIG);
+        delete settings.compounding_hold_amount;
+        delete settings.min_offer_amount;
+        delete settings.auto_transfer_enabled;
+        delete settings.auto_transfer_threshold;
         // 安全處理：遮蔽 API 金鑰與 Secret 避免前台明文洩漏
         if (settings.bitfinex_api_key) {
             settings.bitfinex_api_key = settings.bitfinex_api_key.substring(0, 8) + '...';
@@ -44,13 +50,18 @@ router.post('/settings', async (req, res) => {
         const userId = req.user.id;
         const newSettings = { ...(req.body || {}) };
         newSettings.lending_currencies = ['USD'];
-        if (newSettings.compounding_enabled === true) {
-            newSettings.compounding_hold_amount = 0;
-        }
+        newSettings.compounding_enabled = true;
+        newSettings.compounding_hold_amount = 0;
+        newSettings.auto_transfer_enabled = false;
+        delete newSettings.min_offer_amount;
+        delete newSettings.auto_transfer_threshold;
         const { encrypt } = require('../utils/crypto');
         
         // 如果使用者沒有輸入新金鑰（傳入遮蔽的值），則保留原本的舊金鑰
         const existingSettings = await db.getUserSettings(userId);
+        if (Object.prototype.hasOwnProperty.call(newSettings, 'strategy_config')) {
+            newSettings.strategy_config = normalizeStrategyConfig(newSettings.strategy_config);
+        }
         if (existingSettings) {
             if (newSettings.bitfinex_api_key && newSettings.bitfinex_api_key.includes('...')) {
                 newSettings.bitfinex_api_key = existingSettings.bitfinex_api_key;
@@ -233,17 +244,16 @@ router.post('/strategy-settings', async (req, res) => {
 router.post('/compounding', async (req, res) => {
     try {
         const userId = req.user.id;
-        const enabled = Boolean(req.body?.enabled);
         const engine = getBot(userId);
         if (engine) {
-            await engine.setCompounding(enabled);
+            await engine.setCompounding(true);
         } else {
             await db.saveUserSettings(userId, {
-                compounding_enabled: enabled,
-                ...(enabled ? { compounding_hold_amount: 0 } : {}),
+                compounding_enabled: true,
+                compounding_hold_amount: 0,
             });
         }
-        res.json({ message: `複利模式已${enabled ? '開啟' : '關閉'}`, compounding: !!enabled });
+        res.json({ message: '複利固定開啟', compounding: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -251,27 +261,7 @@ router.post('/compounding', async (req, res) => {
 
 // 自動轉帳設定
 router.post('/auto-transfer', async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { enabled, threshold } = req.body;
-        
-        await db.saveUserSettings(userId, {
-            auto_transfer_enabled: !!enabled,
-            auto_transfer_threshold: threshold || 500
-        });
-
-        const engine = getBot(userId);
-        if (engine) {
-            engine.setAutoTransfer(!!enabled, threshold || 500);
-        }
-        res.json({
-            message: `自動轉帳已${enabled ? '開啟' : '關閉'}`,
-            autoTransfer: !!enabled,
-            threshold: threshold || 500,
-        });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    res.status(410).json({ error: '自動劃轉功能已移除。' });
 });
 
 // 手動提交 Funding Offer
