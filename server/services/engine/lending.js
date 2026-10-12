@@ -500,6 +500,9 @@ class LendingBot {
                 );
                 this.state.stats.offersPlaced++;
                 logger.info('engine', `📝 掛單 ${currency} $${order.amount.toFixed(0)} @ ${(order.rate * 100).toFixed(4)}%/天，期限 ${order.period} 天`, this.userId);
+                const { sendOfferNotification } = require('../telegram');
+                sendOfferNotification(currency, order.amount, order.rate, order.period, this.userId)
+                    .catch(error => logger.warn('telegram', '發送新掛單通知失敗', { userId: this.userId, error: error.message }));
             } catch (err) {
                 const isBalanceError = err.message.includes('not enough') || err.message.includes('balance');
                 const errorMsg = `❌ 掛單失敗 ${currency}: $${order.amount.toFixed(0)}，錯誤: ${err.message}`;
@@ -752,8 +755,9 @@ class LendingBot {
         if (this._closedLoanIds.size > 1000) this._closedLoanIds.delete(this._closedLoanIds.values().next().value);
 
         const currency = loan.currency;
-        if (!this.state.activeCredits[currency]) return;
-        this.state.activeCredits[currency] = this.state.activeCredits[currency].filter(row => String(row.id) !== loanKey);
+        if (this.state.activeCredits[currency]) {
+            this.state.activeCredits[currency] = this.state.activeCredits[currency].filter(row => String(row.id) !== loanKey);
+        }
 
         const principal = Math.abs(Number(loan.amount) || 0);
         const rawInterest = principal * (Number(loan.rate) || 0) * (Number(loan.period) || 0);
@@ -761,6 +765,9 @@ class LendingBot {
         void db.closeLoan(loan.id, interestEarned, this.userId);
         this.state.stats.totalEarned[currency] = (this.state.stats.totalEarned[currency] || 0) + interestEarned;
         logger.info('engine', `放貸到期 ${currency}，估算稅後利息 ${interestEarned.toFixed(4)}`, this.userId);
+        const { sendLoanRepaymentNotification } = require('../telegram');
+        sendLoanRepaymentNotification(currency, principal, interestEarned, loan.rate, loan.period, this.userId)
+            .catch(error => logger.warn('telegram', '發送本金返還通知失敗', { userId: this.userId, error: error.message }));
 
         if (this.compoundingEnabled) {
             if (this.running && !this.paused) this._debouncedDecision(currency, 2000);

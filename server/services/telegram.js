@@ -190,6 +190,41 @@ async function sendTradeNotification(currency, amount, rate, period, userId = nu
 }
 
 /**
+ * 📤 發送策略掛單已送出通知（尚未代表成交）
+ */
+async function sendOfferNotification(currency, amount, rate, period, userId = null) {
+    const normalizedAmount = Number(amount) || 0;
+    const normalizedRate = Number(rate) || 0;
+    const annualRate = normalizedRate * 365 * 100;
+    const msg = `📤 <b>放貸策略已送出新掛單</b>\n\n` +
+        `🪙 <b>放貸幣種</b>: ${currency}\n` +
+        `💵 <b>掛單金額</b>: $${normalizedAmount.toFixed(2)}\n` +
+        `📉 <b>日利率</b>: <b>${(normalizedRate * 100).toFixed(4)}%/天</b>\n` +
+        `📈 <b>年化利率</b>: <b>${annualRate.toFixed(2)}%</b>\n` +
+        `⏳ <b>掛單期限</b>: <b>${period} 天</b>\n` +
+        `⌛ <b>狀態</b>: 等待成交`;
+
+    await sendMessage(msg, userId);
+}
+
+/**
+ * 💸 發送放貸合約結束／本金返還通知
+ */
+async function sendLoanRepaymentNotification(currency, principal, interestEarned, rate, period, userId = null) {
+    const normalizedPrincipal = Number(principal) || 0;
+    const normalizedInterest = Number(interestEarned) || 0;
+    const normalizedRate = Number(rate) || 0;
+    const msg = `💸 <b>放貸合約結束，本金已返還</b>\n\n` +
+        `🪙 <b>放貸幣種</b>: ${currency}\n` +
+        `💵 <b>返還本金</b>: $${normalizedPrincipal.toFixed(2)}\n` +
+        `📉 <b>合約日利率</b>: ${(normalizedRate * 100).toFixed(4)}%/天\n` +
+        `⏳ <b>合約期限</b>: ${period} 天\n` +
+        `💰 <b>估算稅後利息</b>: $${normalizedInterest.toFixed(6)} USD`;
+
+    await sendMessage(msg, userId);
+}
+
+/**
  * 🔄 發送自動降息重掛通知
  * @param {string|null} userId - 目標用戶 ID (最後一個參數)
  */
@@ -1091,6 +1126,8 @@ module.exports = {
     sendDailySummary,
     sendAlert,
     sendTradeNotification,
+    sendOfferNotification,
+    sendLoanRepaymentNotification,
     sendReofferNotification,
     buildUserSummaryMessage,
     buildGlobalSummaryMessage,
