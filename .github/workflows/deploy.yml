@@ -5,6 +5,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: 'Skip npm tests for this deployment'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build-and-push:
@@ -30,7 +36,12 @@ jobs:
         run: npm ci --prefix client
 
       - name: Run tests
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_tests != true }}
         run: npm run test
+
+      - name: Confirm tests were skipped by request
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_tests == true }}
+        run: echo "Tests skipped for this manually requested deployment."
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

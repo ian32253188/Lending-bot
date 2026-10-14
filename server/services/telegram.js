@@ -25,7 +25,7 @@ function ensureDailySummarySchedule() {
     if (dailySummaryJob) return;
 
     // 每日摘要與管理員 Bot 無關；SaaS 使用者只設定自己的 Bot 時也必須啟動
-    dailySummaryJob = cron.schedule('55 23 * * *', () => {
+    dailySummaryJob = cron.schedule('0 7 * * *', () => {
         logger.info('telegram', '⏰ 觸發每日放貸摘要定時任務...');
         sendDailySummary().catch(err => {
             logger.error('telegram', '定時發送每日摘要失敗', { error: err.message });
@@ -33,7 +33,7 @@ function ensureDailySummarySchedule() {
     }, {
         timezone: 'Asia/Taipei'
     });
-    logger.info('telegram', '📅 已註冊每日放貸摘要排程 (每晚 23:55 台北時間)');
+    logger.info('telegram', '📅 已註冊每日放貸摘要排程 (每天 07:00 台北時間)');
 }
 
 function ensureActualFundingInterestSchedule() {
@@ -196,7 +196,7 @@ function getTelegramRoutingStats() {
  * @param {string|null} userId - 目標用戶 ID
  */
 async function sendAlert(title, details, userId = null) {
-    const msg = `🚨 <b>${title}</b>\n\n${details}\n\n⏰ 警報時間：${new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}`;
+    const msg = `${title}\n\n${details}\n警報時間：${new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}`;
     await sendMessage(msg, userId);
 }
 
@@ -211,13 +211,10 @@ async function sendAlert(title, details, userId = null) {
 async function sendTradeNotification(currency, amount, rate, period, userId = null) {
     const annualRate = rate * 365 * 100;
 
-    const msg = `🎉 <b>放貸合約成交</b>\n\n` +
-        `🪙 <b>放貸幣種</b>: ${currency}\n` +
-        `💵 <b>成交金額</b>: $${amount.toFixed(2)}\n` +
-        `📉 <b>日利率</b>: <b>${(rate * 100).toFixed(4)}%/天</b>\n` +
-        `📈 <b>年化利率</b>: <b>${annualRate.toFixed(2)}%</b>\n` +
-        `⏳ <b>放貸天數</b>: <b>${period} 天</b>\n` +
-        `💰 <b>利息通知</b>: 實際入帳後會依 Funding Wallet 帳本金額另行通知`;
+    const msg = `🎉 放貸合約成交\n\n` +
+        `成交金額: $${amount.toFixed(2)}\n` +
+        `年化利率: ${annualRate.toFixed(2)}%\n` +
+        `放貸天數: ${period} 天`;
 
     await sendMessage(msg, userId);
 }
@@ -229,13 +226,10 @@ async function sendOfferNotification(currency, amount, rate, period, userId = nu
     const normalizedAmount = Number(amount) || 0;
     const normalizedRate = Number(rate) || 0;
     const annualRate = normalizedRate * 365 * 100;
-    const msg = `📤 <b>放貸策略已送出新掛單</b>\n\n` +
-        `🪙 <b>放貸幣種</b>: ${currency}\n` +
-        `💵 <b>掛單金額</b>: $${normalizedAmount.toFixed(2)}\n` +
-        `📉 <b>日利率</b>: <b>${(normalizedRate * 100).toFixed(4)}%/天</b>\n` +
-        `📈 <b>年化利率</b>: <b>${annualRate.toFixed(2)}%</b>\n` +
-        `⏳ <b>掛單期限</b>: <b>${period} 天</b>\n` +
-        `⌛ <b>狀態</b>: 等待成交`;
+    const msg = `📤 放貸策略已送出新掛單\n\n` +
+        `掛單金額: $${normalizedAmount.toFixed(2)}\n` +
+        `年化利率: ${annualRate.toFixed(2)}%\n` +
+        `掛單期限: ${period} 天`;
 
     await sendMessage(msg, userId);
 }
@@ -245,13 +239,8 @@ async function sendOfferNotification(currency, amount, rate, period, userId = nu
  */
 async function sendLoanRepaymentNotification(currency, principal, rate, period, userId = null) {
     const normalizedPrincipal = Number(principal) || 0;
-    const normalizedRate = Number(rate) || 0;
-    const msg = `💸 <b>放貸合約結束，本金已返還</b>\n\n` +
-        `🪙 <b>放貸幣種</b>: ${currency}\n` +
-        `💵 <b>返還本金</b>: $${normalizedPrincipal.toFixed(2)}\n` +
-        `📉 <b>合約日利率</b>: ${(normalizedRate * 100).toFixed(4)}%/天\n` +
-        `⏳ <b>原合約期限</b>: ${period} 天\n` +
-        `💰 <b>利息</b>: 不再按原合約期限估算；實際入帳以「放貸利息實際入帳」帳本通知為準`;
+    const msg = `💸 放貸合約結束，本金已返還\n\n` +
+        `返還本金: $${normalizedPrincipal.toFixed(2)}`;
 
     await sendMessage(msg, userId);
 }
@@ -261,16 +250,8 @@ async function sendActualFundingInterestNotification(entry, userId = null) {
     const currency = entry?.currency || 'USD';
     const amount = Number(entry?.amount) || 0;
     if (amount <= 0) return;
-    const earnedAt = new Date(entry.earnedAt || entry.timestamp || Date.now());
-    const earnedAtText = Number.isFinite(earnedAt.getTime())
-        ? earnedAt.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })
-        : '時間待同步';
-    const msg = `💰 <b>放貸利息實際入帳</b>\n\n` +
-        `🪙 <b>放貸幣種</b>: ${currency}\n` +
-        `💵 <b>實際入帳金額</b>: $${amount.toFixed(8)} ${currency}\n` +
-        `🕒 <b>帳本入帳時間</b>: ${earnedAtText}\n` +
-        `📒 <b>資料來源</b>: Bitfinex Funding Wallet Ledger\n` +
-        `ℹ️ 此金額是帳戶實際入帳紀錄；Bitfinex 帳本未提供單筆合約 ID，因此不拆分到個別合約。`;
+    const msg = `💰 放貸利息實際入帳\n\n` +
+        `實際入帳金額: $${amount.toFixed(8)} ${currency}`;
     await sendMessage(msg, userId);
 }
 
@@ -299,56 +280,61 @@ async function sendReofferNotification(currency, amount, oldRate, newRate, perio
 async function sendDailySummary() {
     const db = require('./database');
     const { getBot } = require('./engine/manager');
-    const { getStrategyEngine } = require('./engine/strategy');
     const { getBitfinexPublicWS } = require('./bitfinex/ws');
-    const strategy = getStrategyEngine();
     const publicWs = getBitfinexPublicWS();
     const marketSummary = await buildFundingMarketSummary({ publicWs, db });
 
     // 收集所有需要發送摘要的 targets: (userId, engine)
     const targets = [];
 
-    // 1. 所有有 Telegram Bot 的活躍用戶
+    // 已綁定 Telegram 的帳戶即使引擎停止，也要收到同一份每日摘要。
     for (const [userId] of userBots) {
         const engine = getBot(userId);
-        if (engine) {
-            targets.push({ userId, engine });
-        }
+        targets.push({ userId, engine, adminRoute: false });
     }
 
-    // 2. 若無任何用戶目標但有管理員 Bot，發送管理員全域摘要
+    // 單一帳戶模式下的共用 Bot 仍使用個人每日摘要格式。
     if (targets.length === 0 && adminBot && adminChatId) {
-        const summaryMsg = await buildGlobalSummaryMessage(strategy, publicWs, db, marketSummary);
-        try {
-            await adminBot.sendMessage(adminChatId, summaryMsg, { parse_mode: 'HTML' });
-        } catch (err) {
-            logger.error('telegram', '管理員每日摘要發送失敗', { error: err.message });
-        }
-        return;
+        targets.push({ userId: SINGLE_ACCOUNT_USER_ID, engine: getBot(SINGLE_ACCOUNT_USER_ID), adminRoute: true });
     }
 
-    // 3. 為每位有 Telegram 的活躍用戶發送個人摘要
-    for (const { userId, engine } of targets) {
+    for (const { userId, engine, adminRoute } of targets) {
         try {
             // 發送摘要前強制同步一次放貸利息收益
             const { syncUserEarnings } = require('./engine/sync');
             await syncUserEarnings(userId, true);
 
-            const msg = await buildUserSummaryMessage(userId, engine, strategy, publicWs, db, marketSummary);
-            await sendMessage(msg, userId);
+            const msg = await buildUserSummaryMessage(userId, engine, null, publicWs, db, marketSummary);
+            if (adminRoute) await adminBot.sendMessage(adminChatId, msg, { parse_mode: 'HTML' });
+            else await sendMessage(msg, userId);
         } catch (err) {
             logger.error('telegram', `用戶 ${userId} 每日摘要發送失敗`, { error: err.message });
         }
     }
 
-    logger.info('telegram', `🌌 3D Hybrid 每日營運總結已發送 (${targets.length} 位用戶)`);
+    logger.info('telegram', `📊 每日放貸營運總結已發送 (${targets.length} 位用戶)`);
 }
 
 /**
  * 組合特定用戶的每日摘要訊息
  */
 async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, marketSummary = null) {
-    const status = engine.getDetailedStatus();
+    let status;
+    if (engine) {
+        status = engine.getDetailedStatus();
+    } else {
+        const [settings, accountSnapshot] = await Promise.all([
+            db.getUserSettings(userId),
+            require('./private-account-status').getReadOnlyAccountSnapshot(userId),
+        ]);
+        const isPaused = settings?.status === 'paused';
+        status = {
+            ...accountSnapshot,
+            running: isPaused,
+            paused: isPaused,
+            pauseReason: settings?.pause_reason || '',
+        };
+    }
     const now = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
 
     let exchangeQuote = null;
@@ -394,16 +380,8 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, m
     const monthTotal = sumTwdAmount(monthEarnings);
     const allTimeTotal = sumTwdAmount(allEarnings);
 
-    let changeText = '';
-    if (yesterdayTotal !== null && yesterdayTotal > 0 && todayTotal !== null) {
-        const pct = ((todayTotal - yesterdayTotal) / yesterdayTotal * 100).toFixed(1);
-        changeText = pct > 0 ? ` (+${pct}% 📈)` : ` (${pct}% 📉)`;
-    } else if (todayTotal !== null && todayTotal > 0) {
-        changeText = ' (🚀)';
-    }
-
-    let msg = `📊 <b>每日放貸營運總結</b>\n`;
-    msg += `📅 統計時間: <code>${now}</code>\n\n`;
+    let msg = `📊 每日放貸營運總結\n`;
+    msg += `統計時間: ${now}\n`;
     const credentialFailure = status.accountDataErrorCode === 'BITFINEX_SIGNATURE_INVALID'
         ? 'Bitfinex API 簽章驗證失敗'
         : status.accountDataErrorCode === 'BITFINEX_CREDENTIAL_DECRYPTION_FAILED'
@@ -420,26 +398,20 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, m
                     : status.authenticated === false
                         ? '程序已啟動，等待 Bitfinex 私有連線認證'
                         : '運作中';
-    msg += `🤖 <b>放貸引擎</b>: ${engineLabel}\n`;
-    if (status.accountDataError) {
-        msg += `⚠️ <b>Bitfinex 帳戶同步</b>: ${status.accountDataError}\n`;
-    } else if (status.accountDataComplete === true) {
-        msg += `🔐 Bitfinex 私有帳戶資料已完整同步\n`;
-    }
-    msg += `\n`;
+    msg += `放貸引擎: ${engineLabel}\n\n`;
 
     // 1. fUSD 市場行情
     msg += formatFundingMarketSection(marketSummary, { concise: true });
 
     // 2. 收益回報統計
-    msg += `💰 <b>量化收益回報（TWD，已扣稅）</b>\n`;
-    msg += `  ├─ 今日收益: <b>${formatTwdAmount(todayTotal, 4)}</b>${changeText}\n`;
-    msg += `  ├─ 昨日收益: <b>${formatTwdAmount(yesterdayTotal, 4)}</b>\n`;
-    msg += `  ├─ 本月收益: <b>${formatTwdAmount(monthTotal, 4)}</b>\n`;
-    msg += `  └─ 累計收益: <b>${formatTwdAmount(allTimeTotal, 4)}</b>\n\n`;
+    msg += `\n💰 量化收益回報（TWD）\n`;
+    msg += `  ├─ 今日收益: ${formatTwdAmount(todayTotal, 4)}\n`;
+    msg += `  ├─ 昨日收益: ${formatTwdAmount(yesterdayTotal, 4)}\n`;
+    msg += `  ├─ 本月收益: ${formatTwdAmount(monthTotal, 4)}\n`;
+    msg += `  └─ 累計收益: ${formatTwdAmount(allTimeTotal, 4)}\n`;
 
     // 3. USD 錢包與放貸水位
-    msg += `💳 <b>資產與放貸水位</b>\n`;
+    msg += `\n💳 資產與放貸水位\n`;
     for (const cur of ['USD']) {
         const wallet = status.wallets[cur] || { balance: null, available: null };
         const activeOffers = Array.isArray(status.activeOffers[cur]) ? status.activeOffers[cur] : [];
@@ -463,7 +435,7 @@ async function buildUserSummaryMessage(userId, engine, strategy, publicWs, db, m
             ? Math.max(0, walletBalance - availableBalance)
             : null;
         const walletTwd = Number.isFinite(walletBalance) ? convertToTwd(walletBalance, cur, exchangeQuote) : null;
-        msg += `  <b>${cur} 資產</b>:\n`;
+        msg += `  ${cur} 資產:\n`;
         const walletTwdText = walletTwd === null ? 'NT$—' : formatTwdAmount(walletTwd, 2);
         msg += `  ├─ 錢包總額: ${formatOptionalFixedMoney(walletBalance)}（約 ${walletTwdText}）\n`;
         msg += `  ├─ 可用餘額: ${formatOptionalFixedMoney(availableBalance)}\n`;
@@ -551,11 +523,12 @@ function formatTwdAmount(value, fractionDigits = 2) {
 }
 
 function formatFundingMarketSection(summary, { concise = false } = {}) {
-    if (!summary) return `📈 <b>fUSD 市場行情</b>\n  └─ 公開市場資料暫時無法取得\n\n`;
+    if (!summary) {
+        return concise
+            ? `📈 fUSD 市場行情\n  └─ 公開市場資料暫時無法取得\n`
+            : `📈 <b>fUSD 市場行情</b>\n  └─ 公開市場資料暫時無法取得\n\n`;
+    }
 
-    let msg = concise
-        ? `📈 <b>fUSD 市場行情</b>\n`
-        : `📈 <b>fUSD 市場行情</b>（Bitfinex 公開資料）\n`;
     const currentRateLabel = summary.currentRateSource === 'funding_trades_24h_vwap'
         ? '近 24H 成交加權均值'
         : summary.currentRateSource === 'bitfinex_public_ticker_last_price'
@@ -563,6 +536,17 @@ function formatFundingMarketSection(summary, { concise = false } = {}) {
             : summary.currentRateSource === 'bitfinex_public_ticker_frr'
                 ? '公開 FRR'
                 : '成交利率';
+
+    if (concise) {
+        return `📈 fUSD 市場行情\n` +
+            `  ├─ ${currentRateLabel}: ${formatPercent(summary.currentApy)}\n` +
+            `  ├─ 24H 區間: ${formatPercent(summary.low24hApy)} – ${formatPercent(summary.high24hApy)}\n` +
+            `  ├─ 30 日平均: ${formatPercent(summary.average30dApy)}\n` +
+            `  ├─ 30 日最高: ${formatPercent(summary.high30dApy)}\n` +
+            `  └─ 30 日最低: ${formatPercent(summary.low30dApy)}\n`;
+    }
+
+    let msg = `📈 <b>fUSD 市場行情</b>（Bitfinex 公開資料）\n`;
     msg += `  ├─ ${currentRateLabel}: <b>${formatPercent(summary.currentApy)}</b>\n`;
     msg += `  ├─ 24H 區間: ${formatPercent(summary.low24hApy)} – ${formatPercent(summary.high24hApy)}\n`;
     msg += `  ├─ 24H 最高: ${formatPercent(summary.high24hApy)}（${summary.high24hSource || '來源未知'}）\n`;
@@ -587,10 +571,6 @@ function formatFundingMarketSection(summary, { concise = false } = {}) {
         if (summary.marketDataSources?.trades) msg += `      來源: ${summary.marketDataSources.trades}\n`;
         msg += `\n`;
         return msg;
-    }
-
-    if (concise) {
-        return `${msg}\n`;
     }
 
     const hasFullHourlyWindow = Array.isArray(summary.hourlyMatches24) && summary.hourlyMatches24.length > 0;
@@ -777,33 +757,11 @@ function setupAdminBotHandlers(bot) {
             const marketSummary = await buildFundingMarketSummary({ publicWs, db });
 
             const boundSettings = await getSettingsByChatId(msg.chat.id);
-            if (boundSettings?.user_id) {
-                const engine = getBot(boundSettings.user_id);
-                const report = engine
-                    ? await buildUserSummaryMessage(boundSettings.user_id, engine, strategy, publicWs, db, marketSummary)
-                    : buildInactiveUserSummaryMessage(
-                        boundSettings,
-                        marketSummary,
-                        await require('./private-account-status').getReadOnlyAccountSnapshot(boundSettings.user_id),
-                    );
-                bot.sendMessage(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => {});
-            } else {
-                const activeUserIds = (await db.getActiveUsers()).filter(isSingleAccount);
-                if (activeUserIds.length > 0) {
-                let report = '';
-                for (const userId of activeUserIds) {
-                    const engine = getBot(userId);
-                    if (engine) {
-                        const userReport = await buildUserSummaryMessage(userId, engine, strategy, publicWs, db, marketSummary);
-                        report += userReport + '\n';
-                    }
-                }
-                bot.sendMessage(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => {});
-                } else {
-                    const summaryMsg = await buildGlobalSummaryMessage(strategy, publicWs, db, marketSummary);
-                    bot.sendMessage(msg.chat.id, summaryMsg, { parse_mode: 'HTML' }).catch(() => {});
-                }
-            }
+            const activeUserId = (await db.getActiveUsers()).find(isSingleAccount);
+            const userId = boundSettings?.user_id || activeUserId || SINGLE_ACCOUNT_USER_ID;
+            const engine = getBot(userId);
+            const report = await buildUserSummaryMessage(userId, engine, strategy, publicWs, db, marketSummary);
+            bot.sendMessage(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => {});
         } catch (err) {
             bot.sendMessage(msg.chat.id, `❌ 查詢狀態失敗: ${err.message}`).catch(() => {});
         }

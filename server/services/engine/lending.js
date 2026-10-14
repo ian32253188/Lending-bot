@@ -497,7 +497,7 @@ class LendingBot {
                     .catch(error => logger.warn('telegram', '發送新掛單通知失敗', { userId: this.userId, error: error.message }));
             } catch (err) {
                 const isBalanceError = err.message.includes('not enough') || err.message.includes('balance');
-                const errorMsg = `❌ 掛單失敗 ${currency}: $${order.amount.toFixed(0)}，錯誤: ${err.message}`;
+                const errorMsg = `掛單失敗 ${currency}: $${order.amount.toFixed(2)}，錯誤: ${err.message}`;
                 logger.error('engine', errorMsg, { userId: this.userId });
                 
                 if (!isBalanceError) {
@@ -505,7 +505,7 @@ class LendingBot {
                         const { sendAlert } = require('../telegram');
                         // 若用戶有自訂 Telegram 設定，才發送警報
                         if (this.bfxWs && this.bfxWs.credentials) {
-                            sendAlert('🚨 掛單失敗', errorMsg, this.userId);
+                            sendAlert('🚨 🚨 掛單失敗', errorMsg, this.userId);
                         }
                     } catch (e) {
                         logger.error('engine', '發送掛單失敗警報出錯', { error: e.message });
