@@ -4,9 +4,12 @@ const WINDOW_MS = 60 * 1000;
 const MAX_REQUESTS_PER_CLIENT = 60;
 const MAX_REQUESTS_PER_INSTANCE = 600;
 const MAX_TRACKED_CLIENTS = 10_000;
-const OVERFLOW_KEY = Symbol('overflow-client');
 
 function createFixedWindowLimiter({ maxRequests, windowMs = WINDOW_MS, maxTrackedClients = 1, now = Date.now }) {
+    if (!Number.isInteger(maxTrackedClients) || maxTrackedClients < 1) {
+        throw new RangeError('maxTrackedClients must be a positive integer');
+    }
+
     const requests = new Map();
 
     function removeExpired(nowMs) {
@@ -18,12 +21,20 @@ function createFixedWindowLimiter({ maxRequests, windowMs = WINDOW_MS, maxTracke
     function keyFor(clientKey, nowMs) {
         const key = String(clientKey || 'unknown');
         const current = requests.get(key);
-        if (current && current.resetAt > nowMs) return key;
+        if (current && current.resetAt > nowMs) {
+            // Keep recently active clients in the bounded tracking map.
+            requests.delete(key);
+            requests.set(key, current);
+            return key;
+        }
         if (current) requests.delete(key);
 
-        if (requests.size < maxTrackedClients) return key;
         removeExpired(nowMs);
-        return requests.size < maxTrackedClients ? key : OVERFLOW_KEY;
+        if (requests.size >= maxTrackedClients) {
+            const leastRecentlyUsed = requests.keys().next().value;
+            if (leastRecentlyUsed !== undefined) requests.delete(leastRecentlyUsed);
+        }
+        return key;
     }
 
     return {

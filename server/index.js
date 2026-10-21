@@ -8,6 +8,7 @@ const jwt = require('jsonwebtoken');
 const config = require('./config');
 const { isSingleAccount } = require('./config/single-account');
 const { createTokenExpiryGuard, getTokenExpiresAt } = require('./utils/jwt-expiry');
+const { closeWebSocketAndTerminate } = require('./utils/websocket-close');
 const { getTrustedClientIp } = require('./utils/trusted-client-ip');
 const { verifySupabaseToken } = require('./services/supabase-auth-fallback');
 const logger = require('./utils/logger');
@@ -126,16 +127,11 @@ wss.on('connection', (ws, req) => {
     let authExpiryGuard = null;
     let authenticationAttempts = 0;
     let unauthenticatedTimeout = null;
-    let unauthenticatedForceClose = null;
     const resetUnauthenticatedTimeout = () => {
         clearTimeout(unauthenticatedTimeout);
         unauthenticatedTimeout = setTimeout(() => {
             if (!authenticated && ws.readyState === 1) {
-                ws.close(1008, 'Authentication required');
-                unauthenticatedForceClose = setTimeout(() => {
-                    if (ws.readyState === 2) ws.terminate();
-                }, WS_UNAUTHENTICATED_CLOSE_GRACE_MS);
-                unauthenticatedForceClose.unref?.();
+                closeWebSocketAndTerminate(ws, 1008, 'Authentication required', WS_UNAUTHENTICATED_CLOSE_GRACE_MS);
             }
         }, WS_UNAUTHENTICATED_TIMEOUT_MS);
     };
@@ -164,7 +160,7 @@ wss.on('connection', (ws, req) => {
             if (msg.type === 'auth') {
                 authenticationAttempts += 1;
                 if (authenticationAttempts > WS_MAX_AUTH_ATTEMPTS) {
-                    ws.close(1008, 'Too many authentication attempts');
+                    closeWebSocketAndTerminate(ws, 1008, 'Too many authentication attempts', WS_UNAUTHENTICATED_CLOSE_GRACE_MS);
                     return;
                 }
                 clearAuthState();
@@ -274,7 +270,7 @@ wss.on('connection', (ws, req) => {
             }
 
             if (!authenticated || !userId) {
-                ws.close(1008, 'Authentication required');
+                closeWebSocketAndTerminate(ws, 1008, 'Authentication required', WS_UNAUTHENTICATED_CLOSE_GRACE_MS);
                 return;
             }
             if (!isSocketAuthorized()) return;
@@ -312,7 +308,7 @@ wss.on('connection', (ws, req) => {
             }
         } catch (err) {
             if (!authenticated && ws.readyState === 1) {
-                ws.close(1007, 'Invalid message');
+                closeWebSocketAndTerminate(ws, 1007, 'Invalid message', WS_UNAUTHENTICATED_CLOSE_GRACE_MS);
             }
             logger.error('ws-server', '處理 WebSocket 訊息錯誤', { error: err.message });
         }
@@ -320,7 +316,6 @@ wss.on('connection', (ws, req) => {
 
     ws.on('close', () => {
         clearTimeout(unauthenticatedTimeout);
-        clearTimeout(unauthenticatedForceClose);
         clearAuthState();
         logger.debug('ws-server', '前端 WebSocket 已斷開');
     });

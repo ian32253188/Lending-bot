@@ -47,6 +47,14 @@ function openUnauthenticatedRawWebSocket(port: number): Promise<any> {
   });
 }
 
+function sendMaskedTextFrame(socket: any, message: string): void {
+  const payload = Buffer.from(message);
+  const mask = randomBytes(4);
+  const header = Buffer.from([0x81, 0x80 | payload.length]);
+  const maskedPayload = Buffer.from(payload.map((byte, index) => byte ^ mask[index % mask.length]));
+  socket.write(Buffer.concat([header, mask, maskedPayload]));
+}
+
 beforeAll(async () => {
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -146,6 +154,21 @@ describe('authenticated WebSocket lifetime', () => {
       if (availableSocket && availableSocket.readyState !== WebSocket.CLOSED) availableSocket.terminate();
     }
   }, 12_000);
+
+  it('forces immediate unauthenticated message clients off the socket when they ignore close frames', async () => {
+    const socket = await openUnauthenticatedRawWebSocket(serverPort);
+    const closed = new Promise<boolean>(resolve => {
+      socket.once('close', () => resolve(true));
+      setTimeout(() => resolve(false), 1_000);
+    });
+
+    try {
+      sendMaskedTextFrame(socket, JSON.stringify({ type: 'getDetailed' }));
+      expect(await closed).toBe(true);
+    } finally {
+      socket.destroy();
+    }
+  }, 4_000);
 
   it('closes a previously authenticated client after rejected re-authentication', async () => {
     const expiresAt = Math.floor(Date.now() / 1000) + 120;

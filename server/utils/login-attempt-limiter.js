@@ -23,7 +23,7 @@ function createLoginAttemptLimiter({
     function getTrackedEntry(clientKey, nowMs) {
         const entry = attempts.get(clientKey);
         if (entry && entry.resetAt > nowMs) {
-            // Map insertion order is used as the LRU order.
+            // Refresh insertion order so a full map evicts the least recently used client.
             attempts.delete(clientKey);
             attempts.set(clientKey, entry);
             return entry;
@@ -35,8 +35,8 @@ function createLoginAttemptLimiter({
     function createEntry(clientKey, nowMs) {
         removeExpired(nowMs);
         if (attempts.size >= maxTrackedClients) {
-            const oldestClientKey = attempts.keys().next().value;
-            if (oldestClientKey !== undefined) attempts.delete(oldestClientKey);
+            const leastRecentlyUsed = attempts.keys().next().value;
+            if (leastRecentlyUsed !== undefined) attempts.delete(leastRecentlyUsed);
         }
 
         const entry = { failures: 0, resetAt: nowMs + windowMs };
@@ -57,7 +57,8 @@ function createLoginAttemptLimiter({
     return {
         check(clientKey) {
             const nowMs = now();
-            const entry = getTrackedEntry(String(clientKey || 'unknown'), nowMs);
+            const key = String(clientKey || 'unknown');
+            const entry = getTrackedEntry(key, nowMs);
             return statusFor(entry, nowMs);
         },
         recordFailure(clientKey) {
@@ -65,7 +66,6 @@ function createLoginAttemptLimiter({
             const key = String(clientKey || 'unknown');
             const entry = getTrackedEntry(key, nowMs) || createEntry(key, nowMs);
             entry.failures += 1;
-            attempts.set(key, entry);
             return statusFor(entry, nowMs);
         },
         clear(clientKey) {

@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const { closeWebSocketAndTerminate } = require('./websocket-close');
 
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 const TOKEN_EXPIRED_CLOSE_CODE = 1008;
@@ -23,7 +24,7 @@ function createTokenExpiryGuard(socket, expiresAt, now = Date.now) {
         if (expired || disposed) return;
         expired = true;
         if (socket.readyState === 1) {
-            socket.close(TOKEN_EXPIRED_CLOSE_CODE, TOKEN_EXPIRED_CLOSE_REASON);
+            closeWebSocketAndTerminate(socket, TOKEN_EXPIRED_CLOSE_CODE, TOKEN_EXPIRED_CLOSE_REASON);
         }
     }
 

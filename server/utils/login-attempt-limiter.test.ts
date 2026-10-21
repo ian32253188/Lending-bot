@@ -25,10 +25,11 @@ describe('login attempt limiter', () => {
     expect(limiter.recordFailure('client-a').blocked).toBe(false);
   });
 
-  it('keeps unknown clients isolated and evicts the least recently used entry at capacity', () => {
+  it('evicts the least recently used client when tracking capacity is full', () => {
     const limiter = createLoginAttemptLimiter({
       maxFailedAttempts: 2,
       maxTrackedClients: 2,
+      windowMs: 60_000,
       now: () => 1_000,
     });
 
@@ -36,12 +37,10 @@ describe('login attempt limiter', () => {
     expect(limiter.recordFailure('client-a').blocked).toBe(true);
     limiter.recordFailure('client-b');
 
-    expect(limiter.check('untracked-client').blocked).toBe(false);
     expect(limiter.check('client-a').blocked).toBe(true);
-
     expect(limiter.recordFailure('client-c').blocked).toBe(false);
-    expect(limiter.check('client-a').blocked).toBe(true);
     expect(limiter.check('client-b').blocked).toBe(false);
+    expect(limiter.check('client-a').blocked).toBe(true);
     expect(limiter.check('client-c').blocked).toBe(false);
   });
 

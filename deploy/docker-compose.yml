@@ -42,6 +42,8 @@ services:
     env_file:
       - ../.env
     environment:
+      # This Compose network is private and contains the bundled PostgreSQL service.
+      LENDING_BOT_ALLOW_PLAINTEXT_COMPOSE_POSTGRES: "1"
       DATABASE_URL: ''
       PGHOST: postgres
       PGPORT: 5432

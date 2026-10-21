@@ -305,7 +305,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256 | awk '{print $2
 
 確認該指紋確實來自自己的 VM 後，再將完整 `SHA256:...` 值存為 `OCI_VM_HOST_FINGERPRINT`。VM 上也要預先建立專案目錄、設定權限為 `600` 的私密 `.env` 並安裝 Docker。部署 workflow 只接受 `main` 分支推送、每次都執行測試，且部署前固定第三方 Actions 版本及驗證 SSH 主機指紋。
 
-公開 repository 前，請在 GitHub 為 `main` 設定分支保護：要求 pull request、至少一位 reviewer、要求 `CI / test` 通過、禁止 force push，並限制可直接推送 `main` 的人員。再確認 `production` 環境的 reviewer 規則已生效，且環境 secrets 只給部署工作使用。部署 workflow 將測試、GHCR 發佈和遠端部署拆成不同工作：只有映像發佈工作有 `packages: write`，依賴安裝與測試不持有發佈權限，所有 Checkout 都關閉持久化 Git 憑證；每次部署指定該次 commit 的 SHA image tag，避免遠端拉取不確定的 `latest`。CI 會對前後端執行 `npm audit`，Dependabot 每週檢查 npm 套件與 GitHub Actions 更新；請審查自動更新 pull request，再合併。GHCR package 的公開／私有狀態需另行管理；公開 GitHub repository 不會自動改變容器套件的可見性。`deploy/setup.sh` 會拉取 GHCR 映像，因此若套件設為 private，仍需在伺服器設定有 `read:packages` 權限的讀取憑證；它不會設定 Nginx、TLS 或雲端防火牆。
+公開 repository 前，請在 GitHub 為預設分支與 `main` 設定分支保護：要求 pull request、至少一位 reviewer、要求 `CI / test` 通過、禁止 force push，並限制可直接推送的對象。CI 會對任何目標分支的 pull request 執行；正式部署 workflow 只在 `main` 分支推送時執行。再確認 `production` 環境的 reviewer 規則已生效，且環境 secrets 只給部署工作使用。部署 workflow 將測試、GHCR 發佈和遠端部署拆成不同工作：只有映像發佈工作有 `packages: write`，依賴安裝與測試不持有發佈權限，所有 Checkout 都關閉持久化 Git 憑證；每次部署指定該次 commit 的 SHA image tag，避免遠端拉取不確定的 `latest`。CI 會對前後端執行 `npm audit`，Dependabot 每週檢查 npm 套件與 GitHub Actions 更新；請審查自動更新 pull request，再合併。GHCR package 的公開／私有狀態需另行管理；公開 GitHub repository 不會自動改變容器套件的可見性。`deploy/setup.sh` 會拉取 GHCR 映像，因此若套件設為 private，仍需在伺服器設定有 `read:packages` 權限的讀取憑證；它不會設定 Nginx、TLS 或雲端防火牆。
 
 ### Kubernetes 參考部署
 
