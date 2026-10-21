@@ -17,7 +17,7 @@ describe('protected USD research status endpoint', () => {
   });
 
   it('returns research health for the single-account administrator', async () => {
-    const token = jwt.sign({ id: SINGLE_ACCOUNT_USER_ID, role: 'admin' }, config.jwt.secret);
+    const token = jwt.sign({ id: SINGLE_ACCOUNT_USER_ID, role: 'admin' }, config.jwt.secret, { expiresIn: '1h' });
     const response = await request(app).get('/api/research/status').set('Authorization', `Bearer ${token}`);
     expect(response.status).toBe(200);
     expect(response.headers['cache-control']).toBe('no-store');

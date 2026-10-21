@@ -10,6 +10,11 @@ const { normalizeTelegramChatId } = require('../services/telegram-routing');
 const { getSharedTelegramBotToken, verifyTelegramChatId } = require('../services/telegram-binding');
 
 const router = express.Router();
+const CREDENTIAL_MASKS = Object.freeze({
+    bitfinex_api_key: '********...',
+    bitfinex_api_secret: '******',
+    telegram_bot_token: '**********...',
+});
 
 // 1. 取得 / 儲存用戶自訂設定 (SaaS)
 router.get('/settings', async (req, res) => {
@@ -28,13 +33,13 @@ router.get('/settings', async (req, res) => {
         delete settings.auto_transfer_threshold;
         // 安全處理：遮蔽 API 金鑰與 Secret 避免前台明文洩漏
         if (settings.bitfinex_api_key) {
-            settings.bitfinex_api_key = settings.bitfinex_api_key.substring(0, 8) + '...';
+            settings.bitfinex_api_key = '********...';
         }
         if (settings.bitfinex_api_secret) {
             settings.bitfinex_api_secret = '******';
         }
         if (settings.telegram_bot_token) {
-            settings.telegram_bot_token = settings.telegram_bot_token.substring(0, 10) + '...';
+            settings.telegram_bot_token = '**********...';
         }
         res.json(settings);
     } catch (err) {
@@ -55,23 +60,18 @@ router.post('/settings', async (req, res) => {
         newSettings.auto_transfer_enabled = false;
         delete newSettings.min_offer_amount;
         delete newSettings.auto_transfer_threshold;
-        const { encrypt } = require('../utils/crypto');
+        const { encryptImportedCredential } = require('../utils/credential-import');
         
-        // 如果使用者沒有輸入新金鑰（傳入遮蔽的值），則保留原本的舊金鑰
         const existingSettings = await db.getUserSettings(userId);
+        const preservedCredentials = new Set();
+        for (const [field, mask] of Object.entries(CREDENTIAL_MASKS)) {
+            if (newSettings[field] === mask && existingSettings?.[field]) {
+                newSettings[field] = existingSettings[field];
+                preservedCredentials.add(field);
+            }
+        }
         if (Object.prototype.hasOwnProperty.call(newSettings, 'strategy_config')) {
             newSettings.strategy_config = normalizeStrategyConfig(newSettings.strategy_config);
-        }
-        if (existingSettings) {
-            if (newSettings.bitfinex_api_key && newSettings.bitfinex_api_key.includes('...')) {
-                newSettings.bitfinex_api_key = existingSettings.bitfinex_api_key;
-            }
-            if (newSettings.bitfinex_api_secret === '******') {
-                newSettings.bitfinex_api_secret = existingSettings.bitfinex_api_secret;
-            }
-        if (newSettings.telegram_bot_token && newSettings.telegram_bot_token.includes('...')) {
-            newSettings.telegram_bot_token = existingSettings.telegram_bot_token;
-        }
         }
 
         // Telegram is a shared Bot with one exact Chat ID per tenant. Validate
@@ -103,17 +103,15 @@ router.post('/settings', async (req, res) => {
         }
 
         if (config.telegram.botToken && newSettings.telegram_bot_token &&
-            !newSettings.telegram_bot_token.includes('...') &&
+            !preservedCredentials.has('telegram_bot_token') &&
             newSettings.telegram_bot_token !== config.telegram.botToken) {
             return res.status(400).json({ error: '目前系統使用共用 Telegram Bot，Bot Token 必須與伺服器設定一致' });
         }
 
-        // 如果是新輸入的金鑰，進行加密存儲
-        if (newSettings.bitfinex_api_key && !newSettings.bitfinex_api_key.includes('...')) {
-            newSettings.bitfinex_api_key = encrypt(newSettings.bitfinex_api_key);
-        }
-        if (newSettings.bitfinex_api_secret && newSettings.bitfinex_api_secret !== '******') {
-            newSettings.bitfinex_api_secret = encrypt(newSettings.bitfinex_api_secret);
+        for (const field of Object.keys(CREDENTIAL_MASKS)) {
+            if (newSettings[field] && !preservedCredentials.has(field)) {
+                newSettings[field] = encryptImportedCredential(newSettings[field]);
+            }
         }
 
         await db.saveUserSettings(userId, newSettings);
@@ -140,6 +138,9 @@ router.post('/settings', async (req, res) => {
 
         res.json({ message: '設定更新成功' });
     } catch (err) {
+        if (err?.code === 'INVALID_USER_SETTINGS') {
+            return res.status(400).json({ error: err.message });
+        }
         if (err?.code === '23505' || err?.constraint === 'user_bot_settings_telegram_chat_id_unique') {
             return res.status(409).json({ error: '此 Telegram Chat ID 已綁定其他使用者' });
         }

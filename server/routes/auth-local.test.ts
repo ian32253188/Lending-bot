@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
 import express from 'express';
 import jwt from 'jsonwebtoken';
@@ -7,6 +7,7 @@ import authMiddleware from '../middleware/auth';
 import config from '../config';
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(express.json());
 app.use('/api/auth', authRoutes);
 app.get('/api/protected', authMiddleware, (req: any, res) => {
@@ -81,5 +82,59 @@ describe('本地管理員認證與 JWT 驗證 (Local Auth Tests)', () => {
             .set('Authorization', `Bearer ${token}`);
         expect(verifyRes.status).toBe(403);
         expect(verifyRes.body.valid).toBe(false);
+    });
+
+    it('JWT 快取不會讓受保護路由在 Token 到期後繼續放行', async () => {
+        const expiresAt = Math.floor(Date.now() / 1000) + 10;
+        const token = jwt.sign({
+            id: '00000000-0000-0000-0000-000000000001',
+            role: 'admin',
+            exp: expiresAt,
+            jti: `expiry-test-${Math.random()}`,
+        }, config.jwt.secret);
+
+        await request(app)
+            .get('/api/protected')
+            .set('Authorization', `Bearer ${token}`)
+            .expect(200);
+
+        const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(expiresAt * 1000 + 1);
+        try {
+            await request(app)
+                .get('/api/protected')
+                .set('Authorization', `Bearer ${token}`)
+                .expect(401);
+        } finally {
+            nowSpy.mockRestore();
+        }
+    });
+
+    it('連續錯誤登入達上限後回傳 429 與 Retry-After', async () => {
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            await request(app)
+                .post('/api/auth/login')
+                .set('X-Forwarded-For', '203.0.113.99')
+                .send({ password: `wrong-password-${attempt}` })
+                .expect(401);
+        }
+
+        const limited = await request(app)
+            .post('/api/auth/login')
+            .set('X-Forwarded-For', '203.0.113.99')
+            .send({ password: 'wrong-password-final' })
+            .expect(429);
+
+        expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
+        await request(app)
+            .post('/api/auth/login')
+            .set('X-Forwarded-For', '203.0.113.99')
+            .send({ password: 'wrong-password-after-lock' })
+            .expect(429);
+
+        await request(app)
+            .post('/api/auth/login')
+            .set('X-Forwarded-For', '203.0.113.100')
+            .send({ password: config.admin.password })
+            .expect(200);
     });
 });

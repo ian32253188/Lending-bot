@@ -28,9 +28,16 @@ const managerMock = {
 const strategyMock = { getStrategyEngine: () => ({ getStatus: () => ({}) }) };
 const restMock = {};
 const loggerMock = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-const cryptoMock = { encrypt: (value: string) => `encrypted:${value}`, decryptWithFallback: (value: string) => value };
+const cryptoMock = {
+  encrypt: (value: string) => `encrypted:${value}`,
+  decryptWithFallback: (value: string) => value.startsWith('encrypted:') ? value.slice('encrypted:'.length) : value,
+};
+const credentialImportMock = {
+  encryptImportedCredential: vi.fn((value: string) => value.startsWith('encrypted:') ? value : `encrypted:${value}`),
+};
 const telegramBindingMock = {
-  getSharedTelegramBotToken: () => 'shared-token',
+  getSharedTelegramBotToken: (settings: { telegram_bot_token?: string } = {}) => configMock.telegram.botToken ||
+    (settings.telegram_bot_token?.startsWith('encrypted:') ? settings.telegram_bot_token.slice('encrypted:'.length) : settings.telegram_bot_token) || null,
   verifyTelegramChatId: mocks.verifyTelegramChatId,
 };
 const telegramMock = { initUserTelegram: mocks.initUserTelegram, destroyUserTelegram: mocks.destroyUserTelegram };
@@ -46,6 +53,7 @@ mockModule('../services/engine/strategy', strategyMock);
 mockModule('../services/bitfinex/rest', restMock);
 mockModule('../utils/logger', loggerMock);
 mockModule('../utils/crypto', cryptoMock);
+mockModule('../utils/credential-import', credentialImportMock);
 mockModule('../services/telegram-binding', telegramBindingMock);
 mockModule('../services/telegram', telegramMock);
 
@@ -61,6 +69,7 @@ app.use('/api/lending', router);
 describe('per-user settings and Telegram binding', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    configMock.telegram.botToken = 'shared-token';
     mocks.getUserSettings.mockResolvedValue(null);
     mocks.getUserSettingsByTelegramChatId.mockResolvedValue(null);
     mocks.verifyTelegramChatId.mockResolvedValue('10001');
@@ -146,6 +155,68 @@ describe('per-user settings and Telegram binding', () => {
       bitfinex_api_secret: 'encrypted:api-secret',
     }));
     expect(mocks.initUserTelegram).toHaveBeenCalledWith('user-a', 'shared-token', '10001');
+  });
+
+  it('encrypts a newly supplied Telegram Bot Token before saving it', async () => {
+    configMock.telegram.botToken = null;
+
+    await request(app)
+      .post('/api/lending/settings')
+      .send({ telegram_bot_token: '123456789:synthetic-token', telegram_chat_id: '10001' })
+      .expect(200);
+
+    expect(mocks.verifyTelegramChatId).toHaveBeenCalledWith({
+      botToken: '123456789:synthetic-token',
+      chatId: '10001',
+    });
+    expect(mocks.saveUserSettings).toHaveBeenCalledWith('user-a', expect.objectContaining({
+      telegram_bot_token: 'encrypted:123456789:synthetic-token',
+    }));
+    expect(mocks.initUserTelegram).toHaveBeenCalledWith('user-a', '123456789:synthetic-token', '10001');
+  });
+
+  it('encrypts first-time credentials even when their values contain ellipses', async () => {
+    configMock.telegram.botToken = null;
+
+    await request(app)
+      .post('/api/lending/settings')
+      .send({
+        bitfinex_api_key: 'api...key',
+        bitfinex_api_secret: 'secret...value',
+        telegram_bot_token: '123456789:token...part',
+        telegram_chat_id: '10001',
+      })
+      .expect(200);
+
+    expect(mocks.saveUserSettings).toHaveBeenCalledWith('user-a', expect.objectContaining({
+      bitfinex_api_key: 'encrypted:api...key',
+      bitfinex_api_secret: 'encrypted:secret...value',
+      telegram_bot_token: 'encrypted:123456789:token...part',
+    }));
+  });
+
+  it('preserves credentials only when the complete expected mask is submitted', async () => {
+    mocks.getUserSettings.mockResolvedValue({
+      bitfinex_api_key: 'encrypted:existing-key',
+      bitfinex_api_secret: 'encrypted:existing-secret',
+      telegram_bot_token: 'encrypted:123456789:existing-token',
+    });
+
+    await request(app)
+      .post('/api/lending/settings')
+      .send({
+        bitfinex_api_key: '********...',
+        bitfinex_api_secret: '******',
+        telegram_bot_token: '**********...',
+      })
+      .expect(200);
+
+    expect(mocks.saveUserSettings).toHaveBeenCalledWith('user-a', expect.objectContaining({
+      bitfinex_api_key: 'encrypted:existing-key',
+      bitfinex_api_secret: 'encrypted:existing-secret',
+      telegram_bot_token: 'encrypted:123456789:existing-token',
+    }));
+    expect(credentialImportMock.encryptImportedCredential).not.toHaveBeenCalled();
   });
 
   it('rejects malformed Chat IDs before persistence', async () => {

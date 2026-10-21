@@ -1,9 +1,37 @@
 const { Pool } = require('pg');
 const { createClient } = require('@supabase/supabase-js');
 const config = require('../config');
+const { postgresHostTls, requireVerifiedTls } = require('../utils/postgres-connection');
+const { requireSecureSupabaseUrl } = require('../utils/supabase-url');
+const { compareAndSetEncryptedCredentials } = require('../utils/supabase-credential-migration');
+
+// These are the only columns saveUserSettings may update. Keep user_id,
+// created_at, and updated_at controlled by the repository itself.
+const USER_SETTINGS_COLUMNS = Object.freeze({
+    bitfinex_api_key: 'bitfinex_api_key',
+    bitfinex_api_secret: 'bitfinex_api_secret',
+    telegram_bot_token: 'telegram_bot_token',
+    telegram_chat_id: 'telegram_chat_id',
+    lending_currencies: 'lending_currencies',
+    compounding_hold_amount: 'compounding_hold_amount',
+    min_offer_amount: 'min_offer_amount',
+    status: 'status',
+    strategy_config: 'strategy_config',
+    compounding_enabled: 'compounding_enabled',
+    auto_transfer_enabled: 'auto_transfer_enabled',
+    auto_transfer_threshold: 'auto_transfer_threshold',
+    pause_reason: 'pause_reason',
+});
+const USER_CREDENTIAL_COLUMNS = Object.freeze([
+    'bitfinex_api_key',
+    'bitfinex_api_secret',
+    'telegram_bot_token',
+]);
 
 let pool = null;
 let supabase = null;
+let supabaseConfigSignature = null;
+const supabaseCredentialMigrationPromises = new WeakMap();
 const averageFRRCache = new Map();
 const AVERAGE_FRR_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
@@ -46,13 +74,14 @@ function isPostgresConfigured() {
 function getPool() {
     if (!pool && isPostgresConfigured()) {
         const poolConfig = config.database.url
-            ? { connectionString: config.database.url }
+            ? { connectionString: requireVerifiedTls(config.database.url) }
             : {
                 host: config.database.host,
                 port: config.database.port,
                 user: config.database.user,
                 password: config.database.password,
                 database: config.database.database,
+                ssl: postgresHostTls(config.database.host),
             };
 
         pool = new Pool({
@@ -73,11 +102,15 @@ function getPool() {
  * 取得 Supabase Client (相容舊有配置或單元測試 Mock)
  */
 function getSupabase() {
-    if (!supabase) {
-        if (!config.supabase.url || !config.supabase.key) {
-            return null;
-        }
-        supabase = createClient(config.supabase.url, config.supabase.key);
+    if (!config.supabase.url || !config.supabase.key) {
+        supabase = null;
+        supabaseConfigSignature = null;
+        return null;
+    }
+    const signature = `${config.supabase.url}\0${config.supabase.key}`;
+    if (!supabase || supabaseConfigSignature !== signature) {
+        supabase = createClient(requireSecureSupabaseUrl(config.supabase.url), config.supabase.key);
+        supabaseConfigSignature = signature;
     }
     return supabase;
 }
@@ -179,7 +212,29 @@ async function ensureUserBotSettingsTable() {
             WHERE telegram_chat_id IS NOT NULL AND btrim(telegram_chat_id) <> '';
         CREATE INDEX IF NOT EXISTS user_bot_settings_telegram_chat_id_lookup
             ON user_bot_settings (telegram_chat_id);
-    `).then(() => {
+    `).then(async () => {
+        // Encrypt credentials written by older versions before they remain in
+        // the database or its backups as plaintext.
+        const rows = await query(`
+            SELECT user_id, bitfinex_api_key, bitfinex_api_secret, telegram_bot_token
+            FROM user_bot_settings
+            WHERE (bitfinex_api_key IS NOT NULL AND bitfinex_api_key <> '')
+               OR (bitfinex_api_secret IS NOT NULL AND bitfinex_api_secret <> '')
+               OR (telegram_bot_token IS NOT NULL AND telegram_bot_token <> '');
+        `);
+        for (const row of rows?.rows || []) {
+            const updates = getEncryptedCredentialUpdates(row);
+            const columns = Object.keys(updates);
+            if (columns.length === 0) continue;
+            const setClauses = columns.map((column, index) => `${column} = $${index + 1}`);
+            const predicates = columns.map((column, index) => `${column} IS NOT DISTINCT FROM $${columns.length + index + 2}`);
+            await query(`
+                UPDATE user_bot_settings
+                SET ${setClauses.join(', ')}, updated_at = NOW()
+                WHERE user_id = $${columns.length + 1}
+                  AND ${predicates.join(' AND ')};
+            `, [...columns.map(column => updates[column]), row.user_id, ...columns.map(column => row[column])]);
+        }
         userSettingsSchemaErrorCode = null;
         return true;
     }).catch(error => {
@@ -1779,19 +1834,147 @@ async function getUserSettings(userId) {
 
     const db = getSupabase();
     if (!db) return null;
+    await ensureSupabaseCredentialsEncrypted(db);
     const { data, error } = await db
         .from('user_bot_settings')
         .select('*')
         .eq('user_id', userId)
         .single();
     if (error) return null;
-    return data;
+    return migrateSupabaseCredentials(db, data);
+}
+
+function getEncryptedCredentialUpdates(settings) {
+    const { ensureEncryptedCredential } = require('../utils/credential-import');
+    const updates = {};
+    for (const column of USER_CREDENTIAL_COLUMNS) {
+        const value = settings?.[column];
+        if (!value) continue;
+        const encrypted = ensureEncryptedCredential(value);
+        if (encrypted !== value) updates[column] = encrypted;
+    }
+    return updates;
+}
+
+/**
+ * Legacy Supabase runtime rows may still contain plaintext credentials.
+ * Encrypt them on first read and use a compare-and-set update so a concurrent
+ * settings change cannot be overwritten by the migration.
+ */
+async function migrateSupabaseCredentials(db, settings) {
+    if (!settings) return settings;
+    let current = settings;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+        const updates = getEncryptedCredentialUpdates(current);
+        const columns = Object.keys(updates);
+        if (columns.length === 0) return current;
+
+        const { updated, error: updateError } = await compareAndSetEncryptedCredentials(
+            db,
+            current.user_id,
+            current,
+            updates,
+        );
+
+        if (updateError) {
+            const error = new Error('無法安全遷移 Supabase 中的帳戶憑證；請檢查資料庫權限後重試。');
+            error.code = 'CREDENTIAL_MIGRATION_FAILED';
+            throw error;
+        }
+        if (updated) return { ...current, ...updates };
+
+        const { data: latest, error: readError } = await db
+            .from('user_bot_settings')
+            .select('*')
+            .eq('user_id', current.user_id)
+            .maybeSingle();
+        if (readError) {
+            const error = new Error('無法確認 Supabase 帳戶憑證遷移狀態；請重試。');
+            error.code = 'CREDENTIAL_MIGRATION_FAILED';
+            throw error;
+        }
+        if (!latest) return null;
+        current = latest;
+    }
+
+    const error = new Error('Supabase 帳戶憑證在遷移期間持續變更；請重試。');
+    error.code = 'CREDENTIAL_MIGRATION_CONFLICT';
+    throw error;
+}
+
+async function ensureSupabaseCredentialsEncrypted(db) {
+    const existingMigration = supabaseCredentialMigrationPromises.get(db);
+    if (existingMigration) return existingMigration;
+
+    const migration = (async () => {
+        const pageSize = 500;
+        let offset = 0;
+        while (true) {
+            const { data: settingsRows, error } = await db
+                .from('user_bot_settings')
+                .select('*')
+                .order('user_id', { ascending: true })
+                .range(offset, offset + pageSize - 1);
+            if (error) {
+                const migrationError = new Error('無法安全檢查 Supabase 帳戶憑證；請確認資料庫讀取權限後重試。');
+                migrationError.code = 'CREDENTIAL_MIGRATION_FAILED';
+                throw migrationError;
+            }
+            const rows = settingsRows || [];
+            for (const settings of rows) {
+                await migrateSupabaseCredentials(db, settings);
+            }
+            if (rows.length < pageSize) break;
+            offset += rows.length;
+        }
+    })();
+
+    supabaseCredentialMigrationPromises.set(db, migration);
+    try {
+        await migration;
+    } catch (error) {
+        supabaseCredentialMigrationPromises.delete(db);
+        throw error;
+    }
 }
 
 async function saveUserSettings(userId, settings) {
     if (!requireUserId('saveUserSettings', userId)) return null;
 
     const normalizedSettings = { ...settings };
+    const { ensureEncryptedCredential } = require('../utils/credential-import');
+    for (const column of USER_CREDENTIAL_COLUMNS) {
+        if (Object.prototype.hasOwnProperty.call(normalizedSettings, column)) {
+            normalizedSettings[column] = ensureEncryptedCredential(normalizedSettings[column]);
+        }
+    }
+    if (Object.prototype.hasOwnProperty.call(normalizedSettings, 'paused')) {
+        if (typeof normalizedSettings.paused !== 'boolean') {
+            const error = new Error('設定欄位格式無效');
+            error.code = 'INVALID_USER_SETTINGS';
+            throw error;
+        }
+        const pausedStatus = normalizedSettings.paused ? 'paused' : 'running';
+        if (Object.prototype.hasOwnProperty.call(normalizedSettings, 'status')
+            && normalizedSettings.status !== pausedStatus) {
+            const error = new Error('設定欄位格式無效');
+            error.code = 'INVALID_USER_SETTINGS';
+            throw error;
+        }
+        normalizedSettings.status = pausedStatus;
+        delete normalizedSettings.paused;
+    }
+
+    const hasUnsupportedField = Object.keys(normalizedSettings).some(
+        key => !Object.prototype.hasOwnProperty.call(USER_SETTINGS_COLUMNS, key)
+    );
+    if (hasUnsupportedField) {
+        const error = new Error('包含不支援的設定欄位');
+        error.code = 'INVALID_USER_SETTINGS';
+        throw error;
+    }
+
     if (Object.prototype.hasOwnProperty.call(normalizedSettings, 'telegram_chat_id')) {
         const { normalizeTelegramChatId } = require('./telegram-routing');
         normalizedSettings.telegram_chat_id = normalizeTelegramChatId(normalizedSettings.telegram_chat_id);
@@ -1801,9 +1984,10 @@ async function saveUserSettings(userId, settings) {
         try {
             if (!(await ensureUserBotSettingsTable())) throw new Error('Could not ensure user_bot_settings table');
             const keys = Object.keys(normalizedSettings);
-            const cols = ['user_id', ...keys, 'updated_at'];
+            const columns = keys.map(key => USER_SETTINGS_COLUMNS[key]);
+            const cols = ['user_id', ...columns, 'updated_at'];
             const valPlaceholders = cols.map((_, i) => `$${i + 1}`).join(', ');
-            const updateClauses = keys.map(k => `${k} = EXCLUDED.${k}`).concat('updated_at = NOW()').join(', ');
+            const updateClauses = columns.map(column => `${column} = EXCLUDED.${column}`).concat('updated_at = NOW()').join(', ');
 
             const sql = `
                 INSERT INTO user_bot_settings (${cols.join(', ')})
@@ -1823,6 +2007,7 @@ async function saveUserSettings(userId, settings) {
 
     const db = getSupabase();
     if (!db) return null;
+    await ensureSupabaseCredentialsEncrypted(db);
     const { data, error } = await db
         .from('user_bot_settings')
         .upsert({
@@ -1856,6 +2041,7 @@ async function getUserSettingsByTelegramChatId(chatId) {
 
     const db = getSupabase();
     if (!db) return null;
+    await ensureSupabaseCredentialsEncrypted(db);
     const { data, error } = await db
         .from('user_bot_settings')
         .select('*')
@@ -1865,7 +2051,7 @@ async function getUserSettingsByTelegramChatId(chatId) {
         console.error('getUserSettingsByTelegramChatId error:', error);
         return null;
     }
-    return data || null;
+    return migrateSupabaseCredentials(db, data || null);
 }
 
 async function getActiveUsers() {

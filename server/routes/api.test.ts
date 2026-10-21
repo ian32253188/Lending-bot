@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
 
+const VALID_TEST_TOKEN = require('jsonwebtoken').sign(
+  { id: '00000000-0000-0000-0000-000000000001', role: 'admin' },
+  require('../config').jwt.secret,
+  { expiresIn: '1h' }
+);
+
 // 1. 定義 Mock 放貸引擎
 const mockEngine = {
   running: false,
@@ -37,7 +43,7 @@ const managerPath = require.resolve('../services/engine/manager');
 const mockSupabase = {
   auth: {
     getUser: vi.fn().mockImplementation((token) => {
-      if (token === 'valid-test-token') {
+      if (token === VALID_TEST_TOKEN) {
         return Promise.resolve({ data: { user: { id: '00000000-0000-0000-0000-000000000001' } }, error: null });
       }
       return Promise.resolve({ data: { user: null }, error: new Error('Invalid token') });
@@ -97,12 +103,12 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
       .expect(200);
 
     expect(res.body.status).toBe('ok');
-    expect(res.body.accountMode).toBe('single');
-    expect(res.body.maxEngineCount).toBe(1);
-    expect(res.body.publicWsConnected).toBeDefined();
-    expect(res.body.uptime).toBeDefined();
-    expect(res.body.runningEngineCount).toBe(0);
-    expect(res.body.pausedEngineCount).toBe(1);
+    expect(Object.keys(res.body)).toEqual(['status']);
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.headers['content-security-policy']).toBe("frame-ancestors 'none'");
+    expect(res.headers['x-frame-options']).toBe('DENY');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['referrer-policy']).toBe('no-referrer');
   });
 
   it('GET /metrics 應能輸出符合 Prometheus Exposition 格式之指標', async () => {
@@ -132,7 +138,7 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
   it('POST /api/lending/engine/start 在 Token 正確時應能成功執行啟動指令', async () => {
     const res = await request(app)
       .post('/api/lending/engine/start')
-      .set('Authorization', 'Bearer valid-test-token')
+      .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)
       .expect(200);
 
     expect(res.body.message).toContain('放貸機器人已啟動');
@@ -141,16 +147,16 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
   it('引擎 pause/resume/emergency-stop 應路由到該使用者的引擎', async () => {
     await request(app)
       .post('/api/lending/engine/pause')
-      .set('Authorization', 'Bearer valid-test-token')
+      .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)
       .send({ reason: '測試暫停' })
       .expect(200);
     await request(app)
       .post('/api/lending/engine/resume')
-      .set('Authorization', 'Bearer valid-test-token')
+      .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)
       .expect(200);
     await request(app)
       .post('/api/lending/engine/emergency-stop')
-      .set('Authorization', 'Bearer valid-test-token')
+      .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)
       .expect(200);
 
     expect(mockEngine.pause).toHaveBeenCalledWith('測試暫停');
@@ -161,32 +167,32 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
   it('未知引擎操作或沒有已啟動引擎時應拒絕請求', async () => {
     await request(app)
       .post('/api/lending/engine/restart')
-      .set('Authorization', 'Bearer valid-test-token')
+      .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)
       .expect(400);
 
     mockManager.getBot.mockReturnValueOnce(null);
     await request(app)
       .post('/api/lending/engine/pause')
-      .set('Authorization', 'Bearer valid-test-token')
+      .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)
       .expect(400);
   });
 
   it('手動掛單與轉帳的輸入驗證應在觸碰交易 API 前完成', async () => {
     await request(app)
       .post('/api/lending/offer')
-      .set('Authorization', 'Bearer valid-test-token')
+      .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)
       .send({ currency: 'BTC', amount: 500, rate: 0.001, period: 2 })
       .expect(400);
 
     await request(app)
       .post('/api/lending/offer')
-      .set('Authorization', 'Bearer valid-test-token')
+      .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)
       .send({ currency: 'USD', amount: 100, rate: 0.001, period: 2 })
       .expect(400);
 
     await request(app)
       .post('/api/lending/transfer')
-      .set('Authorization', 'Bearer valid-test-token')
+      .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)
       .send({ from: 'funding', to: 'funding', currency: 'USD', amount: 1 })
       .expect(400);
   });
@@ -194,7 +200,7 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
   it('POST /api/lending/strategy-settings 應只接受三種利率基準與六種期限', async () => {
     const valid = await request(app)
       .post('/api/lending/strategy-settings')
-      .set('Authorization', 'Bearer valid-test-token')
+      .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)
       .send({ rateStrategy: 'high_30d', periodDays: 120 })
       .expect(200);
 
@@ -207,7 +213,7 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
 
     await request(app)
       .post('/api/lending/strategy-settings')
-      .set('Authorization', 'Bearer valid-test-token')
+      .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)
       .send({ rateStrategy: 'not-supported', periodDays: 7 })
       .expect(400);
   });

@@ -1,6 +1,11 @@
 const crypto = require('crypto');
 
 const ALGORITHM = 'aes-256-gcm';
+const ENCRYPTED_CREDENTIAL_PATTERN = /^[0-9a-f]{32}:[0-9a-f]{32}:(?:[0-9a-f]{2})+$/i;
+
+function isEncryptedCredential(value) {
+    return typeof value === 'string' && ENCRYPTED_CREDENTIAL_PATTERN.test(value);
+}
 
 function getEncryptionKey() {
     const secret = process.env.JWT_SECRET || (process.env.NODE_ENV === 'test' ? 'vitest-only-encryption-secret-32chars' : '');
@@ -25,6 +30,7 @@ function encrypt(text) {
 function decrypt(encryptedText) {
     try {
         if (!encryptedText) return null;
+        if (!isEncryptedCredential(encryptedText)) return null;
         const key = getEncryptionKey();
         const parts = encryptedText.split(':');
         if (parts.length !== 3) return null;
@@ -43,8 +49,8 @@ function decrypt(encryptedText) {
 
 function decryptWithFallback(text) {
     if (!text) return '';
-    // If it doesn't have the encrypted format shape, it's plaintext
-    if (!text.includes(':') || text.split(':').length !== 3) {
+    // Plaintext legacy credentials remain readable during the at-rest migration.
+    if (!isEncryptedCredential(text)) {
         return text;
     }
     const decrypted = decrypt(text);
@@ -53,9 +59,9 @@ function decryptWithFallback(text) {
     // Never send an encrypted credential blob to Bitfinex as if it were a
     // plaintext API key. This commonly happens when JWT_SECRET or
     // ENCRYPTION_SALT changed after credentials were saved.
-    const error = new Error('無法解密已儲存的 Bitfinex API 憑證；請在網站設定重新輸入並儲存 API Key 與 Secret。');
+    const error = new Error('無法解密已儲存的憑證；請確認 JWT_SECRET 與 ENCRYPTION_SALT，或重新輸入該憑證。');
     error.code = 'CREDENTIAL_DECRYPTION_FAILED';
     throw error;
 }
 
-module.exports = { encrypt, decrypt, decryptWithFallback };
+module.exports = { encrypt, decrypt, decryptWithFallback, isEncryptedCredential };

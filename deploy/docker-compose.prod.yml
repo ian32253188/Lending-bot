@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -26,7 +24,10 @@ services:
         max-file: "3"
 
   lending-bot:
-    image: ghcr.io/ian32253188/lending-bot:latest
+    image: ghcr.io/ian32253188/lending-bot:${IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: Dockerfile
     container_name: bitfinex-lending-bot
     restart: unless-stopped
     ports:
@@ -37,6 +38,10 @@ services:
     env_file:
       - ../.env
     environment:
+      # The documented production topology uses one host Nginx reverse proxy.
+      TRUST_PROXY_HOPS: "1"
+      # This image connects to the private postgres service on this Compose network.
+      LENDING_BOT_ALLOW_PLAINTEXT_COMPOSE_POSTGRES: "1"
       # Use explicit PG* settings below. A URI can break when the password
       # contains reserved URL characters, even though PGHOST resolves correctly.
       DATABASE_URL: ''

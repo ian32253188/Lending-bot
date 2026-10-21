@@ -2,7 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: lending-bot-deployment
-  namespace: default
   labels:
     app: lending-bot
 spec:
@@ -29,8 +28,8 @@ spec:
         
       containers:
         - name: lending-bot
-          image: ian32253188/lending-bot:latest
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/ian32253188/lending-bot:latest
+          imagePullPolicy: Always
           
           securityContext:
             allowPrivilegeEscalation: false

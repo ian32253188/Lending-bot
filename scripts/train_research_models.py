@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 import psycopg2
 from psycopg2.extras import RealDictCursor, Json
+from postgres_connection import postgres_host_tls, require_verified_tls_dsn
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import HuberRegressor, QuantileRegressor, Ridge
 from sklearn.metrics import mean_absolute_error
@@ -42,8 +43,9 @@ def connect():
             raise RuntimeError('請設定 DATABASE_URL 或 PGHOST、PGUSER、PGPASSWORD、PGDATABASE。')
         return psycopg2.connect(host=host, port=os.environ.get('PGPORT', 5432),
                                 user=os.environ.get('PGUSER', 'postgres'), password=password,
-                                dbname=os.environ.get('PGDATABASE', 'lending_bot'))
-    return psycopg2.connect(dsn)
+                                dbname=os.environ.get('PGDATABASE', 'lending_bot'),
+                                **postgres_host_tls(host))
+    return psycopg2.connect(require_verified_tls_dsn(dsn))
 
 
 def load_env_file(path):

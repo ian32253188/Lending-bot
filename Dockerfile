@@ -1,20 +1,24 @@
-FROM node:20-alpine
+FROM node:22-alpine AS client-build
+
+WORKDIR /build
+
+COPY client/package.json client/package-lock.json ./client/
+RUN cd client && npm ci
+COPY client/ ./client/
+RUN cd client && npm run build
+
+FROM node:22-alpine
 
 WORKDIR /app
 
-# 安裝後端依賴
 COPY package.json package-lock.json ./
-RUN npm ci --production
+RUN npm ci --omit=dev
 
-# 安裝前端依賴並建置
-COPY client/package.json client/
-RUN cd client && npm install
-COPY client/ client/
-RUN cd client && npm run build
-
-# 複製後端程式碼
-COPY server/ server/
+COPY --chown=node:node server/ server/
+COPY --chown=node:node --from=client-build /build/client/dist ./client/dist
 COPY .env.example .env.example
+
+USER node
 
 # 暴露埠號
 EXPOSE 3000

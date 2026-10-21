@@ -2,6 +2,8 @@ const jwt = require('jsonwebtoken');
 const config = require('../config');
 const { getSupabase } = require('../services/database');
 const { isSingleAccount } = require('../config/single-account');
+const { getTokenExpiresAt } = require('../utils/jwt-expiry');
+const { verifySupabaseToken } = require('../services/supabase-auth-fallback');
 
 const tokenCache = new Map(); // token -> { user, expiresAt }
 const CACHE_TTL_MS = 60 * 1000; // 60 seconds TTL
@@ -36,6 +38,7 @@ async function authMiddleware(req, res, next) {
         req.user = cached.user;
         return next();
     }
+    if (cached) tokenCache.delete(token);
 
     // 1. 原生 JWT 驗證
     try {
@@ -44,6 +47,10 @@ async function authMiddleware(req, res, next) {
             if (!isSingleAccount(decoded.id)) {
                 return res.status(403).json({ error: '此系統僅開放單一管理帳戶' });
             }
+            const tokenExpiresAt = getTokenExpiresAt(token);
+            if (tokenExpiresAt === null || tokenExpiresAt <= now) {
+                return res.status(401).json({ error: 'Token 無效或已過期' });
+            }
             const user = {
                 id: decoded.id,
                 email: decoded.email,
@@ -51,7 +58,7 @@ async function authMiddleware(req, res, next) {
             };
             tokenCache.set(token, {
                 user,
-                expiresAt: now + CACHE_TTL_MS
+                expiresAt: Math.min(now + CACHE_TTL_MS, tokenExpiresAt)
             });
             req.user = user;
             return next();
@@ -63,20 +70,27 @@ async function authMiddleware(req, res, next) {
     // 2. 備用：若有 Supabase，嘗試驗證舊 Supabase Token
     const supabase = getSupabase();
     if (supabase) {
-        try {
-            const { data: { user }, error } = await supabase.auth.getUser(token);
-            if (!error && user) {
-                if (!isSingleAccount(user.id)) {
-                    return res.status(403).json({ error: '此系統僅開放單一管理帳戶' });
-                }
-                tokenCache.set(token, {
-                    user,
-                    expiresAt: now + CACHE_TTL_MS
-                });
-                req.user = user;
-                return next();
+        const result = await verifySupabaseToken({ supabase, token, request: req });
+        if (result.rateLimited) {
+            res.set('Retry-After', String(result.retryAfterSeconds));
+            return res.status(429).json({ error: '認證請求過多，請稍後再試' });
+        }
+        const { user, error } = result;
+        if (!error && user) {
+            const tokenExpiresAt = getTokenExpiresAt(token);
+            if (!isSingleAccount(user.id)) {
+                return res.status(403).json({ error: '此系統僅開放單一管理帳戶' });
             }
-        } catch (err) {}
+            if (tokenExpiresAt === null || tokenExpiresAt <= Date.now()) {
+                return res.status(401).json({ error: 'Token 無效或已過期' });
+            }
+            tokenCache.set(token, {
+                user,
+                expiresAt: Math.min(Date.now() + CACHE_TTL_MS, tokenExpiresAt)
+            });
+            req.user = user;
+            return next();
+        }
     }
 
     return res.status(401).json({ error: 'Token 無效或已過期' });

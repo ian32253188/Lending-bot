@@ -1,10 +1,14 @@
-const TelegramBot = require('node-telegram-bot-api');
+const { TelegramBot } = require('node-telegram-bot-api');
 const config = require('../config');
 const logger = require('../utils/logger');
 const cron = require('node-cron');
 const { buildFundingMarketSummary } = require('./market-summary');
 const { RATE_STRATEGY_LABELS, PERIOD_DAYS, normalizeStrategyConfig } = require('./strategy-config');
-const { normalizeTelegramChatId } = require('./telegram-routing');
+const {
+    normalizeTelegramChatId,
+    isPrivateTelegramSender,
+    isPrivateTelegramChatId,
+} = require('./telegram-routing');
 const { getSharedTelegramBotToken } = require('./telegram-binding');
 const { getUsdToTwdRate, convertToTwd } = require('./exchange-rate');
 const { isPublicTickerFresh } = require('./bitfinex/ws');
@@ -77,7 +81,12 @@ function ensureSharedBot(botToken) {
     try {
         adminBot = new TelegramBot(botToken, { polling: true });
         sharedBotToken = botToken;
-        adminChatId = config.telegram.chatId || null;
+        adminChatId = isPrivateTelegramChatId(config.telegram.chatId)
+            ? normalizeTelegramChatId(config.telegram.chatId)
+            : null;
+        if (config.telegram.chatId && !adminChatId) {
+            logger.warn('telegram', '拒絕使用非私人 Telegram Chat ID，避免將帳戶通知傳送到群組');
+        }
         if (!handlersReady) {
             setupAdminBotHandlers(adminBot);
             handlersReady = true;
@@ -105,6 +114,10 @@ function initUserTelegram(userId, botToken, chatId) {
     const normalizedChatId = normalizeTelegramChatId(chatId);
     if (!normalizedChatId) {
         logger.debug('telegram', `用戶 ${userId} 未設定 Telegram Chat ID，通知功能跳過`);
+        return null;
+    }
+    if (!isPrivateTelegramChatId(normalizedChatId)) {
+        logger.warn('telegram', '拒絕註冊群組或頻道 Telegram route；只允許私人對話');
         return null;
     }
 
@@ -697,6 +710,10 @@ function setupAdminBotHandlers(bot) {
 
     async function isAuthorized(msg) {
         const chatId = normalizeTelegramChatId(msg.chat.id);
+        if (!isPrivateTelegramSender(msg.chat, msg.from, chatId)) {
+            logger.warn('telegram', '拒絕非私人對話或非本人發出的指令');
+            return false;
+        }
         const isAdmin = config.telegram.chatId && chatId === normalizeTelegramChatId(config.telegram.chatId);
         const binding = await getSettingsByChatId(chatId);
         if (!isAdmin && !binding) {
@@ -708,7 +725,13 @@ function setupAdminBotHandlers(bot) {
     }
 
     async function isCallbackAuthorized(query) {
-        const chatId = normalizeTelegramChatId(query.message.chat.id);
+        const chat = query.message?.chat;
+        const chatId = chat?.id === undefined ? null : normalizeTelegramChatId(chat.id);
+        if (!isPrivateTelegramSender(chat, query.from, chatId)) {
+            logger.warn('telegram', '拒絕非私人對話或非本人發出的按鈕操作');
+            bot.answerCallbackQuery(query.id, { text: '🚷 僅允許已綁定管理員的私人對話操作。', show_alert: true }).catch(() => {});
+            return false;
+        }
         const isAdmin = config.telegram.chatId && chatId === normalizeTelegramChatId(config.telegram.chatId);
         const binding = await getSettingsByChatId(chatId);
         if (!isAdmin && !binding) {

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-const { normalizeTelegramChatId, resolveUserSettingsByChatId } = require('./telegram-routing');
+const {
+  normalizeTelegramChatId,
+  isPrivateTelegramSender,
+  isPrivateTelegramChatId,
+  resolveUserSettingsByChatId,
+} = require('./telegram-routing');
 
 describe('Telegram Chat ID binding isolation', () => {
   const users = [
@@ -18,5 +23,13 @@ describe('Telegram Chat ID binding isolation', () => {
   it('preserves negative group IDs and rejects arbitrary text', () => {
     expect(normalizeTelegramChatId('-1001234567890')).toBe('-1001234567890');
     expect(() => normalizeTelegramChatId('user-a')).toThrow('整數格式');
+  });
+
+  it('accepts only the matching human sender in a private chat', () => {
+    expect(isPrivateTelegramChatId('10001')).toBe(true);
+    expect(isPrivateTelegramChatId('-1001234567890')).toBe(false);
+    expect(isPrivateTelegramSender({ id: 10001, type: 'private' }, { id: 10001 }, '10001')).toBe(true);
+    expect(isPrivateTelegramSender({ id: -1001234567890, type: 'supergroup' }, { id: 10001 }, '-1001234567890')).toBe(false);
+    expect(isPrivateTelegramSender({ id: 10001, type: 'private' }, { id: 10002 }, '10001')).toBe(false);
   });
 });

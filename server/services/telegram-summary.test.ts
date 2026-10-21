@@ -96,12 +96,12 @@ describe('Telegram daily summary currency display', () => {
 
     expect(message).toContain('錢包總額: $6,048.57（約 NT$190,529.96）');
     expect(message).toContain('貸款中 2 筆 ($548.57(8/30)、$100.00(8/31))');
-    expect(message).toContain('量化收益回報（TWD，已扣稅）');
-    expect(message).toContain('今日收益: <b>NT$68.1944</b>');
-    expect(message).toContain('昨日收益: <b>NT$63.7025</b>');
-    expect(message).toContain('本月收益: <b>NT$315.0000</b>');
-    expect(message).toContain('累計收益: <b>NT$4,008.3687</b>');
-    expect(message).not.toContain('今日收益: <b>$');
+    expect(message).toContain('量化收益回報（TWD）');
+    expect(message).toContain('今日收益: NT$68.1944');
+    expect(message).toContain('昨日收益: NT$63.7025');
+    expect(message).toContain('本月收益: NT$315.0000');
+    expect(message).toContain('累計收益: NT$4,008.3687');
+    expect(message).not.toContain('今日收益: $');
     expect(message).not.toContain('USDT');
     expect(message).not.toContain('換算匯率');
     expect(getEarnings).toHaveBeenCalledTimes(4);
@@ -153,8 +153,7 @@ describe('Telegram daily summary currency display', () => {
       null,
     );
 
-    expect(message).toContain('放貸引擎</b>: 已暫停（Bitfinex maintenance）');
-    expect(message).toContain('Bitfinex 帳戶同步</b>: Bitfinex API 讀取失敗');
+    expect(message).toContain('放貸引擎: 已暫停（Bitfinex maintenance）');
     expect(message).toContain('錢包總額: $—');
     expect(message).toContain('掛單 — 筆');
     expect(message).not.toContain('錢包總額: $0.00');
@@ -185,10 +184,10 @@ describe('Telegram daily summary currency display', () => {
       null,
     );
 
-    expect(message).toContain('放貸引擎</b>: 程序已啟動，但Bitfinex API 簽章驗證失敗');
+    expect(message).toContain('放貸引擎: 程序已啟動，但Bitfinex API 簽章驗證失敗');
     expect(message).toContain('掛單 — 筆');
     expect(message).toContain('貸款中 — 筆');
-    expect(message).not.toContain('放貸引擎</b>: 運作中');
+    expect(message).not.toContain('放貸引擎: 運作中');
   });
 
   it('reads the admin seven-day FRR average from history even with no strategy cache', async () => {
@@ -280,8 +279,8 @@ describe('Telegram daily summary currency display', () => {
       hourlyMatches24: [{ timestamp: Date.now(), amount: 100, count: 1 }],
     }, { concise: true });
 
-    expect(message).toContain('近 24H 成交加權均值: <b>6.53%</b>');
-    expect(message).toContain('24H 成交額: $89,066,621');
+    expect(message).toContain('近 24H 成交加權均值: 6.53%');
+    expect(message).not.toContain('24H 成交額:');
     expect(message).toContain('30 日最低: 0.02%');
     expect(message).not.toContain('逐時撮合');
     expect(message).not.toContain('歷史覆蓋');

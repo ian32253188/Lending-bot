@@ -18,6 +18,27 @@ function normalizeTelegramChatId(value) {
     return normalized;
 }
 
+function isPrivateTelegramSender(chat, sender, expectedChatId) {
+    if (chat?.type !== 'private' || sender?.id === undefined || sender?.id === null) return false;
+    try {
+        const expected = normalizeTelegramChatId(expectedChatId);
+        return Boolean(expected)
+            && normalizeTelegramChatId(chat.id) === expected
+            && normalizeTelegramChatId(sender.id) === expected;
+    } catch {
+        return false;
+    }
+}
+
+function isPrivateTelegramChatId(value) {
+    try {
+        const normalized = normalizeTelegramChatId(value);
+        return Boolean(normalized && /^[1-9]\d*$/.test(normalized));
+    } catch {
+        return false;
+    }
+}
+
 /**
  * Resolve only an exact binding. An unknown chat must return null; falling
  * back to an arbitrary account would break tenant isolation.
@@ -38,5 +59,7 @@ function resolveUserSettingsByChatId(settingsRows, chatId) {
 
 module.exports = {
     normalizeTelegramChatId,
+    isPrivateTelegramSender,
+    isPrivateTelegramChatId,
     resolveUserSettingsByChatId,
 };

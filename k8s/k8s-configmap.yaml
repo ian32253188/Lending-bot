@@ -2,11 +2,11 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: lending-bot-config
-  namespace: default
   labels:
     app: lending-bot
 data:
   NODE_ENV: "production"
   PORT: "3000"
   TZ: "Asia/Taipei"
-  SUPABASE_URL: "https://your-project.supabase.co"
+  # One ingress-nginx proxy hop. Set this to the actual trusted proxy count.
+  TRUST_PROXY_HOPS: "1"

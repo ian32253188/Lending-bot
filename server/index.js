@@ -4,8 +4,12 @@ const express = require('express');
 const path = require('path');
 const { WebSocketServer } = require('ws');
 const http = require('http');
+const jwt = require('jsonwebtoken');
 const config = require('./config');
 const { isSingleAccount } = require('./config/single-account');
+const { createTokenExpiryGuard, getTokenExpiresAt } = require('./utils/jwt-expiry');
+const { getTrustedClientIp } = require('./utils/trusted-client-ip');
+const { verifySupabaseToken } = require('./services/supabase-auth-fallback');
 const logger = require('./utils/logger');
 const authMiddleware = require('./middleware/auth');
 const { getBitfinexPublicWS } = require('./services/bitfinex/ws');
@@ -19,10 +23,27 @@ const lendingRoutes = require('./routes/lending');
 const researchRoutes = require('./routes/research');
 
 const app = express();
+app.set('trust proxy', config.server.trustProxyHops);
 const server = http.createServer(app);
+const WS_MAX_CLIENTS = 100;
+const WS_MAX_PAYLOAD_BYTES = 16 * 1024;
+const WS_UNAUTHENTICATED_TIMEOUT_MS = 5_000;
+const WS_UNAUTHENTICATED_CLOSE_GRACE_MS = 250;
+const WS_MAX_AUTH_ATTEMPTS = 3;
 
 // 中間件
+app.use((_req, res, next) => {
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    next();
+});
 app.use(express.json());
+app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+});
 
 // 靜態檔案（前端 build）
 app.use(express.static(path.join(__dirname, '..', 'client', 'dist')));
@@ -70,53 +91,9 @@ app.get('/metrics', async (req, res) => {
     }
 });
 
-// 健康檢查（不需認證）
-app.get('/api/health', async (req, res) => {
-    const { getActiveEngineCount, getEngineStateCounts } = require('./services/engine/manager');
-    const { getTelegramRoutingStats } = require('./services/telegram');
-    const { getFundingTradeBackfillStatus } = require('./services/market-summary');
-    const db = require('./services/database');
-    const engineStateCounts = typeof getEngineStateCounts === 'function'
-        ? getEngineStateCounts()
-        : null;
-    const userSettingsTableReady = db.isPostgresConfigured()
-        ? await db.ensureUserBotSettingsTable()
-        : null;
-    const applicationDataTablesReady = db.isPostgresConfigured()
-        ? await db.ensureApplicationDataTables()
-        : null;
-    const publicWs = getBitfinexPublicWS();
-    const memory = process.memoryUsage();
-    const fundingTrades = typeof db.getFundingTradeDiagnostics === 'function'
-        ? await db.getFundingTradeDiagnostics('USD')
-        : { configured: false, tableReady: false };
-    res.json({
-        status: 'ok',
-        accountMode: 'single',
-        maxEngineCount: 1,
-        uptime: process.uptime(),
-        publicWsConnected: publicWs.isConnected(),
-        activeEngineCount: typeof getActiveEngineCount === 'function' ? getActiveEngineCount() : 0,
-        runningEngineCount: engineStateCounts?.running ?? null,
-        pausedEngineCount: engineStateCounts?.paused ?? null,
-        telegram: typeof getTelegramRoutingStats === 'function'
-            ? getTelegramRoutingStats()
-            : { sharedBotActive: false, registeredUsers: 0 },
-        userSettingsTableReady,
-        userSettingsSchemaErrorCode: userSettingsTableReady === false
-            ? db.getUserSettingsSchemaErrorCode()
-            : null,
-        applicationDataTablesReady,
-        fundingTradeBackfill: typeof getFundingTradeBackfillStatus === 'function'
-            ? getFundingTradeBackfillStatus()
-            : { state: 'unknown' },
-        fundingTrades,
-        memory: {
-            rssBytes: memory.rss,
-            heapUsedBytes: memory.heapUsed,
-        },
-        timestamp: new Date().toISOString(),
-    });
+// 公開 liveness check：只確認程序有回應，不查詢資料庫或揭露帳戶／執行狀態。
+app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok' });
 });
 
 // SPA fallback
@@ -126,7 +103,19 @@ app.get('*splat', (req, res) => {
 
 // ============== WebSocket 伺服器（前端即時更新）==============
 
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({
+    server,
+    path: '/ws',
+    maxPayload: WS_MAX_PAYLOAD_BYTES,
+    perMessageDeflate: false,
+    verifyClient: (_info, callback) => {
+        if (wss.clients.size >= WS_MAX_CLIENTS) {
+            callback(false, 503, 'WebSocket server at capacity');
+            return;
+        }
+        callback(true);
+    },
+});
 
 wss.on('connection', (ws, req) => {
     logger.info('ws-server', '前端 WebSocket 已連接');
@@ -134,13 +123,52 @@ wss.on('connection', (ws, req) => {
     let authenticated = false;
     let userId = null;
     let statusInterval = null;
+    let authExpiryGuard = null;
+    let authenticationAttempts = 0;
+    let unauthenticatedTimeout = null;
+    let unauthenticatedForceClose = null;
+    const resetUnauthenticatedTimeout = () => {
+        clearTimeout(unauthenticatedTimeout);
+        unauthenticatedTimeout = setTimeout(() => {
+            if (!authenticated && ws.readyState === 1) {
+                ws.close(1008, 'Authentication required');
+                unauthenticatedForceClose = setTimeout(() => {
+                    if (ws.readyState === 2) ws.terminate();
+                }, WS_UNAUTHENTICATED_CLOSE_GRACE_MS);
+                unauthenticatedForceClose.unref?.();
+            }
+        }, WS_UNAUTHENTICATED_TIMEOUT_MS);
+    };
+    resetUnauthenticatedTimeout();
+
+    const clearAuthState = () => {
+        if (statusInterval) clearInterval(statusInterval);
+        statusInterval = null;
+        if (authExpiryGuard) authExpiryGuard.dispose();
+        authExpiryGuard = null;
+        authenticated = false;
+        userId = null;
+    };
+
+    const isSocketAuthorized = () => {
+        if (!authenticated || !userId || !authExpiryGuard) return false;
+        return authExpiryGuard.isValid();
+    };
 
     ws.on('message', async (raw) => {
+        if (ws.readyState !== 1) return;
         try {
             const msg = JSON.parse(raw.toString());
 
             // 認證
             if (msg.type === 'auth') {
+                authenticationAttempts += 1;
+                if (authenticationAttempts > WS_MAX_AUTH_ATTEMPTS) {
+                    ws.close(1008, 'Too many authentication attempts');
+                    return;
+                }
+                clearAuthState();
+                resetUnauthenticatedTimeout();
                 if (!msg.token) {
                     ws.send(JSON.stringify({ type: 'auth', status: 'error', message: '缺少認證 Token' }));
                     return;
@@ -149,26 +177,41 @@ wss.on('connection', (ws, req) => {
                 const jwt = require('jsonwebtoken');
                 const { getBot } = require('./services/engine/manager');
                 let verifiedUser = null;
+                let verifiedExpiresAt = null;
 
                 try {
                     const decoded = jwt.verify(msg.token, config.jwt.secret);
-                    if (decoded && isSingleAccount(decoded.id)) {
+                    if (decoded?.id) {
+                        if (!isSingleAccount(decoded.id)) {
+                            ws.send(JSON.stringify({ type: 'auth', status: 'error', message: '此系統僅開放單一管理帳戶' }));
+                            return;
+                        }
+                        const expiresAt = getTokenExpiresAt(msg.token);
+                        if (expiresAt === null || expiresAt <= Date.now()) {
+                            ws.send(JSON.stringify({ type: 'auth', status: 'error', message: 'Token 無效或已過期' }));
+                            return;
+                        }
                         verifiedUser = decoded;
-                    } else if (decoded?.id) {
-                        ws.send(JSON.stringify({ type: 'auth', status: 'error', message: '此系統僅開放單一管理帳戶' }));
-                        return;
+                        verifiedExpiresAt = expiresAt;
                     }
                 } catch (jwtErr) {}
 
-                const handleAuthSuccess = (userObj) => {
+                const handleAuthSuccess = (userObj, expiresAt) => {
+                    if (ws.readyState !== 1) return;
+                    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+                        ws.send(JSON.stringify({ type: 'auth', status: 'error', message: 'Token 無效或已過期' }));
+                        return;
+                    }
                     authenticated = true;
                     userId = userObj.id;
+                    clearTimeout(unauthenticatedTimeout);
+                    authExpiryGuard = createTokenExpiryGuard(ws, expiresAt);
                     ws.send(JSON.stringify({ type: 'auth', status: 'ok' }));
 
                     // 開始定期推送該用戶的狀態
                     if (statusInterval) clearInterval(statusInterval);
                     statusInterval = setInterval(() => {
-                        if (ws.readyState === 1) {
+                        if (ws.readyState === 1 && isSocketAuthorized()) {
                             const engine = getBot(userId);
                             if (engine) {
                                 ws.send(JSON.stringify({
@@ -178,7 +221,7 @@ wss.on('connection', (ws, req) => {
                             } else {
                                 const { getInactiveDashboardStatusForUser } = require('./services/dashboard-status');
                                 getInactiveDashboardStatusForUser(userId).then(data => {
-                                    if (ws.readyState === 1) {
+                                    if (ws.readyState === 1 && isSocketAuthorized()) {
                                         ws.send(JSON.stringify({ type: 'status', data }));
                                     }
                                 }).catch(err => {
@@ -190,7 +233,7 @@ wss.on('connection', (ws, req) => {
                 };
 
                 if (verifiedUser) {
-                    handleAuthSuccess(verifiedUser);
+                    handleAuthSuccess(verifiedUser, verifiedExpiresAt);
                     return;
                 }
 
@@ -198,19 +241,31 @@ wss.on('connection', (ws, req) => {
                 const { getSupabase } = require('./services/database');
                 const supabase = getSupabase();
                 if (supabase) {
-                    supabase.auth.getUser(msg.token).then(({ data: { user }, error }) => {
-                        if (error || !user) {
-                            ws.send(JSON.stringify({ type: 'auth', status: 'error', message: 'Token 無效或已過期' }));
-                            return;
-                        }
-                        if (!isSingleAccount(user.id)) {
-                            ws.send(JSON.stringify({ type: 'auth', status: 'error', message: '此系統僅開放單一管理帳戶' }));
-                            return;
-                        }
-                        handleAuthSuccess(user);
-                    }).catch(err => {
-                        ws.send(JSON.stringify({ type: 'auth', status: 'error', message: err.message }));
+                    const result = await verifySupabaseToken({
+                        supabase,
+                        token: msg.token,
+                        request: { ip: getTrustedClientIp(req, app) },
                     });
+                    if (ws.readyState !== 1) return;
+                    if (result.rateLimited) {
+                        ws.send(JSON.stringify({ type: 'auth', status: 'error', message: '認證請求過多，請稍後再試' }));
+                        return;
+                    }
+                    const { user, error } = result;
+                    if (error || !user) {
+                        ws.send(JSON.stringify({ type: 'auth', status: 'error', message: 'Token 無效或已過期' }));
+                        return;
+                    }
+                    if (!isSingleAccount(user.id)) {
+                        ws.send(JSON.stringify({ type: 'auth', status: 'error', message: '此系統僅開放單一管理帳戶' }));
+                        return;
+                    }
+                    const expiresAt = getTokenExpiresAt(msg.token);
+                    if (expiresAt === null || expiresAt <= Date.now()) {
+                        ws.send(JSON.stringify({ type: 'auth', status: 'error', message: 'Token 無效或已過期' }));
+                        return;
+                    }
+                    handleAuthSuccess(user, expiresAt);
                     return;
                 }
 
@@ -219,9 +274,10 @@ wss.on('connection', (ws, req) => {
             }
 
             if (!authenticated || !userId) {
-                ws.send(JSON.stringify({ type: 'error', message: '未認證' }));
+                ws.close(1008, 'Authentication required');
                 return;
             }
+            if (!isSocketAuthorized()) return;
 
             switch (msg.type) {
                 case 'getDetailed': {
@@ -235,6 +291,7 @@ wss.on('connection', (ws, req) => {
                     } else {
                         const { getInactiveDashboardStatusForUser } = require('./services/dashboard-status');
                         const accountStatus = await getInactiveDashboardStatusForUser(userId, { detailed: true });
+                        if (ws.readyState !== 1 || !isSocketAuthorized()) return;
                         ws.send(JSON.stringify({
                             type: 'detailed',
                             data: {
@@ -254,12 +311,17 @@ wss.on('connection', (ws, req) => {
                 }
             }
         } catch (err) {
+            if (!authenticated && ws.readyState === 1) {
+                ws.close(1007, 'Invalid message');
+            }
             logger.error('ws-server', '處理 WebSocket 訊息錯誤', { error: err.message });
         }
     });
 
     ws.on('close', () => {
-        if (statusInterval) clearInterval(statusInterval);
+        clearTimeout(unauthenticatedTimeout);
+        clearTimeout(unauthenticatedForceClose);
+        clearAuthState();
         logger.debug('ws-server', '前端 WebSocket 已斷開');
     });
 });

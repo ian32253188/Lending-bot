@@ -2,6 +2,8 @@ node_modules/
 client/node_modules/
 client/dist/
 .env
+.env.*
+!.env.example
 .env.local
 .env.*.local
 .env.production
@@ -14,3 +16,4 @@ client/dist/
 .venv-ml/
 __pycache__/
 *.pyc
+/k8s/k8s-secret.local.yaml

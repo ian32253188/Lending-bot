@@ -6,6 +6,11 @@ const isTestEnvironment = process.env.NODE_ENV !== 'production'
 const config = {
     port: parseInt(process.env.PORT, 10) || 3000,
     nodeEnv: process.env.NODE_ENV || 'development',
+    server: {
+        trustProxyHops: process.env.TRUST_PROXY_HOPS === undefined
+            ? 0
+            : Number(process.env.TRUST_PROXY_HOPS),
+    },
 
     bitfinex: {
         apiKey: process.env.BITFINEX_API_KEY,
@@ -16,9 +21,9 @@ const config = {
 
     database: {
         url: process.env.DATABASE_URL,
-        // Production runs beside the compose `postgres` service. Keep an
-        // explicit fallback so an older remote compose file cannot silently
-        // disable PostgreSQL-backed market storage.
+        // The bundled Compose file explicitly marks its private `postgres`
+        // service. Other production deployments must configure a verified TLS
+        // DATABASE_URL or a remote PGHOST.
         host: process.env.PGHOST || process.env.POSTGRES_HOST
             || (process.env.NODE_ENV === 'production' ? 'postgres' : 'localhost'),
         port: parseInt(process.env.PGPORT || process.env.POSTGRES_PORT, 10) || 5432,
@@ -78,6 +83,15 @@ const config = {
 
 // 驗證必要設定
 function validateConfig() {
+    if (!Number.isInteger(config.server.trustProxyHops)
+        || config.server.trustProxyHops < 0
+        || config.server.trustProxyHops > 5) {
+        throw new Error('TRUST_PROXY_HOPS 必須是 0 到 5 的整數');
+    }
+    if (config.telegram.chatId
+        && !/^[1-9]\d*$/.test(String(config.telegram.chatId).trim())) {
+        throw new Error('TELEGRAM_CHAT_ID 必須是私人對話的正整數 Chat ID');
+    }
     if (isTestEnvironment) return;
 
     const missingSettings = [];
