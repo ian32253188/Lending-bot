@@ -18,6 +18,9 @@ class LendingBot {
         this.running = false;
         this.paused = false;
         this.pauseReason = '';
+        this.manualPauseReason = '';
+        this.maintenancePaused = false;
+        this._offerSubmissionInFlight = false;
         this.monitorOnly = false;
 
         // 用戶專屬策略設定
@@ -156,21 +159,62 @@ class LendingBot {
     }
 
     pause(reason = '手動暫停') {
-        this.paused = true;
-        this.pauseReason = reason;
-        logger.info('engine', `⏸️ 放貸已暫停: ${reason}`, this.userId);
-        db.saveUserSettings(this.userId, { status: 'paused', pause_reason: reason }).catch(err => {
+        this.manualPauseReason = typeof reason === 'string' ? reason : '手動暫停';
+        this._refreshPauseState();
+        logger.info('engine', '⏸️ 放貸已暫停: ' + this.pauseReason, this.userId);
+    }
+
+    _refreshPauseState({ persist = true } = {}) {
+        const reasons = [...new Set([
+            this.manualPauseReason,
+            this.maintenancePaused ? 'Bitfinex 系統維護中' : '',
+        ].filter(Boolean))];
+
+        this.paused = reasons.length > 0;
+        this.pauseReason = reasons.join('、');
+        if (!persist) return Promise.resolve();
+        return db.saveUserSettings(this.userId, {
+            status: this.paused ? 'paused' : 'running',
+            pause_reason: this.pauseReason,
+            manual_pause_reason: this.manualPauseReason,
+            maintenance_paused: this.maintenancePaused,
+        }).catch(err => {
             logger.error('engine', '儲存暫停狀態失敗', { error: err.message, userId: this.userId });
         });
     }
 
+    restorePauseState({ manualPauseReason, maintenancePaused, pauseReason } = {}) {
+        const persistedManualPauseReason = typeof manualPauseReason === 'string' ? manualPauseReason : '';
+        this.manualPauseReason = [persistedManualPauseReason, this.manualPauseReason]
+            .filter(Boolean)
+            .filter((reason, index, reasons) => reasons.indexOf(reason) === index)
+            .join('、');
+        this.maintenancePaused = maintenancePaused === true || this.maintenancePaused;
+        if (!this.manualPauseReason && !this.maintenancePaused) {
+            // Older rows do not have source fields; keep their pause fail-closed.
+            this.manualPauseReason = pauseReason || '重啟前已暫停';
+        }
+        return this._refreshPauseState();
+    }
+
+    _setMaintenancePaused(active) {
+        const nextState = active === true;
+        if (this.maintenancePaused === nextState) return;
+
+        this.maintenancePaused = nextState;
+        this._refreshPauseState();
+        logger.info('engine', nextState ? 'Bitfinex 維護開始，暫停放貸' : 'Bitfinex 維護結束，解除維護暫停', this.userId);
+    }
+
     resume() {
-        this.paused = false;
-        this.pauseReason = '';
-        logger.info('engine', '▶️ 放貸已恢復', this.userId);
-        db.saveUserSettings(this.userId, { status: 'running', pause_reason: '' }).catch(err => {
-            logger.error('engine', '儲存恢復狀態失敗', { error: err.message, userId: this.userId });
-        });
+        this.manualPauseReason = '';
+        this._refreshPauseState();
+        if (this.paused) {
+            logger.info('engine', '管理員暫停已解除；引擎仍暫停: ' + this.pauseReason, this.userId);
+        } else {
+            logger.info('engine', '▶️ 放貸已恢復', this.userId);
+        }
+        return !this.paused;
     }
 
     /**
@@ -480,7 +524,8 @@ class LendingBot {
                 });
             }
             
-            if (!this.running || this.paused) return;
+            if (!this.running || this.paused || this._offerSubmissionInFlight) return;
+            this._offerSubmissionInFlight = true;
 
             try {
                 await rest.submitFundingOffer(
@@ -499,6 +544,10 @@ class LendingBot {
                 const isBalanceError = err.message.includes('not enough') || err.message.includes('balance');
                 const errorMsg = `掛單失敗 ${currency}: $${order.amount.toFixed(2)}，錯誤: ${err.message}`;
                 logger.error('engine', errorMsg, { userId: this.userId });
+
+                if (err.code === 'BITFINEX_WRITE_RESULT_UNKNOWN') {
+                    this.pause('Funding Offer 結果待查證');
+                }
                 
                 if (!isBalanceError) {
                     try {
@@ -511,6 +560,8 @@ class LendingBot {
                         logger.error('engine', '發送掛單失敗警報出錯', { error: e.message });
                     }
                 }
+            } finally {
+                this._offerSubmissionInFlight = false;
             }
         }
     }
@@ -730,11 +781,7 @@ class LendingBot {
         });
 
         bfxWs.on('maintenance', (active) => {
-            if (active) {
-                this.pause('Bitfinex 系統維護中');
-            } else {
-                this.resume();
-            }
+            this._setMaintenancePaused(active);
         });
     }
 

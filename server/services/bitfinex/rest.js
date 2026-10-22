@@ -70,7 +70,9 @@ async function authRequest(path, body = {}, credentials = null) {
     const apiKey = credentials?.apiKey || config.bitfinex.apiKey;
     const apiSecret = credentials?.apiSecret || config.bitfinex.apiSecret;
     if (!apiKey || !apiSecret) {
-        throw new Error('Bitfinex API key or secret is not configured.');
+        const error = new Error('Bitfinex API key or secret is not configured.');
+        error.code = 'BITFINEX_CREDENTIALS_MISSING';
+        throw error;
     }
 
     // Bitfinex requires nonces to arrive in strictly increasing order for each
@@ -97,7 +99,9 @@ async function authRequest(path, body = {}, credentials = null) {
         if (!response.ok) {
             const text = await response.text();
             metrics.recordApiError('POST', path, `HTTP_${response.status}`);
-            throw new Error(`Bitfinex API 錯誤 (${response.status}): ${text}`);
+            const error = new Error(`Bitfinex API 錯誤 (${response.status}): ${text}`);
+            error.responseStatus = response.status;
+            throw error;
         }
 
         return response.json();
@@ -113,6 +117,22 @@ async function authRequest(path, body = {}, credentials = null) {
         if (privateRequestQueues.get(queueKey) === queuedRequest) {
             privateRequestQueues.delete(queueKey);
         }
+    }
+}
+
+async function submitNonIdempotentWrite(operation, path, body, credentials) {
+    try {
+        return await authRequest(path, body, credentials);
+    } catch (cause) {
+        const status = Number(cause?.responseStatus);
+        const explicitlyRejected = Number.isInteger(status) && status >= 400 && status < 500;
+        if (cause?.code === 'BITFINEX_CREDENTIALS_MISSING' || explicitlyRejected) throw cause;
+
+        const detail = cause?.message ? ` (${cause.message})` : '';
+        const error = new Error(`${operation} 結果不明${detail}；請先查詢 Bitfinex 狀態，再決定是否重新提交。`);
+        error.code = 'BITFINEX_WRITE_RESULT_UNKNOWN';
+        error.cause = cause;
+        throw error;
     }
 }
 
@@ -155,17 +175,15 @@ async function publicRequest(path) {
  */
 async function submitFundingOffer(currency, amount, rate, period, credentials = null) {
     const bfxSym = toBfxSymbol(currency);
-    return withRetry(
-        () => authRequest('/auth/w/funding/offer/submit', {
-            type: 'LIMIT',
-            symbol: `f${bfxSym}`,
-            amount: amount.toString(),
-            rate: rate.toString(),
-            period,
-            flags: 0,
-        }, credentials),
-        { label: `提交 Funding Offer (${currency} ${amount} @ ${(rate * 100).toFixed(4)}%)` }
-    );
+    // A transport/response error cannot prove Bitfinex did not accept this create operation.
+    return submitNonIdempotentWrite('Funding Offer', '/auth/w/funding/offer/submit', {
+        type: 'LIMIT',
+        symbol: `f${bfxSym}`,
+        amount: amount.toString(),
+        rate: rate.toString(),
+        period,
+        flags: 0,
+    }, credentials);
 }
 
 /**
@@ -271,16 +289,14 @@ async function getFundingInfo(currency, credentials = null) {
  * @param {object} credentials - 可選用戶金鑰
  */
 async function transfer(from, to, currency, amount, credentials = null) {
-    return withRetry(
-        () => authRequest('/auth/w/transfer', {
-            from,
-            to,
-            currency,
-            currency_to: currency,
-            amount: amount.toString(),
-        }, credentials),
-        { label: `轉帳 ${amount} ${currency} (${from} → ${to})` }
-    );
+    // Wallet movement is not retried automatically when the remote result is ambiguous.
+    return submitNonIdempotentWrite('錢包轉帳', '/auth/w/transfer', {
+        from,
+        to,
+        currency,
+        currency_to: currency,
+        amount: amount.toString(),
+    }, credentials);
 }
 
 // ============== 公開資料 ==============

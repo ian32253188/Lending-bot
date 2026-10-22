@@ -27,10 +27,36 @@ const app = express();
 app.set('trust proxy', config.server.trustProxyHops);
 const server = http.createServer(app);
 const WS_MAX_CLIENTS = 100;
+const WS_MAX_UNAUTHENTICATED_CLIENTS = 10;
+const WS_MAX_UNAUTHENTICATED_CLIENTS_PER_IP = 5;
 const WS_MAX_PAYLOAD_BYTES = 16 * 1024;
 const WS_UNAUTHENTICATED_TIMEOUT_MS = 5_000;
 const WS_UNAUTHENTICATED_CLOSE_GRACE_MS = 250;
 const WS_MAX_AUTH_ATTEMPTS = 3;
+let unauthenticatedClientCount = 0;
+const unauthenticatedClientCountsByIp = new Map();
+
+function reserveUnauthenticatedSlot(reservation, clientIp) {
+    const ipCount = unauthenticatedClientCountsByIp.get(clientIp) || 0;
+    if (unauthenticatedClientCount >= WS_MAX_UNAUTHENTICATED_CLIENTS
+        || ipCount >= WS_MAX_UNAUTHENTICATED_CLIENTS_PER_IP) return false;
+    unauthenticatedClientCount += 1;
+    unauthenticatedClientCountsByIp.set(clientIp, ipCount + 1);
+    reservation.held = true;
+    reservation.clientIp = clientIp;
+    return true;
+}
+
+function releaseUnauthenticatedSlot(reservation) {
+    if (!reservation?.held) return;
+    reservation.held = false;
+    clearTimeout(reservation.timer);
+    reservation.timer = null;
+    const ipCount = unauthenticatedClientCountsByIp.get(reservation.clientIp) || 0;
+    if (ipCount <= 1) unauthenticatedClientCountsByIp.delete(reservation.clientIp);
+    else unauthenticatedClientCountsByIp.set(reservation.clientIp, ipCount - 1);
+    unauthenticatedClientCount = Math.max(0, unauthenticatedClientCount - 1);
+}
 
 // 中間件
 app.use((_req, res, next) => {
@@ -109,11 +135,22 @@ const wss = new WebSocketServer({
     path: '/ws',
     maxPayload: WS_MAX_PAYLOAD_BYTES,
     perMessageDeflate: false,
-    verifyClient: (_info, callback) => {
+    verifyClient: (info, callback) => {
         if (wss.clients.size >= WS_MAX_CLIENTS) {
             callback(false, 503, 'WebSocket server at capacity');
             return;
         }
+        const reservation = { held: false, timer: null };
+        const clientIp = getTrustedClientIp(info.req, app);
+        if (!reserveUnauthenticatedSlot(reservation, clientIp)) {
+            callback(false, 503, 'WebSocket unauthenticated capacity reached');
+            return;
+        }
+        reservation.timer = setTimeout(
+            () => releaseUnauthenticatedSlot(reservation),
+            WS_UNAUTHENTICATED_TIMEOUT_MS + WS_UNAUTHENTICATED_CLOSE_GRACE_MS + 1_000,
+        );
+        info.req.unauthenticatedSlotReservation = reservation;
         callback(true);
     },
 });
@@ -127,6 +164,28 @@ wss.on('connection', (ws, req) => {
     let authExpiryGuard = null;
     let authenticationAttempts = 0;
     let unauthenticatedTimeout = null;
+    const clientIp = getTrustedClientIp(req, app);
+    let unauthenticatedReservation = req.unauthenticatedSlotReservation;
+    if (!unauthenticatedReservation?.held) {
+        ws.terminate();
+        return;
+    }
+    clearTimeout(unauthenticatedReservation.timer);
+    unauthenticatedReservation.timer = null;
+    let unauthenticatedSlotHeld = true;
+    const releaseUnauthenticatedClientSlot = () => {
+        if (!unauthenticatedSlotHeld) return;
+        unauthenticatedSlotHeld = false;
+        releaseUnauthenticatedSlot(unauthenticatedReservation);
+    };
+    const reserveUnauthenticatedClientSlot = () => {
+        if (unauthenticatedSlotHeld) return true;
+        const reservation = { held: false, timer: null };
+        if (!reserveUnauthenticatedSlot(reservation, clientIp)) return false;
+        unauthenticatedReservation = reservation;
+        unauthenticatedSlotHeld = true;
+        return true;
+    };
     const resetUnauthenticatedTimeout = () => {
         clearTimeout(unauthenticatedTimeout);
         unauthenticatedTimeout = setTimeout(() => {
@@ -161,6 +220,11 @@ wss.on('connection', (ws, req) => {
                 authenticationAttempts += 1;
                 if (authenticationAttempts > WS_MAX_AUTH_ATTEMPTS) {
                     closeWebSocketAndTerminate(ws, 1008, 'Too many authentication attempts', WS_UNAUTHENTICATED_CLOSE_GRACE_MS);
+                    return;
+                }
+                if (!reserveUnauthenticatedClientSlot()) {
+                    clearAuthState();
+                    closeWebSocketAndTerminate(ws, 1008, 'Unauthenticated client capacity reached', WS_UNAUTHENTICATED_CLOSE_GRACE_MS);
                     return;
                 }
                 clearAuthState();
@@ -200,6 +264,7 @@ wss.on('connection', (ws, req) => {
                     }
                     authenticated = true;
                     userId = userObj.id;
+                    releaseUnauthenticatedClientSlot();
                     clearTimeout(unauthenticatedTimeout);
                     authExpiryGuard = createTokenExpiryGuard(ws, expiresAt);
                     ws.send(JSON.stringify({ type: 'auth', status: 'ok' }));
@@ -316,6 +381,7 @@ wss.on('connection', (ws, req) => {
 
     ws.on('close', () => {
         clearTimeout(unauthenticatedTimeout);
+        releaseUnauthenticatedClientSlot();
         clearAuthState();
         logger.debug('ws-server', '前端 WebSocket 已斷開');
     });
@@ -441,7 +507,12 @@ process.on('unhandledRejection', (reason) => {
     logger.error('server', '未處理的 Promise 拒絕', { reason: reason?.message || reason });
 });
 
-module.exports = { app, server };
+module.exports = {
+    app,
+    server,
+    WS_MAX_UNAUTHENTICATED_CLIENTS,
+    WS_MAX_UNAUTHENTICATED_CLIENTS_PER_IP,
+};
 
 if (process.env.NODE_ENV !== 'test') {
     startup();

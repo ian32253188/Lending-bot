@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   saveLoan: vi.fn(),
   closeLoan: vi.fn(),
   saveUserSettings: vi.fn(),
+  submitFundingOffer: vi.fn(),
   strategy: {
     ibrrHistory: {},
     getStatus: vi.fn().mockReturnValue({}),
@@ -36,6 +37,7 @@ mockModule('../bitfinex/rest', {
   getActiveFundingOffers: mocks.getActiveFundingOffers,
   getActiveFundingCredits: mocks.getActiveFundingCredits,
   getActiveFundingLoans: mocks.getActiveFundingLoans,
+  submitFundingOffer: mocks.submitFundingOffer,
   parseWallet: (row: any) => row,
   parseFundingOffer: (row: any) => row,
   parseFundingCredit: (row: any) => row,
@@ -65,6 +67,7 @@ describe('LendingBot private account status', () => {
     mocks.getActiveFundingCredits.mockResolvedValue([]);
     mocks.getActiveFundingLoans.mockResolvedValue([]);
     mocks.saveUserSettings.mockResolvedValue({});
+    mocks.submitFundingOffer.mockReset().mockResolvedValue([]);
     mocks.closeLoan.mockResolvedValue([]);
     mocks.strategy.shouldPause.mockReturnValue({ pause: false });
     mocks.strategy.detectRateSpike.mockReturnValue([]);
@@ -147,6 +150,89 @@ describe('LendingBot private account status', () => {
     expect(status.activeCredits).toEqual({ USD: 0 });
   });
 
+  it('解除 Bitfinex 維護暫停時恢復原本未暫停的引擎', () => {
+    const { EventEmitter } = require('events');
+    const socket = new EventEmitter();
+    const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' });
+    bot._setupWSListeners(socket);
+
+    socket.emit('maintenance', true);
+    expect(bot.paused).toBe(true);
+    expect(bot.pauseReason).toBe('Bitfinex 系統維護中');
+
+    socket.emit('maintenance', false);
+    expect(bot.paused).toBe(false);
+    expect(bot.pauseReason).toBe('');
+    expect(mocks.saveUserSettings).toHaveBeenLastCalledWith('user-a', {
+      status: 'running',
+      pause_reason: '',
+      manual_pause_reason: '',
+      maintenance_paused: false,
+    });
+  });
+
+  it('維護結束後仍保留先前的手動或緊急暫停', () => {
+    const { EventEmitter } = require('events');
+    const socket = new EventEmitter();
+    const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' });
+    bot._setupWSListeners(socket);
+    bot.pause('緊急停止');
+
+    socket.emit('maintenance', true);
+    socket.emit('maintenance', false);
+
+    expect(bot.paused).toBe(true);
+    expect(bot.pauseReason).toBe('緊急停止');
+    expect(mocks.saveUserSettings).toHaveBeenLastCalledWith('user-a', {
+      status: 'paused',
+      pause_reason: '緊急停止',
+      manual_pause_reason: '緊急停止',
+      maintenance_paused: false,
+    });
+  });
+
+  it('維護期間的明確 resume 不會提前解除維護暫停', () => {
+    const { EventEmitter } = require('events');
+    const socket = new EventEmitter();
+    const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' });
+    bot._setupWSListeners(socket);
+    socket.emit('maintenance', true);
+
+    expect(bot.resume()).toBe(false);
+    expect(bot.paused).toBe(true);
+    expect(bot.pauseReason).toBe('Bitfinex 系統維護中');
+    expect(mocks.saveUserSettings).toHaveBeenLastCalledWith('user-a', {
+      status: 'paused',
+      pause_reason: 'Bitfinex 系統維護中',
+      manual_pause_reason: '',
+      maintenance_paused: true,
+    });
+  });
+
+  it('從持久化狀態還原維護來源後，maintenance=false 可解除暫停', () => {
+    const { EventEmitter } = require('events');
+    const socket = new EventEmitter();
+    const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' });
+    bot.restorePauseState({
+      manualPauseReason: '',
+      maintenancePaused: true,
+      pauseReason: 'Bitfinex 系統維護中',
+    });
+    bot._setupWSListeners(socket);
+
+    expect(bot.paused).toBe(true);
+    socket.emit('maintenance', false);
+
+    expect(bot.paused).toBe(false);
+    expect(bot.pauseReason).toBe('');
+    expect(mocks.saveUserSettings).toHaveBeenLastCalledWith('user-a', {
+      status: 'running',
+      pause_reason: '',
+      manual_pause_reason: '',
+      maintenance_paused: false,
+    });
+  });
+
   it('keeps compounding enabled and clears legacy held interest', async () => {
     const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' }, {
       compoundingEnabled: false,
@@ -222,5 +308,36 @@ describe('LendingBot private account status', () => {
     expect(mocks.strategy.calculateOptimalRate).toHaveBeenCalledWith(
       expect.any(Object), 'USD', 50, bot.strategyConfig,
     );
+  });
+
+  it('pauses auto-lending after an ambiguous offer result to prevent a later duplicate submission', async () => {
+    const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' });
+    bot.running = true;
+    bot.state.wallets.USD = { balance: 500, available: 500 };
+    bot.bfxWs = { isConnected: () => true, isAuthenticated: () => true };
+    mocks.strategy.calculateOptimalRate.mockReturnValue({
+      shouldOffer: true,
+      orders: [{ amount: 500, rate: 0.0004, period: 10 }],
+      reason: '',
+    });
+    mocks.submitFundingOffer.mockRejectedValueOnce(Object.assign(
+      new Error('Funding Offer 結果不明；請先查詢 Bitfinex 狀態，再決定是否重新提交。'),
+      { code: 'BITFINEX_WRITE_RESULT_UNKNOWN' },
+    ));
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+
+    try {
+      await Promise.all([
+        bot._processForCurrency('USD'),
+        bot._processForCurrency('USD'),
+      ]);
+      await bot._decisionCycle();
+
+      expect(bot.paused).toBe(true);
+      expect(bot.pauseReason).toContain('Funding Offer 結果待查證');
+      expect(mocks.submitFundingOffer).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });

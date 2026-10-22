@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import crypto from 'node:crypto';
 
 const configMock = {
@@ -21,7 +21,18 @@ const loggerMock = {
 };
 
 const retryMock = {
-  withRetry: (operation: () => unknown) => operation(),
+  withRetry: vi.fn(async (operation: () => unknown, options: { maxRetries?: number } = {}) => {
+    let lastError: unknown;
+    const attempts = options.maxRetries ?? 3;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError;
+  }),
 };
 
 const mockModule = (modulePath: string, exports: unknown) => {
@@ -44,6 +55,10 @@ function okResponse(data: unknown) {
 }
 
 describe('Bitfinex REST adapter', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -157,6 +172,44 @@ describe('Bitfinex REST adapter', () => {
     expect(offerBody).toMatchObject({ type: 'LIMIT', symbol: 'fUSD', amount: '500', rate: '0.0004', period: 10 });
     const transferBody = JSON.parse(fetchMock.mock.calls[1][1].body);
     expect(transferBody).toEqual({ from: 'exchange', to: 'funding', currency: 'USD', currency_to: 'USD', amount: '123.45' });
+  });
+
+  it('does not retry funding offer submissions or wallet transfers after ambiguous failures', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('socket hang up'));
+    vi.stubGlobal('fetch', fetchMock);
+    const credentials = { apiKey: 'key', apiSecret: 'secret' };
+
+    const submitPromise = rest.submitFundingOffer('USD', 500, 0.0004, 10, credentials);
+    await expect(submitPromise)
+      .rejects.toMatchObject({ code: 'BITFINEX_WRITE_RESULT_UNKNOWN' });
+    await expect(submitPromise)
+      .rejects.toThrow('socket hang up');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(retryMock.withRetry).not.toHaveBeenCalled();
+
+    fetchMock.mockClear();
+    const transferPromise = rest.transfer('exchange', 'funding', 'USD', 123.45, credentials);
+    await expect(transferPromise)
+      .rejects.toMatchObject({ code: 'BITFINEX_WRITE_RESULT_UNKNOWN' });
+    await expect(transferPromise)
+      .rejects.toThrow('socket hang up');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(retryMock.withRetry).not.toHaveBeenCalled();
+  });
+
+  it('treats an unreadable successful response as ambiguous without resubmitting', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockRejectedValue(new SyntaxError('invalid JSON response')),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(rest.submitFundingOffer('USD', 500, 0.0004, 10, { apiKey: 'key', apiSecret: 'secret' }))
+      .rejects.toMatchObject({ code: 'BITFINEX_WRITE_RESULT_UNKNOWN' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(retryMock.withRetry).not.toHaveBeenCalled();
   });
 
   it('converts Bitfinex array responses into isolated domain objects', () => {

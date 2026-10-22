@@ -169,11 +169,19 @@ router.post('/engine/:action', async (req, res) => {
                 engine.pause(req.body?.reason || '手動暫停');
                 res.json({ message: '放貸已暫停' });
                 break;
-            case 'resume':
+            case 'resume': {
                 if (!engine) return res.status(400).json({ error: '機器人尚未啟動' });
+                const offerNeedsReconciliation = String(engine.pauseReason || '').includes('Funding Offer 結果待查證');
                 engine.resume();
-                res.json({ message: '放貸已恢復' });
+                res.json({
+                    message: engine.paused
+                        ? '目前仍暫停：' + engine.pauseReason
+                        : offerNeedsReconciliation
+                            ? '放貸已恢復；請確認 Bitfinex 掛單狀態。'
+                            : '放貸已恢復',
+                });
                 break;
+            }
             case 'emergency-stop':
                 if (!engine) return res.status(400).json({ error: '機器人尚未啟動' });
                 await engine.emergencyStop();
@@ -309,6 +317,9 @@ router.post('/offer', async (req, res) => {
         logger.info('lending', `用戶 ${userId} 手動掛單: ${currency} ${parsedAmount} @ ${(parsedRate * 100).toFixed(4)}%`);
         res.json({ message: '掛單已提交', result });
     } catch (err) {
+        if (err.code === 'BITFINEX_WRITE_RESULT_UNKNOWN') {
+            return res.status(409).json({ error: err.message, code: err.code, retryable: false });
+        }
         res.status(500).json({ error: err.message });
     }
 });
@@ -411,6 +422,9 @@ router.post('/transfer', async (req, res) => {
         logger.info('lending', `用戶 ${userId} 手動轉帳: ${parsedAmount} ${currency} (${from} → ${to})`);
         res.json({ message: '轉帳成功', result });
     } catch (err) {
+        if (err.code === 'BITFINEX_WRITE_RESULT_UNKNOWN') {
+            return res.status(409).json({ error: err.message, code: err.code, retryable: false });
+        }
         res.status(500).json({ error: err.message });
     }
 });

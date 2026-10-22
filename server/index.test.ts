@@ -8,11 +8,18 @@ const net = require('net');
 const { randomBytes } = require('crypto');
 const config = require('./config');
 const { SINGLE_ACCOUNT_USER_ID } = require('./config/single-account');
-const { app, server } = require('./index');
+const {
+  app,
+  server,
+  WS_MAX_UNAUTHENTICATED_CLIENTS,
+  WS_MAX_UNAUTHENTICATED_CLIENTS_PER_IP,
+} = require('./index');
+config.server.trustProxyHops = 1;
+app.set('trust proxy', 1);
 
 let serverPort: number;
 
-function openUnauthenticatedRawWebSocket(port: number): Promise<any> {
+function openUnauthenticatedRawWebSocket(port: number, forwardedFor?: string): Promise<any> {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host: '127.0.0.1', port });
     let response = '';
@@ -28,6 +35,7 @@ function openUnauthenticatedRawWebSocket(port: number): Promise<any> {
         'Connection: Upgrade',
         `Sec-WebSocket-Key: ${randomBytes(16).toString('base64')}`,
         'Sec-WebSocket-Version: 13',
+        ...(forwardedFor ? [`X-Forwarded-For: ${forwardedFor}`] : []),
         '',
         '',
       ].join('\r\n'));
@@ -124,13 +132,40 @@ describe('authenticated WebSocket lifetime', () => {
     }
   }, 8_000);
 
-  it('releases capacity promptly when raw unauthenticated clients ignore the close frame', async () => {
+  it('limits unauthenticated slots and releases them after authentication or close', async () => {
     const rawSockets: any[] = [];
+    let authenticatedSocket: any;
     let availableSocket: any;
     try {
-      rawSockets.push(...await Promise.all(
-        Array.from({ length: 100 }, () => openUnauthenticatedRawWebSocket(serverPort)),
-      ));
+      rawSockets.push(...await Promise.all(Array.from(
+        { length: WS_MAX_UNAUTHENTICATED_CLIENTS_PER_IP },
+        () => openUnauthenticatedRawWebSocket(serverPort, '203.0.113.10'),
+      )));
+      await expect(openUnauthenticatedRawWebSocket(serverPort, '203.0.113.10'))
+        .rejects.toThrow(/HTTP\/1\.1 503/);
+      rawSockets.push(...await Promise.all(Array.from(
+        { length: WS_MAX_UNAUTHENTICATED_CLIENTS - WS_MAX_UNAUTHENTICATED_CLIENTS_PER_IP - 1 },
+        () => openUnauthenticatedRawWebSocket(serverPort, '203.0.113.11'),
+      )));
+
+      const expiresAt = Math.floor(Date.now() / 1000) + 120;
+      const token = jwt.sign({ id: SINGLE_ACCOUNT_USER_ID, role: 'admin', exp: expiresAt }, config.jwt.secret);
+      authenticatedSocket = new WebSocket(`ws://127.0.0.1:${serverPort}/ws`, {
+        headers: { 'X-Forwarded-For': '203.0.113.12' },
+      });
+      const authSucceeded = new Promise<void>((resolve, reject) => {
+        authenticatedSocket.on('open', () => authenticatedSocket.send(JSON.stringify({ type: 'auth', token })));
+        authenticatedSocket.on('message', (raw: Buffer) => {
+          const message = JSON.parse(raw.toString());
+          if (message.type === 'auth' && message.status === 'ok') resolve();
+          if (message.type === 'auth' && message.status === 'error') reject(new Error(message.message));
+        });
+      });
+      await authSucceeded;
+
+      rawSockets.push(await openUnauthenticatedRawWebSocket(serverPort, '203.0.113.12'));
+      await expect(openUnauthenticatedRawWebSocket(serverPort, '203.0.113.13'))
+        .rejects.toThrow(/HTTP\/1\.1 503/);
 
       await new Promise(resolve => setTimeout(resolve, 6_000));
       const closedPromptly = await Promise.race([
@@ -151,6 +186,7 @@ describe('authenticated WebSocket lifetime', () => {
       });
     } finally {
       rawSockets.forEach(socket => socket.destroy());
+      if (authenticatedSocket && authenticatedSocket.readyState !== WebSocket.CLOSED) authenticatedSocket.terminate();
       if (availableSocket && availableSocket.readyState !== WebSocket.CLOSED) availableSocket.terminate();
     }
   }, 12_000);

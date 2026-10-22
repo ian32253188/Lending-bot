@@ -34,8 +34,17 @@ async function startBot(userId) {
         const existingBot = activeRunners.get(userId);
         if (existingBot.paused) {
             existingBot.resume();
-            await db.saveUserSettings(userId, { status: 'running', pause_reason: '' });
-            logger.info('manager', `使用者 ${userId} 的放貸機器人已由內部暫停恢復`);
+            const stillPaused = existingBot.paused;
+            await db.saveUserSettings(userId, {
+                status: stillPaused ? 'paused' : 'running',
+                pause_reason: stillPaused ? existingBot.pauseReason : '',
+            });
+            logger.info(
+                'manager',
+                stillPaused
+                    ? '使用者 ' + userId + ' 的放貸機器人仍暫停: ' + existingBot.pauseReason
+                    : '使用者 ' + userId + ' 的放貸機器人已恢復',
+            );
         } else {
             logger.warn('manager', `使用者 ${userId} 的放貸機器人已在運行中，跳過啟動`);
         }
@@ -55,6 +64,8 @@ async function startBot(userId) {
             bitfinex_api_secret,
             status: persistedStatus,
             pause_reason: persistedPauseReason,
+            manual_pause_reason: persistedManualPauseReason,
+            maintenance_paused: persistedMaintenancePaused,
             ...settings
         } = userSettings;
         if (!bitfinex_api_key || !bitfinex_api_secret) {
@@ -78,24 +89,27 @@ async function startBot(userId) {
 
         // 2. 實例化並啟動機器人
         const bot = new LendingBot(userId, credentials, botSettings);
+        if (persistedStatus === 'paused') {
+            await bot.restorePauseState({
+                manualPauseReason: persistedManualPauseReason,
+                maintenancePaused: persistedMaintenancePaused,
+                pauseReason: persistedPauseReason,
+            });
+        }
         await bot.start();
 
         // 3. 快取至記憶體，並更新資料庫狀態為 running
         activeRunners.set(userId, bot);
         metrics.setActiveEngines(activeRunners.size);
         await db.saveUserSettings(userId, {
-            status: 'running',
+            status: bot.paused ? 'paused' : 'running',
+            pause_reason: bot.pauseReason,
+            manual_pause_reason: bot.manualPauseReason,
+            maintenance_paused: bot.maintenancePaused,
             compounding_enabled: true,
             compounding_hold_amount: 0,
             auto_transfer_enabled: false,
         });
-
-        // 部署重啟時，保留使用者上次的暫停狀態；手動啟動暫停中的策略也必須由使用者明確恢復。
-        if (persistedStatus === 'paused') {
-            const pauseReason = persistedPauseReason || '重啟前已暫停';
-            bot.pause(pauseReason);
-            await db.saveUserSettings(userId, { status: 'paused', pause_reason: pauseReason });
-        }
 
         // 4. 初始化用戶的 Telegram Bot (若有設定)
         if (settings.telegram_bot_token && settings.telegram_chat_id) {

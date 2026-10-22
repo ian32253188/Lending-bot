@@ -894,9 +894,16 @@ function setupAdminBotHandlers(bot) {
                 case 'resume_engine': {
                     const { startBot } = require('./engine/manager');
                     if (engine) {
+                        const offerNeedsReconciliation = engine.pauseReason.includes('Funding Offer 結果待查證');
                         engine.resume();
-                        await db.saveUserSettings(userId, { paused: false });
-                        await bot.answerCallbackQuery(query.id, { text: '▶️ 自動放貸已恢復' });
+                        await db.saveUserSettings(userId, { paused: engine.paused });
+                        await bot.answerCallbackQuery(query.id, {
+                            text: engine.paused
+                                ? '⏸️ 仍暫停：' + engine.pauseReason
+                                : offerNeedsReconciliation
+                                    ? '▶️ 已恢復；請確認 Bitfinex 掛單狀態。'
+                                    : '▶️ 自動放貸已恢復',
+                        });
                     } else {
                         // 如果未啟動，則呼叫 startBot 啟動它！
                         await bot.answerCallbackQuery(query.id, { text: '🚀 正在啟動放貸機器人...' });

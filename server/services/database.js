@@ -21,6 +21,8 @@ const USER_SETTINGS_COLUMNS = Object.freeze({
     auto_transfer_enabled: 'auto_transfer_enabled',
     auto_transfer_threshold: 'auto_transfer_threshold',
     pause_reason: 'pause_reason',
+    manual_pause_reason: 'manual_pause_reason',
+    maintenance_paused: 'maintenance_paused',
 });
 const USER_CREDENTIAL_COLUMNS = Object.freeze([
     'bitfinex_api_key',
@@ -197,12 +199,16 @@ async function ensureUserBotSettingsTable() {
             auto_transfer_enabled BOOLEAN DEFAULT false,
             auto_transfer_threshold INT DEFAULT 500,
             pause_reason TEXT,
+            manual_pause_reason TEXT NOT NULL DEFAULT '',
+            maintenance_paused BOOLEAN NOT NULL DEFAULT false,
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );
         ALTER TABLE user_bot_settings
             ALTER COLUMN lending_currencies SET DEFAULT ARRAY['USD']::VARCHAR(10)[],
-            ADD COLUMN IF NOT EXISTS compounding_hold_amount DECIMAL(20, 8) NOT NULL DEFAULT 0;
+            ADD COLUMN IF NOT EXISTS compounding_hold_amount DECIMAL(20, 8) NOT NULL DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS manual_pause_reason TEXT NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS maintenance_paused BOOLEAN NOT NULL DEFAULT false;
         UPDATE user_bot_settings SET lending_currencies = ARRAY['USD']::VARCHAR(10)[] WHERE lending_currencies IS DISTINCT FROM ARRAY['USD']::VARCHAR(10)[];
         UPDATE bot_settings
         SET value = jsonb_set(value, '{currencies}', '["USD"]'::jsonb, true), updated_at = NOW()
@@ -1966,6 +1972,19 @@ async function saveUserSettings(userId, settings) {
         delete normalizedSettings.paused;
     }
 
+    if (Object.prototype.hasOwnProperty.call(normalizedSettings, 'manual_pause_reason')
+        && typeof normalizedSettings.manual_pause_reason !== 'string') {
+        const error = new Error('設定欄位格式無效');
+        error.code = 'INVALID_USER_SETTINGS';
+        throw error;
+    }
+    if (Object.prototype.hasOwnProperty.call(normalizedSettings, 'maintenance_paused')
+        && typeof normalizedSettings.maintenance_paused !== 'boolean') {
+        const error = new Error('設定欄位格式無效');
+        error.code = 'INVALID_USER_SETTINGS';
+        throw error;
+    }
+
     const hasUnsupportedField = Object.keys(normalizedSettings).some(
         key => !Object.prototype.hasOwnProperty.call(USER_SETTINGS_COLUMNS, key)
     );
@@ -2083,7 +2102,7 @@ async function getUsersToResume() {
     if (isPostgresConfigured()) {
         try {
             if (!(await ensureUserBotSettingsTable())) throw new Error('Could not ensure user_bot_settings table');
-            const res = await query(`SELECT user_id, status, pause_reason FROM user_bot_settings WHERE status IN ('running', 'paused');`);
+            const res = await query(`SELECT user_id, status, pause_reason, manual_pause_reason, maintenance_paused FROM user_bot_settings WHERE status IN ('running', 'paused');`);
             return res.rows || [];
         } catch (err) {
             console.error('getUsersToResume (pg) error:', err);
@@ -2095,8 +2114,15 @@ async function getUsersToResume() {
     if (!db) return [];
     let { data, error } = await db
         .from('user_bot_settings')
-        .select('user_id, status, pause_reason')
+        .select('user_id, status, pause_reason, manual_pause_reason, maintenance_paused')
         .in('status', ['running', 'paused']);
+
+    if (error && /manual_pause_reason|maintenance_paused|pause_reason|column .* does not exist/i.test(error.message || '')) {
+        ({ data, error } = await db
+            .from('user_bot_settings')
+            .select('user_id, status, pause_reason')
+            .in('status', ['running', 'paused']));
+    }
 
     if (error && /pause_reason|column .* does not exist/i.test(error.message || '')) {
         ({ data, error } = await db

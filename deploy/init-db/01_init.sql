@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS user_bot_settings (
     auto_transfer_enabled BOOLEAN DEFAULT false,
     auto_transfer_threshold INT DEFAULT 500,
     pause_reason TEXT,
+    manual_pause_reason TEXT NOT NULL DEFAULT '',
+    maintenance_paused BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

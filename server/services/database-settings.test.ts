@@ -124,6 +124,26 @@ describe('PostgreSQL user settings writes', () => {
     expect(params).toEqual([userId, 'operator pause', 'paused', expect.any(String)]);
   });
 
+  it('persists independent maintenance and operator pause causes', async () => {
+    await db.saveUserSettings(userId, {
+      status: 'paused',
+      pause_reason: 'operator pause、Bitfinex 系統維護中',
+      manual_pause_reason: 'operator pause',
+      maintenance_paused: true,
+    });
+
+    const [sql, params] = state.pgQueries.find(([statement]) => statement.includes('INSERT INTO user_bot_settings'))!;
+    expect(sql).toContain('pause_reason, manual_pause_reason, maintenance_paused');
+    expect(params).toEqual([
+      userId,
+      'paused',
+      'operator pause、Bitfinex 系統維護中',
+      'operator pause',
+      true,
+      expect.any(String),
+    ]);
+  });
+
   it('encrypts credentials centrally before writing to PostgreSQL', async () => {
     const { decrypt } = require('../utils/crypto');
 

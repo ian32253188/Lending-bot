@@ -103,11 +103,23 @@ export default function StrategyPanel({ status, token, onRefresh }) {
                 </div>
             </div>
 
+            {status?.paused && status.pauseReason && (
+                <div className="strategy-message" role="status">
+                    <strong>暫停原因：</strong>{status.pauseReason}
+                    {status.pauseReason.includes('Funding Offer 結果待查證') && (
+                        <span>。請先到 Bitfinex 查詢掛單狀態，再確認恢復，避免重複掛單。</span>
+                    )}
+                </div>
+            )}
+
             {confirmAction && (
                 <div className="strategy-confirmation" role="group" aria-label={confirmAction === 'start' ? '確認啟動放貸' : '確認停止機器人'}>
                     {confirmAction === 'start' ? (
                         <>
                             <strong>{status?.running && status?.paused ? '恢復放貸前確認' : '啟動前確認'}</strong>
+                            {status?.pauseReason?.includes('Funding Offer 結果待查證') && (
+                                <p role="alert">此引擎因掛單結果不明而暫停。請先在 Bitfinex 核對活躍掛單，確認後再恢復。</p>
+                            )}
                             <p>
                                 {availableUsd == null
                                     ? '帳戶餘額尚未同步；機器人連線後會讀取可用 USD。'

@@ -23,6 +23,8 @@ class MockLendingBot {
   running = false;
   paused = false;
   pauseReason = '';
+  manualPauseReason = '';
+  maintenancePaused = false;
   stop = vi.fn(async () => { this.running = false; });
 
   async start() {
@@ -30,8 +32,38 @@ class MockLendingBot {
   }
 
   pause(reason: string) {
+    this.manualPauseReason = reason;
     this.paused = true;
     this.pauseReason = reason;
+  }
+
+  restorePauseState({ manualPauseReason, maintenancePaused, pauseReason }: {
+    manualPauseReason?: string;
+    maintenancePaused?: boolean;
+    pauseReason?: string;
+  }) {
+    this.manualPauseReason = manualPauseReason ?? '';
+    this.maintenancePaused = maintenancePaused === true;
+    if (!this.manualPauseReason && !this.maintenancePaused) {
+      this.manualPauseReason = pauseReason || '重啟前已暫停';
+    }
+    this.paused = Boolean(this.manualPauseReason) || this.maintenancePaused;
+    this.pauseReason = [this.manualPauseReason, this.maintenancePaused ? 'Bitfinex 系統維護中' : '']
+      .filter(Boolean).join('、');
+  }
+
+  setMaintenancePaused(active: boolean) {
+    this.maintenancePaused = active;
+    this.paused = Boolean(this.manualPauseReason) || this.maintenancePaused;
+    this.pauseReason = [this.manualPauseReason, this.maintenancePaused ? 'Bitfinex 系統維護中' : '']
+      .filter(Boolean).join('、');
+  }
+
+  resume() {
+    this.manualPauseReason = '';
+    this.paused = this.maintenancePaused;
+    this.pauseReason = this.maintenancePaused ? 'Bitfinex 系統維護中' : '';
+    return !this.paused;
   }
 }
 
@@ -113,6 +145,48 @@ describe('Engine manager persisted state', () => {
       auto_transfer_enabled: false,
     }));
     expect(saveUserSettings).not.toHaveBeenCalledWith(userId, { status: 'stopped' });
+  });
+
+  it('管理員重新啟動仍在維護暫停的引擎時不會持久化為 running', async () => {
+    const bot = await startBot(userId);
+    bot.maintenancePaused = true;
+    bot.paused = true;
+    bot.pauseReason = 'Bitfinex 系統維護中';
+    saveUserSettings.mockClear();
+
+    await startBot(userId);
+
+    expect(bot.paused).toBe(true);
+    expect(saveUserSettings).toHaveBeenCalledWith(userId, {
+      status: 'paused',
+      pause_reason: 'Bitfinex 系統維護中',
+    });
+    expect(saveUserSettings).not.toHaveBeenCalledWith(userId, {
+      status: 'running',
+      pause_reason: '',
+    });
+  });
+
+  it('重啟時還原維護暫停來源，維護結束後可解除', async () => {
+    getUserSettings.mockResolvedValueOnce({
+      bitfinex_api_key: 'key',
+      bitfinex_api_secret: 'secret',
+      status: 'paused',
+      pause_reason: 'Bitfinex 系統維護中',
+      manual_pause_reason: '',
+      maintenance_paused: true,
+      lending_currencies: ['USD'],
+      strategy_config: { rateStrategy: 'current_avg', periodDays: 2 },
+    });
+
+    const bot = await startBot(userId);
+
+    expect(bot.paused).toBe(true);
+    expect(bot.maintenancePaused).toBe(true);
+    expect(bot.manualPauseReason).toBe('');
+    bot.setMaintenancePaused(false);
+    expect(bot.paused).toBe(false);
+    expect(bot.pauseReason).toBe('');
   });
 
   it('拒絕啟動第二個帳戶，也不讀取或修改其設定', async () => {
