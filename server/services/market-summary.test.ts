@@ -203,6 +203,40 @@ describe('fUSD market summary helpers', () => {
     expect(summary.marketDataSources.rateHistory).toContain('daily mean of hourly closes');
   });
 
+  it('fills missing daily metrics from public candles even when the date already has a history row', async () => {
+    const now = Date.parse('2026-10-04T08:00:00Z');
+    const firstDate = Date.UTC(2026, 8, 5);
+    const rows = Array.from({ length: 30 }, (_, index) => ({
+      recorded_at: `${new Date(firstDate + index * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)}T00:00:00+08:00`,
+      avg_rate: 0.0002,
+      high_rate: 0.0003,
+      low_rate: 0.00005,
+    }));
+    const missingMetricDay = rows[15];
+    missingMetricDay.high_rate = null;
+    const missingMetricDate = missingMetricDay.recorded_at.slice(0, 10);
+    const restClient = {
+      getFundingCandles: vi.fn().mockResolvedValue([
+        [Date.parse(`${missingMetricDate}T04:00:00+08:00`), 0.0002, 0.00025, 0.001, 0.00004, 100],
+      ]),
+    };
+
+    const summary = await getCachedFundingMarketSummary({
+      now,
+      force: true,
+      db: { getRateHistory: vi.fn().mockResolvedValue(rows) },
+      restClient,
+      tradeData: [],
+      publicWs: { getMarketData: () => ({}) },
+    });
+
+    expect(restClient.getFundingCandles).toHaveBeenCalledWith('USD', { limit: 1000, sort: -1 });
+    expect(summary.average30dApy).toBeCloseTo(7.3, 6);
+    expect(summary.high30dApy).toBeCloseTo(36.5, 6);
+    expect(summary.low30dApy).toBeCloseTo(1.825, 6);
+    expect(summary.historyCandleFallbackDays).toBe(1);
+  });
+
   it('does not use stale public ticker values as current market data', async () => {
     const now = Date.parse('2026-08-28T08:00:00Z');
     const summary = await buildFundingMarketSummary({

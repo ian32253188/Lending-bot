@@ -2,6 +2,7 @@ import os
 import json
 import urllib.request
 import numpy as np
+from secure_supabase_url import require_secure_supabase_url
 
 def load_env():
     env_vars = {}
@@ -16,7 +17,7 @@ def load_env():
     return env_vars
 
 def fetch_data(env):
-    supabase_url = env.get('SUPABASE_URL')
+    supabase_url = require_secure_supabase_url(env.get('SUPABASE_URL'))
     supabase_key = env.get('SUPABASE_KEY')
     url = f"{supabase_url}/rest/v1/rate_history?select=*&order=recorded_at.desc&limit=1000"
     req = urllib.request.Request(

@@ -2,7 +2,7 @@ const { TelegramBot } = require('node-telegram-bot-api');
 const config = require('../config');
 const logger = require('../utils/logger');
 const cron = require('node-cron');
-const { buildFundingMarketSummary } = require('./market-summary');
+const { getCachedFundingMarketSummary } = require('./market-summary');
 const { RATE_STRATEGY_LABELS, PERIOD_DAYS, normalizeStrategyConfig } = require('./strategy-config');
 const {
     normalizeTelegramChatId,
@@ -29,7 +29,7 @@ function ensureDailySummarySchedule() {
     if (dailySummaryJob) return;
 
     // 每日摘要與管理員 Bot 無關；SaaS 使用者只設定自己的 Bot 時也必須啟動
-    dailySummaryJob = cron.schedule('0 7 * * *', () => {
+    dailySummaryJob = cron.schedule('0 12 * * *', () => {
         logger.info('telegram', '⏰ 觸發每日放貸摘要定時任務...');
         sendDailySummary().catch(err => {
             logger.error('telegram', '定時發送每日摘要失敗', { error: err.message });
@@ -37,7 +37,7 @@ function ensureDailySummarySchedule() {
     }, {
         timezone: 'Asia/Taipei'
     });
-    logger.info('telegram', '📅 已註冊每日放貸摘要排程 (每天 07:00 台北時間)');
+    logger.info('telegram', '📅 已註冊每日放貸摘要排程 (每天 12:00 台北時間)');
 }
 
 function ensureActualFundingInterestSchedule() {
@@ -295,7 +295,7 @@ async function sendDailySummary() {
     const { getBot } = require('./engine/manager');
     const { getBitfinexPublicWS } = require('./bitfinex/ws');
     const publicWs = getBitfinexPublicWS();
-    const marketSummary = await buildFundingMarketSummary({ publicWs, db });
+    const marketSummary = await getCachedFundingMarketSummary({ publicWs, db });
 
     // 收集所有需要發送摘要的 targets: (userId, engine)
     const targets = [];
@@ -1119,11 +1119,10 @@ function getControlPanelKeyboard(engine, dbSettings = null) {
 
 async function saveTelegramStrategySettings(userId, strategyConfig, wasRunning) {
     const db = require('./database');
-    const { startBot, stopBot } = require('./engine/manager');
+    const { restartBotPreservingState } = require('./engine/manager');
     await db.saveUserSettings(userId, { strategy_config: strategyConfig });
     if (wasRunning) {
-        await stopBot(userId);
-        await startBot(userId);
+        await restartBotPreservingState(userId);
     }
 }
 
@@ -1146,6 +1145,7 @@ module.exports = {
     formatFundingMarketSection,
     formatPrivateAccountSection,
     buildInactiveUserSummaryMessage,
+    ensureDailySummarySchedule,
     getControlPanelText,
     getControlPanelKeyboard,
 };

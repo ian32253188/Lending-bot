@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   closeLoan: vi.fn(),
   saveUserSettings: vi.fn(),
   submitFundingOffer: vi.fn(),
+  cancelAllFundingOffers: vi.fn(),
   strategy: {
     ibrrHistory: {},
     getStatus: vi.fn().mockReturnValue({}),
@@ -37,6 +38,7 @@ mockModule('../bitfinex/rest', {
   getActiveFundingOffers: mocks.getActiveFundingOffers,
   getActiveFundingCredits: mocks.getActiveFundingCredits,
   getActiveFundingLoans: mocks.getActiveFundingLoans,
+  cancelAllFundingOffers: mocks.cancelAllFundingOffers,
   submitFundingOffer: mocks.submitFundingOffer,
   parseWallet: (row: any) => row,
   parseFundingOffer: (row: any) => row,
@@ -66,6 +68,7 @@ describe('LendingBot private account status', () => {
     mocks.getActiveFundingOffers.mockResolvedValue([]);
     mocks.getActiveFundingCredits.mockResolvedValue([]);
     mocks.getActiveFundingLoans.mockResolvedValue([]);
+    mocks.cancelAllFundingOffers.mockReset().mockResolvedValue([]);
     mocks.saveUserSettings.mockResolvedValue({});
     mocks.submitFundingOffer.mockReset().mockResolvedValue([]);
     mocks.closeLoan.mockResolvedValue([]);
@@ -336,8 +339,70 @@ describe('LendingBot private account status', () => {
       expect(bot.paused).toBe(true);
       expect(bot.pauseReason).toContain('Funding Offer 結果待查證');
       expect(mocks.submitFundingOffer).toHaveBeenCalledTimes(1);
+      expect(mocks.saveUserSettings).toHaveBeenCalledWith('user-a', expect.objectContaining({
+        status: 'paused',
+        pause_reason: 'Funding Offer 提交狀態待確認',
+        manual_pause_reason: 'Funding Offer 提交狀態待確認',
+      }));
+      expect(mocks.saveUserSettings.mock.invocationCallOrder[0])
+        .toBeLessThan(mocks.submitFundingOffer.mock.invocationCallOrder[0]);
     } finally {
       vi.restoreAllMocks();
     }
+  });
+
+  it('does not submit a Funding Offer when the durable pre-submit marker cannot be saved', async () => {
+    const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' });
+    bot.running = true;
+    bot.state.wallets.USD = { balance: 500, available: 500 };
+    bot.bfxWs = { isConnected: () => true, isAuthenticated: () => true };
+    mocks.strategy.calculateOptimalRate.mockReturnValue({
+      shouldOffer: true,
+      orders: [{ amount: 500, rate: 0.0004, period: 10 }],
+      reason: '',
+    });
+    mocks.saveUserSettings.mockRejectedValueOnce(new Error('database unavailable'));
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+
+    try {
+      await bot._processForCurrency('USD');
+
+      expect(mocks.submitFundingOffer).not.toHaveBeenCalled();
+      expect(bot.paused).toBe(true);
+      expect(bot.pauseReason).toContain('掛單前狀態寫入失敗');
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('keeps emergency stop paused and reports failure when Bitfinex cannot cancel every offer', async () => {
+    mocks.cancelAllFundingOffers.mockRejectedValueOnce(new Error('Bitfinex timeout'));
+    const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' });
+    bot.running = true;
+
+    await expect(bot.emergencyStop()).rejects.toMatchObject({ code: 'EMERGENCY_STOP_INCOMPLETE' });
+
+    expect(bot.paused).toBe(true);
+    expect(mocks.getActiveFundingOffers).not.toHaveBeenCalled();
+  });
+
+  it('verifies there are no active offers before reporting emergency stop complete', async () => {
+    mocks.getActiveFundingOffers.mockResolvedValueOnce([{ id: 88 }]);
+    const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' });
+    bot.running = true;
+
+    await expect(bot.emergencyStop()).rejects.toMatchObject({ code: 'EMERGENCY_STOP_INCOMPLETE' });
+
+    expect(mocks.cancelAllFundingOffers).toHaveBeenCalledWith('USD', { apiKey: 'key', apiSecret: 'secret' });
+    expect(bot.paused).toBe(true);
+  });
+
+  it('reports emergency stop incomplete if the paused engine state cannot be persisted', async () => {
+    mocks.saveUserSettings.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('database unavailable'));
+    const bot = new LendingBot('user-a', { apiKey: 'key', apiSecret: 'secret' });
+
+    await expect(bot.emergencyStop()).rejects.toMatchObject({ code: 'EMERGENCY_STOP_INCOMPLETE' });
+    expect(mocks.cancelAllFundingOffers).toHaveBeenCalledOnce();
+    expect(bot.paused).toBe(true);
   });
 });
