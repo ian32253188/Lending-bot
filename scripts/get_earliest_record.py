@@ -1,6 +1,7 @@
 import os
 import json
 import urllib.request
+from secure_supabase_url import require_secure_supabase_url
 
 def load_env():
     env_vars = {}
@@ -15,7 +16,7 @@ def load_env():
     return env_vars
 
 def fetch_earliest(env, table, order_col):
-    supabase_url = env.get('SUPABASE_URL')
+    supabase_url = require_secure_supabase_url(env.get('SUPABASE_URL'))
     supabase_key = env.get('SUPABASE_KEY')
     url = f"{supabase_url}/rest/v1/{table}?select={order_col}&order={order_col}.asc&limit=1"
     req = urllib.request.Request(
@@ -32,7 +33,7 @@ def fetch_earliest(env, table, order_col):
     return None
 
 def fetch_total_count(env, table):
-    supabase_url = env.get('SUPABASE_URL')
+    supabase_url = require_secure_supabase_url(env.get('SUPABASE_URL'))
     supabase_key = env.get('SUPABASE_KEY')
     # Use Prefer header to count
     url = f"{supabase_url}/rest/v1/{table}?select=count"
