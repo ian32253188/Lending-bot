@@ -312,6 +312,23 @@ async function ensureApplicationDataTables() {
         CREATE INDEX IF NOT EXISTS idx_earnings_user ON earnings (user_id);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_earnings_user_ledger ON earnings (user_id, ledger_id);
 
+        CREATE TABLE IF NOT EXISTS order_book_snapshots (
+            id BIGSERIAL PRIMARY KEY,
+            currency TEXT NOT NULL,
+            frr DOUBLE PRECISION,
+            bids JSONB,
+            asks JSONB,
+            bid_total DOUBLE PRECISION,
+            ask_total DOUBLE PRECISION,
+            spread DOUBLE PRECISION,
+            best_bid_rate DOUBLE PRECISION,
+            best_ask_rate DOUBLE PRECISION,
+            demand_supply_ratio DOUBLE PRECISION,
+            recorded_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_obs_cur_time
+            ON order_book_snapshots (currency, recorded_at DESC);
+
         CREATE TABLE IF NOT EXISTS operation_logs (
             id SERIAL PRIMARY KEY,
             level VARCHAR(10) NOT NULL DEFAULT 'info',
