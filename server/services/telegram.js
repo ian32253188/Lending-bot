@@ -774,8 +774,10 @@ function setupAdminBotHandlers(bot) {
 
     // `/status` 指令
     bot.onText(/\/status/, async (msg) => {
-        if (!(await isAuthorized(msg))) return;
         try {
+            if (!(await isAuthorized(msg))) return;
+            logger.info('telegram', '收到 /status 指令');
+
             const db = require('./database');
             const { getBot } = require('./engine/manager');
             const { getStrategyEngine } = require('./engine/strategy');
@@ -790,9 +792,31 @@ function setupAdminBotHandlers(bot) {
             const userId = boundSettings?.user_id || activeUserId || SINGLE_ACCOUNT_USER_ID;
             const engine = getBot(userId);
             const report = await buildUserSummaryMessage(userId, engine, strategy, publicWs, db, marketSummary);
-            bot.sendMessage(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => {});
+            // Status output is plain text. Avoid Telegram HTML parsing failures
+            // when a dynamic pause reason or account value contains markup.
+            await bot.sendMessage(msg.chat.id, report);
+            logger.info('telegram', '/status 回覆已送出');
         } catch (err) {
-            bot.sendMessage(msg.chat.id, `❌ 查詢狀態失敗: ${err.message}`).catch(() => {});
+            const safeError = String(err?.message || err || 'unknown error')
+                .replace(/bot\d+:[A-Za-z0-9_-]+/gi, '[REDACTED]')
+                .replace(/\b\d{8,}\b/g, '[ID]')
+                .slice(0, 240);
+            logger.error('telegram', '/status 指令處理或回覆失敗', {
+                error: safeError,
+                code: err?.code || null,
+            });
+            try {
+                await bot.sendMessage(msg.chat.id, '❌ 查詢狀態失敗，請稍後再試。');
+            } catch (sendErr) {
+                const safeSendError = String(sendErr?.message || sendErr || 'unknown error')
+                    .replace(/bot\d+:[A-Za-z0-9_-]+/gi, '[REDACTED]')
+                    .replace(/\b\d{8,}\b/g, '[ID]')
+                    .slice(0, 240);
+                logger.error('telegram', '/status 錯誤提示無法送達', {
+                    error: safeSendError,
+                    code: sendErr?.code || null,
+                });
+            }
         }
     });
 
