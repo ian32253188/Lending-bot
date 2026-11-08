@@ -112,14 +112,28 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
   });
 
   it('GET /metrics 應能輸出符合 Prometheus Exposition 格式之指標', async () => {
-    const res = await request(app)
-      .get('/metrics')
-      .expect(200);
+    const previousUsername = process.env.METRICS_USERNAME;
+    const previousPassword = process.env.METRICS_PASSWORD;
+    process.env.METRICS_USERNAME = 'test-metrics-user';
+    process.env.METRICS_PASSWORD = 'test-metrics-password';
 
-    // 驗證是否回傳文字格式指標
-    expect(res.text).toContain('lending_bot_balance_usd');
-    expect(res.text).toContain('lending_bot_active_loans_count');
-    expect(res.headers['content-type']).toContain('text/plain');
+    try {
+      const credentials = Buffer.from('test-metrics-user:test-metrics-password').toString('base64');
+      const res = await request(app)
+        .get('/metrics')
+        .set('Authorization', `Basic ${credentials}`)
+        .expect(200);
+
+      // 驗證是否回傳文字格式指標
+      expect(res.text).toContain('lending_bot_balance_usd');
+      expect(res.text).toContain('lending_bot_active_loans_count');
+      expect(res.headers['content-type']).toContain('text/plain');
+    } finally {
+      if (previousUsername === undefined) delete process.env.METRICS_USERNAME;
+      else process.env.METRICS_USERNAME = previousUsername;
+      if (previousPassword === undefined) delete process.env.METRICS_PASSWORD;
+      else process.env.METRICS_PASSWORD = previousPassword;
+    }
   });
 
   it('POST /api/lending/engine/start 在無 Token 時應回傳 401 Unauthorized', async () => {

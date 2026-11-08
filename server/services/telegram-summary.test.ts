@@ -284,7 +284,9 @@ describe('Telegram daily summary currency display', () => {
 
     expect(message).toContain('近 24H 成交加權均值: 6.53%');
     expect(message).not.toContain('24H 成交額:');
-    expect(message).toContain('30 日最低: 0.02%');
+    expect(message).toContain('30 日平均: 7.7400%');
+    expect(message).toContain('30 日最高: 13.0000%');
+    expect(message).toContain('30 日最低: 0.0200%');
     expect(message).not.toContain('逐時撮合');
     expect(message).not.toContain('歷史覆蓋');
     expect(message).not.toContain('歷史來源');

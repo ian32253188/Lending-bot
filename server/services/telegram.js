@@ -465,6 +465,12 @@ function formatPercent(value) {
         : `${Number(value).toFixed(2)}%`;
 }
 
+function formatLongTermPercent(value) {
+    return value === null || value === undefined || !Number.isFinite(Number(value))
+        ? '—'
+        : `${Number(value).toFixed(4)}%`;
+}
+
 function formatAmount(value) {
     const amount = Number(value);
     return Number.isFinite(amount) ? `$${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—';
@@ -554,9 +560,9 @@ function formatFundingMarketSection(summary, { concise = false } = {}) {
         return `📈 fUSD 市場行情\n` +
             `  ├─ ${currentRateLabel}: ${formatPercent(summary.currentApy)}\n` +
             `  ├─ 24H 區間: ${formatPercent(summary.low24hApy)} – ${formatPercent(summary.high24hApy)}\n` +
-            `  ├─ 30 日平均: ${formatPercent(summary.average30dApy)}\n` +
-            `  ├─ 30 日最高: ${formatPercent(summary.high30dApy)}\n` +
-            `  └─ 30 日最低: ${formatPercent(summary.low30dApy)}\n`;
+            `  ├─ 30 日平均: ${formatLongTermPercent(summary.average30dApy)}\n` +
+            `  ├─ 30 日最高: ${formatLongTermPercent(summary.high30dApy)}\n` +
+            `  └─ 30 日最低: ${formatLongTermPercent(summary.low30dApy)}\n`;
     }
 
     let msg = `📈 <b>fUSD 市場行情</b>（Bitfinex 公開資料）\n`;
@@ -564,9 +570,9 @@ function formatFundingMarketSection(summary, { concise = false } = {}) {
     msg += `  ├─ 24H 區間: ${formatPercent(summary.low24hApy)} – ${formatPercent(summary.high24hApy)}\n`;
     msg += `  ├─ 24H 最高: ${formatPercent(summary.high24hApy)}（${summary.high24hSource || '來源未知'}）\n`;
     msg += `  ├─ 24H 成交額: ${formatAmount(summary.volume24h)}（${summary.volume24hSource || '來源未知'}）\n`;
-    msg += `  ├─ 30 日平均: ${formatPercent(summary.average30dApy)}\n`;
-    msg += `  ├─ 30 日最高: ${formatPercent(summary.high30dApy)}\n`;
-    msg += `  ├─ 30 日最低: ${formatPercent(summary.low30dApy)}\n`;
+    msg += `  ├─ 30 日平均: ${formatLongTermPercent(summary.average30dApy)}\n`;
+    msg += `  ├─ 30 日最高: ${formatLongTermPercent(summary.high30dApy)}\n`;
+    msg += `  ├─ 30 日最低: ${formatLongTermPercent(summary.low30dApy)}\n`;
     if (!concise && summary.currentRateSource) {
         msg += `  ├─ 成交均值來源: ${summary.currentRateSource}${summary.currentRateObservedAt ? `（截至 ${new Date(summary.currentRateObservedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}）` : ''}\n`;
     }

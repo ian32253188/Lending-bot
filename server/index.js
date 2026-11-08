@@ -87,7 +87,7 @@ app.get('/metrics', async (req, res) => {
     const expectedUser = process.env.METRICS_USERNAME;
     const expectedPass = process.env.METRICS_PASSWORD;
 
-    // 如果配置了 Basic Auth 環境變數，強制作出密碼校驗
+    // Metrics 僅在完整設定 Basic Auth 後開放，避免反向代理使外部請求看起來像 loopback。
     if (expectedUser && expectedPass) {
         if (!authHeader || !authHeader.startsWith('Basic ')) {
             res.setHeader('WWW-Authenticate', 'Basic realm="Metrics"');
@@ -102,12 +102,7 @@ app.get('/metrics', async (req, res) => {
             return res.status(403).send('Forbidden');
         }
     } else {
-        // 預設防禦：無配置密碼時拒絕任何外部 IP 存取
-        const ip = req.ip || req.socket.remoteAddress;
-        const isLocal = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.includes('localhost');
-        if (!isLocal) {
-            return res.status(403).send('Forbidden: External access to /metrics is disabled by default.');
-        }
+        return res.status(403).send('Forbidden: Configure METRICS_USERNAME and METRICS_PASSWORD to enable /metrics.');
     }
 
     try {
