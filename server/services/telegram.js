@@ -785,7 +785,7 @@ function setupAdminBotHandlers(bot) {
             
             const strategy = getStrategyEngine();
             const publicWs = getBitfinexPublicWS();
-            const marketSummary = await buildFundingMarketSummary({ publicWs, db });
+            const marketSummary = await getCachedFundingMarketSummary({ publicWs, db });
 
             const boundSettings = await getSettingsByChatId(msg.chat.id);
             const activeUserId = (await db.getActiveUsers()).find(isSingleAccount);
