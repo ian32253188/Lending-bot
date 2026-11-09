@@ -288,7 +288,7 @@ router.post('/offer', async (req, res) => {
         }
 
         const parsedAmount = parseFloat(amount);
-        if (isNaN(parsedAmount) || parsedAmount < 150) {
+        if (!Number.isFinite(parsedAmount) || parsedAmount < 150) {
             return res.status(400).json({ error: '最低掛單金額為 150 且必須為數字' });
         }
 
@@ -399,7 +399,7 @@ router.post('/transfer', async (req, res) => {
         }
 
         const parsedAmount = parseFloat(amount);
-        if (isNaN(parsedAmount) || parsedAmount <= 0) {
+        if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
             return res.status(400).json({ error: '金額必須為大於 0 的數字' });
         }
 

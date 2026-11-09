@@ -4,6 +4,7 @@ const getEarnings = vi.fn();
 const getUsdToTwdRate = vi.fn();
 const getRateHistory = vi.fn();
 const getUserSettings = vi.fn();
+const cronSchedule = vi.fn(() => ({}));
 
 const mockModule = (modulePath: string, exports: unknown) => {
   const resolved = require.resolve(modulePath);
@@ -16,6 +17,7 @@ mockModule('../config', {
   telegram: {},
 });
 mockModule('../utils/logger', { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() });
+mockModule('node-cron', { schedule: cronSchedule });
 mockModule('./database', { getEarnings, getRateHistory, getUserSettings });
 mockModule('./exchange-rate', {
   getUsdToTwdRate,
@@ -30,6 +32,7 @@ const {
   buildGlobalSummaryMessage,
   formatFundingMarketSection,
   buildInactiveUserSummaryMessage,
+  ensureDailySummarySchedule,
 } = require('./telegram');
 
 describe('Telegram daily summary currency display', () => {
@@ -281,10 +284,20 @@ describe('Telegram daily summary currency display', () => {
 
     expect(message).toContain('近 24H 成交加權均值: 6.53%');
     expect(message).not.toContain('24H 成交額:');
-    expect(message).toContain('30 日最低: 0.02%');
+    expect(message).toContain('30 日平均: 7.7400%');
+    expect(message).toContain('30 日最高: 13.0000%');
+    expect(message).toContain('30 日最低: 0.0200%');
     expect(message).not.toContain('逐時撮合');
     expect(message).not.toContain('歷史覆蓋');
     expect(message).not.toContain('歷史來源');
+  });
+
+  it('schedules the daily Telegram summary at noon Taipei time', () => {
+    ensureDailySummarySchedule();
+
+    expect(cronSchedule).toHaveBeenCalledWith('0 12 * * *', expect.any(Function), {
+      timezone: 'Asia/Taipei',
+    });
   });
 
   it('does not report unavailable public trades as an empty market', () => {

@@ -112,14 +112,28 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
   });
 
   it('GET /metrics 應能輸出符合 Prometheus Exposition 格式之指標', async () => {
-    const res = await request(app)
-      .get('/metrics')
-      .expect(200);
+    const previousUsername = process.env.METRICS_USERNAME;
+    const previousPassword = process.env.METRICS_PASSWORD;
+    process.env.METRICS_USERNAME = 'test-metrics-user';
+    process.env.METRICS_PASSWORD = 'test-metrics-password';
 
-    // 驗證是否回傳文字格式指標
-    expect(res.text).toContain('lending_bot_balance_usd');
-    expect(res.text).toContain('lending_bot_active_loans_count');
-    expect(res.headers['content-type']).toContain('text/plain');
+    try {
+      const credentials = Buffer.from('test-metrics-user:test-metrics-password').toString('base64');
+      const res = await request(app)
+        .get('/metrics')
+        .set('Authorization', `Basic ${credentials}`)
+        .expect(200);
+
+      // 驗證是否回傳文字格式指標
+      expect(res.text).toContain('lending_bot_balance_usd');
+      expect(res.text).toContain('lending_bot_active_loans_count');
+      expect(res.headers['content-type']).toContain('text/plain');
+    } finally {
+      if (previousUsername === undefined) delete process.env.METRICS_USERNAME;
+      else process.env.METRICS_USERNAME = previousUsername;
+      if (previousPassword === undefined) delete process.env.METRICS_PASSWORD;
+      else process.env.METRICS_PASSWORD = previousPassword;
+    }
   });
 
   it('POST /api/lending/engine/start 在無 Token 時應回傳 401 Unauthorized', async () => {
@@ -164,6 +178,20 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
     expect(mockEngine.emergencyStop).toHaveBeenCalledOnce();
   });
 
+  it('emergency-stop 撤單不完整時不得回報成功', async () => {
+    mockEngine.emergencyStop.mockRejectedValueOnce(Object.assign(
+      new Error('緊急停止未完成：USD：Bitfinex timeout'),
+      { code: 'EMERGENCY_STOP_INCOMPLETE' },
+    ));
+
+    const response = await request(app)
+      .post('/api/lending/engine/emergency-stop')
+      .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)
+      .expect(500);
+
+    expect(response.body.error).toContain('緊急停止未完成');
+  });
+
   it('未知引擎操作或沒有已啟動引擎時應拒絕請求', async () => {
     await request(app)
       .post('/api/lending/engine/restart')
@@ -178,6 +206,18 @@ describe('API & Endpoint 整合測試 (supertest)', () => {
   });
 
   it('手動掛單與轉帳的輸入驗證應在觸碰交易 API 前完成', async () => {
+    await request(app)
+      .post('/api/lending/offer')
+      .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)
+      .send({ currency: 'USD', amount: 'Infinity', rate: 0.001, period: 2 })
+      .expect(400);
+
+    await request(app)
+      .post('/api/lending/transfer')
+      .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)
+      .send({ from: 'funding', to: 'exchange', currency: 'USD', amount: 'Infinity' })
+      .expect(400);
+
     await request(app)
       .post('/api/lending/offer')
       .set('Authorization', `Bearer ${VALID_TEST_TOKEN}`)

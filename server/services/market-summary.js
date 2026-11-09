@@ -536,18 +536,41 @@ function aggregateDailyFundingCandles(candles, now = Date.now(), days = 30) {
         }));
 }
 
+function hasCompleteDailyRateHistory(history, now = Date.now(), days = 30) {
+    const dailyHistory = aggregateDailyRateHistory(history, now, days);
+    const requiredFields = ['avg_rate', 'high_rate', 'low_rate'];
+    return dailyHistory.length === days && dailyHistory.every(row =>
+        requiredFields.every(field => numberOrNull(row[field]) !== null),
+    );
+}
+
 function mergeMissingRateHistory(history, candleHistory) {
-    const byDate = new Map(history.map(row => [row.recorded_at.slice(0, 10), row]));
-    let fallbackDays = 0;
+    const byDate = new Map();
+    for (const row of history) {
+        const date = taipeiDateKey(row?.recorded_at);
+        if (date) byDate.set(date, { ...row });
+    }
+    const fallbackDates = new Set();
     for (const row of candleHistory) {
-        const date = row.recorded_at.slice(0, 10);
-        if (byDate.has(date)) continue;
-        byDate.set(date, row);
-        fallbackDays += 1;
+        const date = taipeiDateKey(row?.recorded_at);
+        if (!date) continue;
+        const existing = byDate.get(date);
+        if (!existing) {
+            byDate.set(date, { ...row });
+            fallbackDates.add(date);
+            continue;
+        }
+
+        for (const field of ['avg_rate', 'high_rate', 'low_rate']) {
+            if (numberOrNull(existing[field]) === null && numberOrNull(row?.[field]) !== null) {
+                existing[field] = row[field];
+                fallbackDates.add(date);
+            }
+        }
     }
     return {
-        history: [...byDate.values()].sort((a, b) => a.recorded_at.localeCompare(b.recorded_at)),
-        fallbackDays,
+        history: [...byDate.values()].sort((a, b) => Date.parse(a.recorded_at) - Date.parse(b.recorded_at)),
+        fallbackDays: fallbackDates.size,
     };
 }
 
@@ -727,8 +750,10 @@ async function getCachedFundingMarketSummary(options = {}) {
         ? Promise.resolve(options.historyCandleData)
         : historyDataPromise
             .then(history => {
-                const dailyHistory = aggregateDailyRateHistory(Array.isArray(history) ? history : [], now, 30);
-                return dailyHistory.length >= 30 ? [] : getCachedFundingCandles(options.restClient || rest, now);
+                const rows = Array.isArray(history) ? history : [];
+                return hasCompleteDailyRateHistory(rows, now, 30)
+                    ? []
+                    : getCachedFundingCandles(options.restClient || rest, now);
             })
             .catch(() => getCachedFundingCandles(options.restClient || rest, now));
 

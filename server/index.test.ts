@@ -5,6 +5,7 @@ vi.mock('./utils/logger', () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(),
 const WebSocket = require('ws');
 const jwt = require('jsonwebtoken');
 const net = require('net');
+const http = require('http');
 const { randomBytes } = require('crypto');
 const config = require('./config');
 const { SINGLE_ACCOUNT_USER_ID } = require('./config/single-account');
@@ -18,6 +19,24 @@ config.server.trustProxyHops = 1;
 app.set('trust proxy', 1);
 
 let serverPort: number;
+
+function getMetricsStatus(localAddress: string, forwardedFor: string, authorization?: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string> = { 'X-Forwarded-For': forwardedFor };
+    if (authorization) headers.Authorization = authorization;
+    const request = http.get({
+      host: '127.0.0.1',
+      localAddress,
+      port: serverPort,
+      path: '/metrics',
+      headers,
+    }, (response: any) => {
+      response.resume();
+      response.once('end', () => resolve(response.statusCode ?? 0));
+    });
+    request.once('error', reject);
+  });
+}
 
 function openUnauthenticatedRawWebSocket(port: number, forwardedFor?: string): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -75,6 +94,47 @@ afterAll(async () => {
   if (server.listening) {
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
+});
+
+describe('metrics authentication', () => {
+  it('fails closed when Basic Auth is absent or only partially configured', async () => {
+    const previousUsername = process.env.METRICS_USERNAME;
+    const previousPassword = process.env.METRICS_PASSWORD;
+    delete process.env.METRICS_USERNAME;
+    delete process.env.METRICS_PASSWORD;
+
+    try {
+      await expect(getMetricsStatus('127.0.0.2', '127.0.0.1')).resolves.toBe(403);
+      await expect(getMetricsStatus('127.0.0.2', 'anythinglocalhost')).resolves.toBe(403);
+      await expect(getMetricsStatus('127.0.0.1', '203.0.113.8')).resolves.toBe(403);
+
+      process.env.METRICS_USERNAME = 'test-metrics-user';
+      await expect(getMetricsStatus('127.0.0.1', '203.0.113.8')).resolves.toBe(403);
+    } finally {
+      if (previousUsername === undefined) delete process.env.METRICS_USERNAME;
+      else process.env.METRICS_USERNAME = previousUsername;
+      if (previousPassword === undefined) delete process.env.METRICS_PASSWORD;
+      else process.env.METRICS_PASSWORD = previousPassword;
+    }
+  });
+
+  it('requires valid Basic Auth when both metrics credentials are configured', async () => {
+    const previousUsername = process.env.METRICS_USERNAME;
+    const previousPassword = process.env.METRICS_PASSWORD;
+    process.env.METRICS_USERNAME = 'test-metrics-user';
+    process.env.METRICS_PASSWORD = 'test-metrics-password';
+
+    try {
+      await expect(getMetricsStatus('127.0.0.2', '127.0.0.1')).resolves.toBe(401);
+      await expect(getMetricsStatus('127.0.0.2', '127.0.0.1', `Basic ${Buffer.from('test-metrics-user:wrong').toString('base64')}`)).resolves.toBe(403);
+      await expect(getMetricsStatus('127.0.0.2', '127.0.0.1', `Basic ${Buffer.from('test-metrics-user:test-metrics-password').toString('base64')}`)).resolves.toBe(200);
+    } finally {
+      if (previousUsername === undefined) delete process.env.METRICS_USERNAME;
+      else process.env.METRICS_USERNAME = previousUsername;
+      if (previousPassword === undefined) delete process.env.METRICS_PASSWORD;
+      else process.env.METRICS_PASSWORD = previousPassword;
+    }
+  });
 });
 
 describe('authenticated WebSocket lifetime', () => {

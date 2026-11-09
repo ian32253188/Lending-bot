@@ -9,6 +9,7 @@ const { getCachedFundingMarketSummary } = require('../market-summary');
 const { classifyPrivateApiError } = require('../private-account-status');
 const { normalizeStrategyConfig } = require('../strategy-config');
 const MIN_ORDER_AMOUNT = 150;
+const OFFER_SUBMISSION_PENDING_REASON = 'Funding Offer 提交狀態待確認';
 
 class LendingBot {
     constructor(userId, credentials, settings = {}) {
@@ -21,6 +22,7 @@ class LendingBot {
         this.manualPauseReason = '';
         this.maintenancePaused = false;
         this._offerSubmissionInFlight = false;
+        this._offerSubmissionPromise = null;
         this.monitorOnly = false;
 
         // 用戶專屬策略設定
@@ -183,6 +185,16 @@ class LendingBot {
         });
     }
 
+    async _persistPauseStateStrict() {
+        const saved = await db.saveUserSettings(this.userId, {
+            status: this.paused ? 'paused' : 'running',
+            pause_reason: this.pauseReason,
+            manual_pause_reason: this.manualPauseReason,
+            maintenance_paused: this.maintenancePaused,
+        });
+        if (saved === null) throw new Error('放貸狀態資料庫未配置，無法確認持久化結果');
+    }
+
     restorePauseState({ manualPauseReason, maintenancePaused, pauseReason } = {}) {
         const persistedManualPauseReason = typeof manualPauseReason === 'string' ? manualPauseReason : '';
         this.manualPauseReason = [persistedManualPauseReason, this.manualPauseReason]
@@ -221,15 +233,47 @@ class LendingBot {
      * 緊急停止：取消所有掛單並暫停
      */
     async emergencyStop() {
-        this.pause('緊急停止');
+        this.manualPauseReason = '緊急停止';
+        this._refreshPauseState({ persist: false });
+        try {
+            await this._persistPauseStateStrict();
+        } catch (err) {
+            logger.error('engine', '緊急停止暫停狀態尚未持久化', { error: err.message, userId: this.userId });
+        }
+        // A submission already past the paused check may still be accepted by
+        // Bitfinex. Wait for its result before cancelling and verifying offers.
+        await this._offerSubmissionPromise;
+        const failures = [];
+        const cancelledCurrencies = [];
         for (const cur of this.currencies) {
             try {
                 await rest.cancelAllFundingOffers(cur, this.credentials);
+                const remainingOffers = await rest.getActiveFundingOffers(cur, this.credentials);
+                if (!Array.isArray(remainingOffers)) {
+                    throw new Error(`Bitfinex 回傳無效的 ${cur} 掛單清單`);
+                }
+                if (remainingOffers.length > 0) {
+                    throw new Error(`Bitfinex 仍回報 ${remainingOffers.length} 筆 ${cur} 活躍掛單`);
+                }
+                cancelledCurrencies.push(cur);
                 logger.info('engine', `🚨 緊急停止: 已取消 ${cur} 所有掛單`, this.userId);
             } catch (err) {
                 logger.error('engine', `緊急停止取消 ${cur} 掛單失敗`, { error: err.message, userId: this.userId });
+                failures.push({ currency: cur, message: err.message });
             }
         }
+        try {
+            await this._persistPauseStateStrict();
+        } catch (err) {
+            failures.push({ currency: '引擎暫停狀態', message: err.message });
+        }
+        if (failures.length > 0) {
+            const error = new Error(`緊急停止未完成：${failures.map(({ currency, message }) => `${currency}：${message}`).join('；')}`);
+            error.code = 'EMERGENCY_STOP_INCOMPLETE';
+            error.failures = failures;
+            throw error;
+        }
+        return { cancelledCurrencies };
     }
 
     async setCompounding() {
@@ -526,15 +570,61 @@ class LendingBot {
             
             if (!this.running || this.paused || this._offerSubmissionInFlight) return;
             this._offerSubmissionInFlight = true;
+            let finishOfferSubmission;
+            this._offerSubmissionPromise = new Promise(resolve => { finishOfferSubmission = resolve; });
 
+            let pendingMarkerSaved = false;
             try {
-                await rest.submitFundingOffer(
-                    currency,
-                    order.amount,
-                    order.rate,
-                    order.period,
-                    this.credentials
-                );
+                // Persist a fail-closed marker before the non-idempotent exchange
+                // write. A restart during a timeout must not submit a duplicate.
+                const savedMarker = await db.saveUserSettings(this.userId, {
+                    status: 'paused',
+                    pause_reason: OFFER_SUBMISSION_PENDING_REASON,
+                    manual_pause_reason: OFFER_SUBMISSION_PENDING_REASON,
+                    maintenance_paused: this.maintenancePaused,
+                });
+                if (savedMarker === null) throw new Error('資料庫未配置，無法建立掛單待查核標記');
+                pendingMarkerSaved = true;
+
+                try {
+                    await rest.submitFundingOffer(
+                        currency,
+                        order.amount,
+                        order.rate,
+                        order.period,
+                        this.credentials
+                    );
+                } catch (err) {
+                    if (err.code === 'BITFINEX_WRITE_RESULT_UNKNOWN') {
+                        this.pause('Funding Offer 結果待查證');
+                    } else if (pendingMarkerSaved) {
+                        await db.saveUserSettings(this.userId, {
+                            status: this.paused ? 'paused' : 'running',
+                            pause_reason: this.pauseReason,
+                            manual_pause_reason: this.manualPauseReason,
+                            maintenance_paused: this.maintenancePaused,
+                        }).catch(saveError => {
+                            logger.error('engine', '清除掛單提交標記失敗，保持重新查核提示', {
+                                error: saveError.message,
+                                userId: this.userId,
+                            });
+                            this.pause('Funding Offer 結果待查證');
+                        });
+                    }
+                    throw err;
+                }
+
+                // Clear the marker only after Bitfinex confirms the write. Preserve
+                // any pause that an operator or maintenance event set meanwhile.
+                try {
+                    await this._persistPauseStateStrict();
+                } catch (saveError) {
+                    logger.error('engine', '掛單已提交，但清除持久化待查核標記失敗', {
+                        error: saveError.message,
+                        userId: this.userId,
+                    });
+                    this.pause('Funding Offer 結果待查證');
+                }
                 this.state.stats.offersPlaced++;
                 logger.info('engine', `📝 掛單 ${currency} $${order.amount.toFixed(0)} @ ${(order.rate * 100).toFixed(4)}%/天，期限 ${order.period} 天`, this.userId);
                 const { sendOfferNotification } = require('../telegram');
@@ -545,10 +635,12 @@ class LendingBot {
                 const errorMsg = `掛單失敗 ${currency}: $${order.amount.toFixed(2)}，錯誤: ${err.message}`;
                 logger.error('engine', errorMsg, { userId: this.userId });
 
-                if (err.code === 'BITFINEX_WRITE_RESULT_UNKNOWN') {
-                    this.pause('Funding Offer 結果待查證');
+                if (!pendingMarkerSaved) {
+                    // Without a durable marker, do not keep making autonomous
+                    // exchange writes that could not be reconciled after restart.
+                    this.pause('掛單前狀態寫入失敗');
                 }
-                
+
                 if (!isBalanceError) {
                     try {
                         const { sendAlert } = require('../telegram');
@@ -562,6 +654,8 @@ class LendingBot {
                 }
             } finally {
                 this._offerSubmissionInFlight = false;
+                finishOfferSubmission();
+                this._offerSubmissionPromise = null;
             }
         }
     }
