@@ -8,6 +8,8 @@ export default function App() {
     const [authenticated, setAuthenticated] = useState(false);
     const [user, setUser] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [verificationError, setVerificationError] = useState('');
+    const [verificationAttempt, setVerificationAttempt] = useState(0);
     const { status, connected, refresh: refreshStatus } = useWebSocket(authenticated ? token : null);
 
     const clearAuthState = useCallback(() => {
@@ -15,7 +17,14 @@ export default function App() {
         setToken(null);
         setAuthenticated(false);
         setUser(null);
+        setVerificationError('');
     }, []);
+
+    const retryTokenVerification = () => {
+        setVerificationError('');
+        setLoading(true);
+        setVerificationAttempt((attempt) => attempt + 1);
+    };
 
     const handleLogout = useCallback(async () => {
         const activeToken = localStorage.getItem('token');
@@ -49,14 +58,16 @@ export default function App() {
         setToken(newToken);
         setUser(newUser);
         setAuthenticated(true);
+        setVerificationError('');
     };
 
     // 初始化檢查 Token 有效性
     useEffect(() => {
+        let active = true;
         const savedToken = localStorage.getItem('token');
         if (!savedToken) {
             setLoading(false);
-            return;
+            return () => { active = false; };
         }
 
         fetch('/api/auth/verify', {
@@ -64,26 +75,34 @@ export default function App() {
                 Authorization: `Bearer ${savedToken}`,
             },
         })
-            .then((res) => {
-                if (!res.ok) throw new Error('Token 驗證失敗');
-                return res.json();
-            })
-            .then((data) => {
+            .then(async (res) => {
+                const data = await res.json().catch(() => ({}));
+                if (!active) return;
+                if (res.status === 401 || res.status === 403) {
+                    clearAuthState();
+                    return;
+                }
+                if (!res.ok) {
+                    setVerificationError(`目前無法確認登入狀態（HTTP ${res.status}）。請稍後重試；登入資料已保留。`);
+                    return;
+                }
                 if (data.valid && data.user) {
                     setToken(savedToken);
                     setUser(data.user);
                     setAuthenticated(true);
+                    setVerificationError('');
                 } else {
                     clearAuthState();
                 }
             })
             .catch(() => {
-                clearAuthState();
+                if (active) setVerificationError('目前無法連線確認登入狀態。請稍後重試；登入資料已保留。');
             })
             .finally(() => {
-                setLoading(false);
+                if (active) setLoading(false);
             });
-    }, [clearAuthState]);
+        return () => { active = false; };
+    }, [clearAuthState, verificationAttempt]);
 
     if (loading) {
         return (
@@ -103,6 +122,16 @@ export default function App() {
     }
 
     if (!authenticated) {
+        if (verificationError) {
+            return (
+                <div role="status" style={{ display: 'grid', placeContent: 'center', gap: '1rem', minHeight: '100vh', padding: '2rem', background: '#0d1117', color: '#c9d1d9', textAlign: 'center', fontFamily: 'sans-serif' }}>
+                    <p>{verificationError}</p>
+                    <button type="button" onClick={retryTokenVerification} style={{ justifySelf: 'center', padding: '0.65rem 1rem', cursor: 'pointer' }}>
+                        重試驗證
+                    </button>
+                </div>
+            );
+        }
         return <Login onLoginSuccess={handleLoginSuccess} />;
     }
 

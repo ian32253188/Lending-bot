@@ -264,7 +264,7 @@ jobs:
             settings_migration_ok=0
             attempts=0
             while [ "$attempts" -lt 30 ]; do
-              if sudo docker exec bitfinex-lending-bot node -e 'require("./server/services/database").ensureUserBotSettingsTable().then(ready => { if (!ready) process.exit(1); console.log("user settings and credential migration ready"); }).catch(() => process.exit(1))' 2>/dev/null; then
+              if sudo docker exec bitfinex-lending-bot node -e 'const db = require("./server/services/database"); (async () => { try { const ready = await db.ensureUserBotSettingsTable(); if (!ready) throw new Error(); console.log("user settings and credential migration ready"); } catch { process.exitCode = 1; } finally { try { await db.getPool()?.end(); } catch {} } })()' 2>/dev/null; then
                 echo "Credential encryption migration and user settings schema are ready"
                 settings_migration_ok=1
                 break

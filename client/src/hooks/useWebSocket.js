@@ -65,13 +65,16 @@ export function useWebSocket(token) {
             ws.onclose = (event) => {
                 if (generationRef.current !== generation) return;
                 setConnected(false);
-                if (event.code === 1008 || event.code === 4001) {
+                if (event.code === 4001) {
                     reconnectAllowed = false;
                     window.dispatchEvent(new Event('lending-session-revoked'));
                     return;
                 }
                 if (!reconnectAllowed) return;
-                reconnectTimer.current = setTimeout(connect, 3000);
+                // 1008 also represents temporary auth timeouts and capacity
+                // limits. Keep the token and wait longer before retrying so a
+                // failed socket does not clear a valid REST session or churn slots.
+                reconnectTimer.current = setTimeout(connect, event.code === 1008 ? 10000 : 3000);
             };
 
             ws.onerror = () => ws.close();
