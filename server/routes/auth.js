@@ -5,7 +5,9 @@ const { getSupabase } = require('../services/database');
 const { SINGLE_ACCOUNT_USER_ID, isSingleAccount } = require('../config/single-account');
 const { createLoginAttemptLimiter } = require('../utils/login-attempt-limiter');
 const { getTokenExpiresAt } = require('../utils/jwt-expiry');
-const { verifySupabaseToken } = require('../services/supabase-auth-fallback');
+const { verifySupabaseToken, isDefinitiveAuthRejection } = require('../services/supabase-auth-fallback');
+const sessionState = require('../utils/session-state');
+const authMiddleware = require('../middleware/auth');
 
 const router = express.Router();
 const loginAttemptLimiter = createLoginAttemptLimiter();
@@ -27,7 +29,7 @@ router.get('/config', (req, res) => {
 });
 
 // 本地管理員密碼登入
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
     try {
         // Do not trust X-Forwarded-For here. This single-account deployment
         // binds the application behind its reverse proxy, which enforces a
@@ -59,8 +61,9 @@ router.post('/login', (req, res) => {
 
         loginAttemptLimiter.clear(clientKey);
 
+        const currentState = await sessionState.getState();
         const token = jwt.sign(
-            ADMIN_USER,
+            { ...ADMIN_USER, sv: currentState.version },
             config.jwt.secret,
             { expiresIn: config.jwt.expiresIn || '24h' }
         );
@@ -71,7 +74,16 @@ router.post('/login', (req, res) => {
             expiresIn: config.jwt.expiresIn || '24h'
         });
     } catch (err) {
-        res.status(500).json({ error: '登入失敗', details: err.message });
+        res.status(503).json({ error: '登入服務暫時無法使用' });
+    }
+});
+
+router.post('/logout', authMiddleware, async (_req, res) => {
+    try {
+        await sessionState.revokeAll();
+        res.json({ success: true });
+    } catch (err) {
+        res.status(503).json({ error: '目前無法安全撤銷登入工作階段' });
     }
 });
 
@@ -93,6 +105,15 @@ router.get('/verify', async (req, res) => {
             }
             const expiresAt = getTokenExpiresAt(token);
             if (expiresAt === null || expiresAt <= Date.now()) {
+                return res.status(401).json({ valid: false });
+            }
+            let currentState;
+            try {
+                currentState = await sessionState.getState();
+            } catch (err) {
+                return res.status(503).json({ valid: false, error: '認證服務暫時無法使用' });
+            }
+            if (!sessionState.isLocalTokenCurrent(decoded, currentState)) {
                 return res.status(401).json({ valid: false });
             }
             return res.json({
@@ -118,12 +139,24 @@ router.get('/verify', async (req, res) => {
             return res.status(429).json({ valid: false, error: '認證請求過多，請稍後再試' });
         }
         const { user, error } = result;
+        if (error && !isDefinitiveAuthRejection(error)) {
+            return res.status(503).json({ valid: false, error: '外部認證服務暫時無法使用' });
+        }
         if (!error && user) {
             const expiresAt = getTokenExpiresAt(token);
             if (!isSingleAccount(user.id)) {
                 return res.status(403).json({ valid: false, error: '此系統僅開放單一管理帳戶' });
             }
             if (expiresAt === null || expiresAt <= Date.now()) {
+                return res.status(401).json({ valid: false });
+            }
+            let currentState;
+            try {
+                currentState = await sessionState.getState();
+            } catch (err) {
+                return res.status(503).json({ valid: false, error: '認證服務暫時無法使用' });
+            }
+            if (!sessionState.isSupabaseTokenCurrent(token, currentState)) {
                 return res.status(401).json({ valid: false });
             }
             return res.json({

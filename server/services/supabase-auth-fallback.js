@@ -5,6 +5,11 @@ const MAX_REQUESTS_PER_CLIENT = 60;
 const MAX_REQUESTS_PER_INSTANCE = 600;
 const MAX_TRACKED_CLIENTS = 10_000;
 
+function isDefinitiveAuthRejection(error) {
+    const status = Number(error?.status ?? error?.statusCode);
+    return status === 400 || status === 401 || status === 403;
+}
+
 function createFixedWindowLimiter({ maxRequests, windowMs = WINDOW_MS, maxTrackedClients = 1, now = Date.now }) {
     if (!Number.isInteger(maxTrackedClients) || maxTrackedClients < 1) {
         throw new RangeError('maxTrackedClients must be a positive integer');
@@ -113,4 +118,5 @@ const supabaseAuthFallback = createSupabaseAuthFallback();
 module.exports = {
     createSupabaseAuthFallback,
     verifySupabaseToken: (args) => supabaseAuthFallback.verify(args),
+    isDefinitiveAuthRejection,
 };

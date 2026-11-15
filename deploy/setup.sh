@@ -126,13 +126,14 @@ setup_env() {
   write_secret_if_missing POSTGRES_PASSWORD 32
   write_secret_if_missing ADMIN_PASSWORD 12
   write_secret_if_missing JWT_SECRET 32
+  write_secret_if_missing CREDENTIAL_ENCRYPTION_KEY 32
   env_owner="${SUDO_USER:-$(stat -c '%U' "$ROOT_DIR")}"
   if [ "$env_owner" != "root" ] && id "$env_owner" &> /dev/null; then
     chown "$env_owner" "$ENV_FILE"
   fi
   chmod 600 "$ENV_FILE"
 
-  echo -e "\n${YELLOW}請確認 .env 內的管理員密碼，並在儀表板設定 Bitfinex API 金鑰。資料庫與 JWT 密鑰已在空值時隨機產生。${NC}"
+  echo -e "\n${YELLOW}請確認 .env 內的管理員密碼，並在儀表板設定 Bitfinex API 金鑰。資料庫、JWT 與憑證加密密鑰已在空值時分別隨機產生。${NC}"
   read -p "您是否要現在編輯 .env 檔案？ (y/n): " EDIT_NOW
   if [ "$EDIT_NOW" = "y" ] || [ "$EDIT_NOW" = "Y" ]; then
     if command -v nano &> /dev/null; then

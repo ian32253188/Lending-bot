@@ -17,3 +17,4 @@ client/dist/
 __pycache__/
 *.pyc
 /k8s/k8s-secret.local.yaml
+/k8s/k8s-secret.yaml

@@ -10,12 +10,39 @@ export default function App() {
     const [loading, setLoading] = useState(true);
     const { status, connected, refresh: refreshStatus } = useWebSocket(authenticated ? token : null);
 
-    const handleLogout = useCallback(() => {
+    const clearAuthState = useCallback(() => {
         localStorage.removeItem('token');
         setToken(null);
         setAuthenticated(false);
         setUser(null);
     }, []);
+
+    const handleLogout = useCallback(async () => {
+        const activeToken = localStorage.getItem('token');
+        if (!activeToken) {
+            clearAuthState();
+            return;
+        }
+        try {
+            const response = await fetch('/api/auth/logout', {
+                method: 'POST',
+                keepalive: true,
+                headers: { Authorization: `Bearer ${activeToken}` },
+            });
+            if (!response.ok && response.status !== 401) {
+                throw new Error('伺服器未能確認撤銷工作階段');
+            }
+            clearAuthState();
+        } catch (error) {
+            window.alert('登出尚未完成，伺服器未確認撤銷登入工作階段。請保持此頁開啟，確認服務恢復後再試一次。');
+        }
+    }, [clearAuthState]);
+
+    useEffect(() => {
+        const clearRevokedSession = () => clearAuthState();
+        window.addEventListener('lending-session-revoked', clearRevokedSession);
+        return () => window.removeEventListener('lending-session-revoked', clearRevokedSession);
+    }, [clearAuthState]);
 
     const handleLoginSuccess = (newToken, newUser) => {
         localStorage.setItem('token', newToken);
@@ -47,16 +74,16 @@ export default function App() {
                     setUser(data.user);
                     setAuthenticated(true);
                 } else {
-                    handleLogout();
+                    clearAuthState();
                 }
             })
             .catch(() => {
-                handleLogout();
+                clearAuthState();
             })
             .finally(() => {
                 setLoading(false);
             });
-    }, [handleLogout]);
+    }, [clearAuthState]);
 
     if (loading) {
         return (

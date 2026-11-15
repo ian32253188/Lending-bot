@@ -2,7 +2,17 @@ const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 const currentLevel = process.env.LOG_LEVEL || 'info';
 const db = require('../services/database');
 const WARNING_SUPPRESSION_WINDOW_MS = 5 * 60 * 1000;
+const WARNING_STATE_TTL_MS = 30 * 60 * 1000;
+const MAX_WARNING_STATES = 10_000;
 const warningState = new Map();
+
+const warningPruneTimer = setInterval(() => {
+    const cutoff = Date.now() - WARNING_STATE_TTL_MS;
+    for (const [key, value] of warningState.entries()) {
+        if (value.lastSeenAt < cutoff) warningState.delete(key);
+    }
+}, 5 * 60 * 1000);
+warningPruneTimer.unref?.();
 
 function formatTime() {
     return new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
@@ -19,10 +29,18 @@ function getWarningPersistence(category, message, userId, metadata) {
     if (previous && now - previous.lastPersistedAt < WARNING_SUPPRESSION_WINDOW_MS) {
         previous.suppressedCount += 1;
         previous.lastSeenAt = now;
+        warningState.delete(key);
+        warningState.set(key, previous);
         return null;
     }
 
     const suppressedCount = previous?.suppressedCount || 0;
+    if (previous) warningState.delete(key);
+    while (warningState.size >= MAX_WARNING_STATES) {
+        const oldestKey = warningState.keys().next().value;
+        if (oldestKey === undefined) break;
+        warningState.delete(oldestKey);
+    }
     warningState.set(key, { lastPersistedAt: now, lastSeenAt: now, suppressedCount: 0 });
 
     if (!suppressedCount) return metadata;

@@ -253,6 +253,11 @@ export default function FundingMarketDashboard({ token }) {
                                 </button>
                             ))}
                         </div>
+                        {selectedHour.detailsTruncated && (
+                            <div className="market-empty market-detail-empty">
+                                此時段共 {selectedHour.detailsTotal} 筆，只顯示最近 250 筆以限制頁面負載。
+                            </div>
+                        )}
                         {sortedDetails.length ? sortedDetails.map((detail, index) => (
                             <div className="market-detail-table market-detail-row" key={`${detail.id}-${detail.timestamp}-${index}`}>
                                 <span>{new Date(detail.timestamp).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}</span>

@@ -1,4 +1,4 @@
-const { decrypt, encrypt, isEncryptedCredential } = require('./crypto');
+const { decrypt, encrypt, isEncryptedCredential, needsReEncryption } = require('./crypto');
 
 function encryptImportedCredential(value) {
     if (value === null || value === undefined || value === '') return value;
@@ -11,7 +11,7 @@ function encryptImportedCredential(value) {
     if (isEncryptedCredential(value)) {
         const plaintext = decrypt(value);
         if (plaintext === null) {
-            const error = new Error('無法解密來源帳戶憑證；請確認來源與目的端使用相同的 JWT_SECRET 與 ENCRYPTION_SALT。');
+            const error = new Error('無法解密來源帳戶憑證；請確認來源與目的端使用相同的 CREDENTIAL_ENCRYPTION_KEY（或舊版 JWT_SECRET）與 ENCRYPTION_SALT。');
             error.code = 'IMPORTED_CREDENTIAL_DECRYPTION_FAILED';
             throw error;
         }
@@ -30,11 +30,13 @@ function ensureEncryptedCredential(value) {
     }
 
     if (!isEncryptedCredential(value)) return encrypt(value);
-    if (decrypt(value) === null) {
-        const error = new Error('無法解密已儲存的帳戶憑證；請確認 JWT_SECRET 與 ENCRYPTION_SALT。');
+    const plaintext = decrypt(value);
+    if (plaintext === null) {
+        const error = new Error('無法解密已儲存的帳戶憑證；請確認 CREDENTIAL_ENCRYPTION_KEY（或舊版 JWT_SECRET）與 ENCRYPTION_SALT，或重新輸入該憑證。');
         error.code = 'STORED_CREDENTIAL_DECRYPTION_FAILED';
         throw error;
     }
+    if (needsReEncryption(value)) return encrypt(plaintext);
     return value;
 }
 

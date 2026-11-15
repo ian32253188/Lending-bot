@@ -28,7 +28,7 @@ cp .env.example .env
 nano .env
 ```
 
-在 `.env` 設定 `POSTGRES_PASSWORD`、`ADMIN_PASSWORD` 與 `JWT_SECRET`。每一項都請用 `openssl rand -hex 32` 各產生一個不同的值。管理員密碼要妥善存入密碼管理器；不要把密鑰、含密鑰的終端機截圖或 `.env` 提交到 GitHub。更換 `JWT_SECRET` 會使登入中的 JWT 失效，並使既有加密的 Bitfinex 與 Telegram 憑證無法解密，屆時須在儀表板重新輸入並儲存。若自行設定 `ENCRYPTION_SALT`，也要一併備份並保持不變。
+在 `.env` 設定 `POSTGRES_PASSWORD`、`ADMIN_PASSWORD`、`JWT_SECRET` 與 `CREDENTIAL_ENCRYPTION_KEY`。各自使用不同的隨機值，建議以 `openssl rand -hex 32` 產生。管理員密碼要妥善存入密碼管理器；不要把密鑰、含密鑰的終端機截圖或 `.env` 提交到 GitHub。更換 `JWT_SECRET` 會使登入中的 JWT 失效；獨立的 `CREDENTIAL_ENCRYPTION_KEY` 用於資料庫憑證加密，必須保密並妥善備份。首次啟用獨立金鑰時，應用程式會在啟動時把既有 PostgreSQL 憑證重新加密；若自行設定 `ENCRYPTION_SALT`，也要一併備份並保持不變。
 
 ```bash
 cd deploy
@@ -104,10 +104,12 @@ chmod 600 .env
 | `POSTGRES_PASSWORD` | 以 `openssl rand -hex 32` 產生的隨機值 |
 | `ADMIN_PASSWORD` | 以 `openssl rand -hex 32` 產生的管理員密碼，並存入密碼管理器 |
 | `JWT_SECRET` | 另一個獨立的 `openssl rand -hex 32` 隨機值 |
+| `CREDENTIAL_ENCRYPTION_KEY` | 與 JWT_SECRET 分開的 `openssl rand -hex 32` 隨機值 |
 
-在伺服器執行三次 `openssl rand -hex 32`，把三個不同輸出分別填入表格的欄位，並把管理員密碼存入密碼管理器：
+在伺服器執行四次 `openssl rand -hex 32`，把不同輸出分別填入表格的欄位，並把管理員密碼存入密碼管理器：
 
 ```bash
+openssl rand -hex 32
 openssl rand -hex 32
 openssl rand -hex 32
 openssl rand -hex 32
@@ -126,7 +128,7 @@ git status --short
 
 第二個指令應沒有輸出；若列出 `.env`，先移除 Git 追蹤並檢查所有歷史版本，再公開專案。
 
-`JWT_SECRET` 也用於加密儲存在資料庫中的 Bitfinex 憑證與 Telegram Bot Token。請在受控的加密備份中保存 `.env`，並與資料庫備份分開保管；遺失或更換 `JWT_SECRET`（或自行設定的 `ENCRYPTION_SALT`）後，需在設定頁重新輸入 Bitfinex API Key、Secret 與 Telegram Bot Token。舊版 PostgreSQL 啟動時，以及舊版 Supabase 帳戶設定被讀寫前，程式會檢查並加密歷史憑證；搬遷腳本也會先加密回存 Supabase 來源，再寫入 PostgreSQL。新版 Supabase 相容／搬遷程式會以受限 RPC 在 POST body 執行憑證 compare-and-set，避免把舊憑證放進 API URL 與服務日誌；升級舊版 Supabase 時，請先套用 `supabase/migrations/013_secure_credential_migration.sql`，並確認使用具有該 RPC 執行權限的 service-role key。遠端 `SUPABASE_URL` 必須使用 HTTPS；只有本機 loopback 開發服務可使用 HTTP。Supabase runtime fallback 需要讀寫 `user_bot_settings` 的權限。舊備份仍可能含明文憑證，請限制存取並加密保管；確認新部署可解密憑證後，再依備份保留政策安全清除舊副本。搬遷前必須使用來源服務相同的 `JWT_SECRET` 與 `ENCRYPTION_SALT`。
+`CREDENTIAL_ENCRYPTION_KEY` 專門加密資料庫中的 Bitfinex 憑證與 Telegram Bot Token，請與 `JWT_SECRET` 分開保管，並在受控的加密備份中保存 `.env`。首次啟用獨立金鑰時，PostgreSQL 啟動遷移會把舊版以 JWT_SECRET 加密的欄位重新加密；遷移完成前不可更換舊 `JWT_SECRET`，之後也不可遺失或更換 `CREDENTIAL_ENCRYPTION_KEY`（或自行設定的 `ENCRYPTION_SALT`），否則必須從備份還原金鑰或重新輸入憑證。完成遷移後，舊版映像無法解密新格式的憑證；回滾時請使用已支援 `CREDENTIAL_ENCRYPTION_KEY` 的版本，或先還原舊格式資料庫備份。舊版 Supabase 帳戶設定被讀寫前也會檢查並加密歷史憑證；搬遷腳本會先加密回存 Supabase 來源，再寫入 PostgreSQL。新版 Supabase 相容／搬遷程式會以受限 RPC 在 POST body 執行憑證 compare-and-set，避免把舊憑證放進 API URL 與服務日誌；升級舊版 Supabase 時，請先套用 `supabase/migrations/013_secure_credential_migration.sql`，並確認使用具有該 RPC 執行權限的 service-role key。遠端 `SUPABASE_URL` 必須使用 HTTPS；只有本機 loopback 開發服務可使用 HTTP。Supabase runtime fallback 需能讀寫 `user_bot_settings` 與 `bot_settings`，後者用於持久化登出撤銷狀態。舊備份仍可能含明文憑證，請限制存取並加密保管；確認新部署可解密憑證後，再依備份保留政策安全清除舊副本。搬遷時需保留能解密來源資料的 `JWT_SECRET` 與 `ENCRYPTION_SALT`；目的端可使用不同的 `CREDENTIAL_ENCRYPTION_KEY`。
 
 若使用外部 PostgreSQL，應設定 `DATABASE_URL`；應用程式、資料搬遷腳本與研究訓練器都會強制使用 `sslmode=verify-full`。若以 `PGHOST`／`POSTGRES_HOST` 連線，只有 loopback 預設免 TLS；短名 `postgres` 只有在本文件的 Compose 設定明確啟用 `LENDING_BOT_ALLOW_PLAINTEXT_COMPOSE_POSTGRES=1` 時才免 TLS。此旗標只適用於同一個私有 Compose 網路中的內部資料庫服務；外部資料庫請移除旗標並使用 `DATABASE_URL` 或讓 `PGHOST` 使用驗證 TLS。不要用 `sslmode=disable` 繞過驗證。Compose PostgreSQL 使用私有網路，不會對公網開放。
 
@@ -303,15 +305,15 @@ sudo docker compose --env-file ../.env -f docker-compose.prod.yml stop
 sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256 | awk '{print $2}'
 ```
 
-確認該指紋確實來自自己的 VM 後，再將完整 `SHA256:...` 值存為 `OCI_VM_HOST_FINGERPRINT`。VM 上也要預先建立專案目錄、設定權限為 `600` 的私密 `.env` 並安裝 Docker。部署 workflow 只接受 `main` 分支推送、每次都執行測試，且部署前固定第三方 Actions 版本及驗證 SSH 主機指紋。
+確認該指紋確實來自自己的 VM 後，再將完整 `SHA256:...` 值存為 `OCI_VM_HOST_FINGERPRINT`。VM 上也要預先建立專案目錄、設定權限為 `600` 的私密 `.env` 並安裝 Docker。部署 workflow 接受 `main` 分支推送及手動執行；一般推送與預設手動執行都會先測試，只有明確手動設定 `skip_tests=true` 才略過測試工作。建置、發佈與部署仍會執行，並固定第三方 Actions 版本及驗證 SSH 主機指紋。
 
-公開 repository 前，請在 GitHub 為預設分支與 `main` 設定分支保護：要求 pull request、至少一位 reviewer、要求 `CI / test` 通過、禁止 force push，並限制可直接推送的對象。CI 會對任何目標分支的 pull request 執行；正式部署 workflow 只在 `main` 分支推送時執行。再確認 `production` 環境的 reviewer 規則已生效，且環境 secrets 只給部署工作使用。部署 workflow 將測試、GHCR 發佈和遠端部署拆成不同工作：只有映像發佈工作有 `packages: write`，依賴安裝與測試不持有發佈權限，所有 Checkout 都關閉持久化 Git 憑證；每次部署指定該次 commit 的 SHA image tag，避免遠端拉取不確定的 `latest`。CI 會對前後端執行 `npm audit`，Dependabot 每週檢查 npm 套件與 GitHub Actions 更新；請審查自動更新 pull request，再合併。GHCR package 的公開／私有狀態需另行管理；公開 GitHub repository 不會自動改變容器套件的可見性。`deploy/setup.sh` 會拉取 GHCR 映像，因此若套件設為 private，仍需在伺服器設定有 `read:packages` 權限的讀取憑證；它不會設定 Nginx、TLS 或雲端防火牆。
+公開 repository 前，請在 GitHub 為預設分支與 `main` 設定分支保護：要求 pull request、至少一位 reviewer、要求 `CI / test` 通過、禁止 force push，並限制可直接推送的對象。CI 會對任何目標分支的 pull request 執行；正式部署 workflow 只在 `main` 執行推送或手動部署。再確認 `production` 環境只允許 `main`，reviewer 規則已生效，且環境 secrets 只給部署工作使用。部署 workflow 將測試、GHCR 發佈和遠端部署拆成不同工作：只有映像發佈工作有 `packages: write`，依賴安裝與測試不持有發佈權限，所有 Checkout 都關閉持久化 Git 憑證；每次部署指定該次 commit 的 SHA image tag，避免遠端拉取不確定的 `latest`。一般部署執行 `npm audit` 與測試；明確設定 `skip_tests=true` 的手動部署會略過測試工作。Dependabot 每週檢查 npm 套件與 GitHub Actions 更新；請審查自動更新 pull request，再合併。GHCR package 的公開／私有狀態需另行管理；公開 GitHub repository 不會自動改變容器套件的可見性。`deploy/setup.sh` 會拉取 GHCR 映像，因此若套件設為 private，仍需在伺服器設定有 `read:packages` 權限的讀取憑證；它不會設定 Nginx、TLS 或雲端防火牆。
 
 ### Kubernetes 參考部署
 
-`k8s/` 提供應用程式 Deployment、ClusterIP Service 與 ingress-nginx Ingress 範本，不會建立 PostgreSQL、Kubernetes Secret、Ingress Controller 或 TLS 憑證。請先準備可連線的外部 PostgreSQL（需支援經驗證的 TLS）、Kubernetes cluster、ingress-nginx controller 與正式網域。若 GHCR package 是私有套件，另需建立只具 `read:packages` 權限的 image pull secret。範本中的 `k8s/k8s-secret.yaml` 只有無效佔位值，請勿套用或填入真實憑證。
+`k8s/` 提供應用程式 Deployment、ClusterIP Service 與 ingress-nginx Ingress 範本，不會建立 PostgreSQL、Kubernetes Secret、Ingress Controller 或 TLS 憑證。請先準備可連線的外部 PostgreSQL（需支援經驗證的 TLS）、Kubernetes cluster、ingress-nginx controller 與正式網域。若 GHCR package 是私有套件，另需建立只具 `read:packages` 權限的 image pull secret。`k8s/k8s-secret.example.yaml` 只有無效佔位值，請勿套用或填入真實憑證；將真實 `k8s-secret.yaml` 放在 repository 外建立。
 
-先編輯 `k8s/k8s-configmap.yaml`、`k8s/k8s-ingress.yaml`，將 `lendingbot.local` 改成實際網域，設定 TLS Secret／cert-manager issuer，並依網路拓撲設定 `TRUST_PROXY_HOPS`。Rate limit 與連線限制由 ingress-nginx 按來源 IP 套用；多個 controller replicas 會按副本數放大有效額度，請按實際流量調整。建立在 repository 外的秘密 env 檔，至少填入 `DATABASE_URL`、`ADMIN_PASSWORD`、`JWT_SECRET`，並選擇性填入 Telegram 變數。範本不綁定 namespace；以下命令預設使用 `default`，也可在執行前設定 `NAMESPACE`：
+先編輯 `k8s/k8s-configmap.yaml`、`k8s/k8s-ingress.yaml`，將 `lendingbot.local` 改成實際網域，設定 TLS Secret／cert-manager issuer，並依網路拓撲設定 `TRUST_PROXY_HOPS`。Rate limit 與連線限制由 ingress-nginx 按來源 IP 套用；多個 controller replicas 會按副本數放大有效額度，請按實際流量調整。建立在 repository 外的秘密 env 檔，至少填入 `DATABASE_URL`、`ADMIN_PASSWORD`、`JWT_SECRET`、`CREDENTIAL_ENCRYPTION_KEY`，並選擇性填入 Telegram 變數。範本不綁定 namespace；以下命令預設使用 `default`，也可在執行前設定 `NAMESPACE`：
 
 ```bash
 umask 077

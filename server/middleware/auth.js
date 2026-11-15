@@ -3,7 +3,8 @@ const config = require('../config');
 const { getSupabase } = require('../services/database');
 const { isSingleAccount } = require('../config/single-account');
 const { getTokenExpiresAt } = require('../utils/jwt-expiry');
-const { verifySupabaseToken } = require('../services/supabase-auth-fallback');
+const { verifySupabaseToken, isDefinitiveAuthRejection } = require('../services/supabase-auth-fallback');
+const sessionState = require('../utils/session-state');
 
 const tokenCache = new Map(); // token -> { user, expiresAt }
 const CACHE_TTL_MS = 60 * 1000; // 60 seconds TTL
@@ -27,10 +28,19 @@ async function authMiddleware(req, res, next) {
 
     const token = authHeader.split(' ')[1];
 
+    let currentState;
+    try {
+        currentState = await sessionState.getState();
+    } catch (err) {
+        return res.status(503).json({ error: '認證服務暫時無法使用' });
+    }
+
     // 檢查快取
     const now = Date.now();
     const cached = tokenCache.get(token);
-    if (cached && now < cached.expiresAt) {
+    if (cached && now < cached.expiresAt
+        && cached.sessionVersion === currentState.version
+        && (!cached.supabase || currentState.revokedAtMs === null || cached.tokenIssuedAtMs > currentState.revokedAtMs)) {
         if (!isSingleAccount(cached.user.id)) {
             tokenCache.delete(token);
             return res.status(403).json({ error: '此系統僅開放單一管理帳戶' });
@@ -51,6 +61,9 @@ async function authMiddleware(req, res, next) {
             if (tokenExpiresAt === null || tokenExpiresAt <= now) {
                 return res.status(401).json({ error: 'Token 無效或已過期' });
             }
+            if (!sessionState.isLocalTokenCurrent(decoded, currentState)) {
+                return res.status(401).json({ error: 'Token 無效或已過期' });
+            }
             const user = {
                 id: decoded.id,
                 email: decoded.email,
@@ -58,7 +71,8 @@ async function authMiddleware(req, res, next) {
             };
             tokenCache.set(token, {
                 user,
-                expiresAt: Math.min(now + CACHE_TTL_MS, tokenExpiresAt)
+                expiresAt: Math.min(now + CACHE_TTL_MS, tokenExpiresAt),
+                sessionVersion: currentState.version,
             });
             req.user = user;
             return next();
@@ -76,6 +90,9 @@ async function authMiddleware(req, res, next) {
             return res.status(429).json({ error: '認證請求過多，請稍後再試' });
         }
         const { user, error } = result;
+        if (error && !isDefinitiveAuthRejection(error)) {
+            return res.status(503).json({ error: '外部認證服務暫時無法使用' });
+        }
         if (!error && user) {
             const tokenExpiresAt = getTokenExpiresAt(token);
             if (!isSingleAccount(user.id)) {
@@ -84,9 +101,15 @@ async function authMiddleware(req, res, next) {
             if (tokenExpiresAt === null || tokenExpiresAt <= Date.now()) {
                 return res.status(401).json({ error: 'Token 無效或已過期' });
             }
+            if (!sessionState.isSupabaseTokenCurrent(token, currentState)) {
+                return res.status(401).json({ error: 'Token 無效或已過期' });
+            }
             tokenCache.set(token, {
                 user,
-                expiresAt: Math.min(Date.now() + CACHE_TTL_MS, tokenExpiresAt)
+                expiresAt: Math.min(Date.now() + CACHE_TTL_MS, tokenExpiresAt),
+                sessionVersion: currentState.version,
+                supabase: true,
+                tokenIssuedAtMs: Number(jwt.decode(token)?.iat) * 1000,
             });
             req.user = user;
             return next();

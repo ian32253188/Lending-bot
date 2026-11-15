@@ -19,3 +19,4 @@ client/dist
 /server/data/research-models.json
 /server/data/research-models.tmp
 /k8s/k8s-secret.local.yaml
+/k8s/k8s-secret.yaml

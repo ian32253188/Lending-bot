@@ -11,6 +11,7 @@ const PUBLIC_FUNDING_CANDLES_LIMIT = 1000;
 const FUNDING_TRADES_REQUEST_INTERVAL_MS = 4100;
 const FUNDING_TRADES_COLLECT_INTERVAL_MS = 60 * 1000;
 const FUNDING_TRADES_STALE_AFTER_MS = 5 * 60 * 1000;
+const MAX_HOURLY_MATCH_DETAILS = 250;
 let cachedSummary = null;
 let cachedAt = 0;
 let cachePromise = null;
@@ -435,7 +436,9 @@ function buildHourlyFundingMatches(trades, now = Date.now(), limit = 6, includeE
             ...bucket,
             minApy: bucket.minRate === null || bucket.minRate === Infinity ? null : annualizedPercent(bucket.minRate),
             maxApy: bucket.maxRate === null || bucket.maxRate === -Infinity ? null : annualizedPercent(bucket.maxRate),
-            details: bucket.details.sort((a, b) => b.timestamp - a.timestamp),
+            details: bucket.details.sort((a, b) => b.timestamp - a.timestamp).slice(0, MAX_HOURLY_MATCH_DETAILS),
+            detailsTotal: bucket.count,
+            detailsTruncated: bucket.count > MAX_HOURLY_MATCH_DETAILS,
         }));
 }
 

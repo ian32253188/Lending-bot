@@ -11,6 +11,7 @@ const { createTokenExpiryGuard, getTokenExpiresAt } = require('./utils/jwt-expir
 const { closeWebSocketAndTerminate } = require('./utils/websocket-close');
 const { getTrustedClientIp } = require('./utils/trusted-client-ip');
 const { verifySupabaseToken } = require('./services/supabase-auth-fallback');
+const sessionState = require('./utils/session-state');
 const logger = require('./utils/logger');
 const authMiddleware = require('./middleware/auth');
 const { getBitfinexPublicWS } = require('./services/bitfinex/ws');
@@ -25,6 +26,7 @@ const researchRoutes = require('./routes/research');
 
 const app = express();
 app.set('trust proxy', config.server.trustProxyHops);
+app.disable('x-powered-by');
 const server = http.createServer(app);
 const WS_MAX_CLIENTS = 100;
 const WS_MAX_UNAUTHENTICATED_CLIENTS = 10;
@@ -64,6 +66,7 @@ app.use((_req, res, next) => {
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
+    if (_req.secure) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
     next();
 });
 app.use(express.json());
@@ -148,6 +151,12 @@ const wss = new WebSocketServer({
         info.req.unauthenticatedSlotReservation = reservation;
         callback(true);
     },
+});
+
+sessionState.events.on('revoked', () => {
+    for (const ws of wss.clients) {
+        if (ws.readyState === 1) ws.close(4001, 'Session revoked');
+    }
 });
 
 wss.on('connection', (ws, req) => {
@@ -246,6 +255,12 @@ wss.on('connection', (ws, req) => {
                             ws.send(JSON.stringify({ type: 'auth', status: 'error', message: 'Token 無效或已過期' }));
                             return;
                         }
+                        const currentState = await sessionState.getState();
+                        if (!sessionState.isLocalTokenCurrent(decoded, currentState)) {
+                            ws.send(JSON.stringify({ type: 'auth', status: 'revoked', message: 'Token 無效或已過期' }));
+                            ws.close(4001, 'Session revoked');
+                            return;
+                        }
                         verifiedUser = decoded;
                         verifiedExpiresAt = expiresAt;
                     }
@@ -321,6 +336,12 @@ wss.on('connection', (ws, req) => {
                         ws.send(JSON.stringify({ type: 'auth', status: 'error', message: 'Token 無效或已過期' }));
                         return;
                     }
+                    const currentState = await sessionState.getState();
+                    if (!sessionState.isSupabaseTokenCurrent(msg.token, currentState)) {
+                        ws.send(JSON.stringify({ type: 'auth', status: 'revoked', message: 'Token 無效或已過期' }));
+                        ws.close(4001, 'Session revoked');
+                        return;
+                    }
                     handleAuthSuccess(user, expiresAt);
                     return;
                 }
@@ -388,6 +409,12 @@ async function startup() {
     logger.info('server', '🚀 Bitfinex 多用戶 SaaS 放貸平台啟動中...');
 
     const db = require('./services/database');
+    try {
+        await sessionState.initialize();
+        logger.info('server', '管理員工作階段撤銷狀態已就緒');
+    } catch (err) {
+        logger.error('server', '管理員工作階段撤銷狀態初始化失敗；登入與 API 將拒絕請求', { error: err.message });
+    }
     let userSettingsReady = !db.isPostgresConfigured();
     let applicationDataTablesReady = !db.isPostgresConfigured();
     if (db.isPostgresConfigured()) {
